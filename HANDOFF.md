@@ -50,11 +50,14 @@ cp .env.example .env
 
 You need SSH key-based access to the GPU server already configured. If `ssh GPU_USER@GPU_HOST` works without a password prompt, you are set.
 
-You also need the `claude` CLI:
+You also need the `claude` CLI. As an AMD employee you already have this configured through the AMD company offering — the CLI routes through AMD's internal LLM gateway using environment variables set in your shell profile. Verify it works:
+
 ```bash
-npm install -g @anthropic-ai/claude-code
-claude login   # authenticates with your Anthropic account
+claude --version
+claude -p "say hello"   # should respond without any auth error
 ```
+
+If either of those fails, your AMD Claude setup is not active in the current shell. Check that your shell profile (`.bashrc` / `.zshrc`) has the AMD Claude environment variables loaded, or ask Mahdi.
 
 ---
 

@@ -27,7 +27,7 @@ For each notebook, the agent:
 | Requirement | Notes |
 |-------------|-------|
 | Python 3.10+ | |
-| `claude` CLI | Install via `npm install -g @anthropic-ai/claude-code` |
+| `claude` CLI + AMD LLM gateway config | AMD employees: already provisioned via company offering. Verify with `claude -p "say hello"` |
 | `pyyaml` | `pip install pyyaml` |
 | `python-dotenv` | `pip install python-dotenv` |
 | SSH access to an AMD GPU server | Key-based auth recommended |
