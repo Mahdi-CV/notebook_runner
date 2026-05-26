@@ -1,0 +1,292 @@
+# Notebook test manifest
+#
+# Fields:
+#   server           - named server from the `servers` block
+#   hardware_required - GPU families this notebook explicitly targets
+#   gpus_required    - number of GPUs the notebook requires
+#   expected_result  - "partial" means partial counts as passing (for notebooks with untestable cells)
+#   skip / skip_reason - skip entirely, with a mandatory reason
+#   notes            - things the agent cannot learn from reading the notebook:
+#                      external services that must be pre-running, known untestable cells,
+#                      large model/disk warnings, special setup steps outside the notebook
+#
+# Docker image policy (applies to every notebook):
+#   - rocm/pytorch notebooks  → resolve_docker_image(repo="rocm/pytorch", hardware=...)
+#   - vLLM notebooks          → resolve_docker_image(repo="vllm/vllm-openai-rocm", hardware=...)
+#   - SGLang notebooks        → resolve_docker_image(repo="lmsysorg/sglang", hardware=...)
+#   Never use the tag written in the notebook. Always resolve the latest from Docker Hub.
+
+# ---------------------------------------------------------------------------
+# Servers
+# ---------------------------------------------------------------------------
+servers:
+  mi300x-primary:
+    host: YOUR_GPU_SERVER_HOST
+    user: amd
+    hardware: mi300x
+
+# ---------------------------------------------------------------------------
+# Inference
+# ---------------------------------------------------------------------------
+notebooks:
+
+  inference/1_inference_ver3_HF_transformers.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 1
+
+  inference/3_inference_ver3_HF_vllm.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 1
+
+  inference/build_airbnb_agent_mcp.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 1
+    expected_result: partial
+    notes: >
+      Gradio UI cell at the end cannot run headlessly — skip it and mark as partial.
+      Requires Node.js 20 on the host (for MCP servers).
+
+  inference/deepseek_janus_cpu_gpu.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 1
+
+  inference/deepseekr1_sglang.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 1
+    expected_result: partial
+    notes: >
+      Open WebUI setup cell requires a browser — skip it and mark as partial.
+
+  inference/mtp.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 8
+    notes: >
+      Runs two SGLang servers sequentially (baseline, then MTP-enabled).
+      Stop the first server before starting the second.
+      DeepSeek-V3 model is large — fail fast if disk space is low.
+
+  inference/ocr_vllm.ipynb:
+    skip: true
+    skip_reason: >
+      Gradio UI is the primary interface for this notebook and requires a browser.
+      There are no testable inference cells outside the UI.
+
+  inference/power-Google-ADK-on-AMD-platform-and-local-LLMs.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 1
+    expected_result: partial
+    notes: >
+      Requires Ollama installed and running on the host before execution.
+      Install: curl -fsSL https://ollama.com/install.sh | sh && ollama serve
+      Gradio endpoint cell cannot run headlessly — skip it and mark as partial.
+
+  inference/rag_ollama_llamaindex.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 1
+    notes: >
+      Requires Ollama installed and running on the host before execution.
+      Install: curl -fsSL https://ollama.com/install.sh | sh && ollama serve
+
+  inference/rapbot_vllm.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 1
+    expected_result: partial
+    notes: >
+      Contains input() interactive chat loops and an optional Gradio cell — skip these and mark as partial.
+      Validate that the model loads and at least one non-interactive generation cell produces output.
+
+  inference/speculative_decoding_deep_dive.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 1
+
+  inference/t2v_comfyui_radeon.ipynb:
+    skip: true
+    skip_reason: >
+      Targets Radeon RX 7900 XTX (consumer GPU), not AMD Instinct.
+      ComfyUI workflow execution requires a browser — not headless-automatable.
+
+  inference/voice_pipeline_rag_ollama.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 1
+    expected_result: partial
+    notes: >
+      Requires Ollama installed and running on the host before execution.
+      Install: curl -fsSL https://ollama.com/install.sh | sh && ollama serve
+      Audio playback cells (IPython.display.Audio) cannot run headlessly — skip and mark as partial.
+
+  inference/SGlang_PD_Disagg_On_AMD_GPU.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 2
+    notes: >
+      Single-node 1P1D configuration requires 2 GPUs minimum.
+      Multi-node cells require RDMA and etcd — test single-node path only.
+
+  inference/opea_deployment_and_evaluation.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 1
+
+  inference/vllm_v1_DSR1.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 8
+    expected_result: partial
+    notes: >
+      DeepSeek-R1 model is ~50GB+ — fail fast if disk space is insufficient.
+      File upload UI cell and audio playback cells cannot run headlessly — skip and mark as partial.
+
+# ---------------------------------------------------------------------------
+# Fine-tuning
+# ---------------------------------------------------------------------------
+
+  fine_tune/fine_tuning_lora_qwen2vl.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 1
+    notes: >
+      Weights & Biases (wandb.init) is called — pass WANDB_DISABLED=true or skip that cell.
+
+  fine_tune/llama_factory_llama3.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 2
+
+  fine_tune/torchtune_llama3.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 2
+
+  fine_tune/unsloth_Llama3_1_8B_GRPO.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 1
+
+  fine_tune/qwen_image.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 1
+    notes: >
+      Requires a single MI300X (192GB VRAM) to load three model pipelines simultaneously.
+      Validate setup and first training epoch only — full training is multi-hour.
+
+  fine_tune/slime_qwen3_4B_GRPO.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 8
+    notes: >
+      Validate environment setup and a short rollout only — full training is multi-hour.
+
+# ---------------------------------------------------------------------------
+# Pretraining
+# ---------------------------------------------------------------------------
+
+  pretrain/setup_tutorial.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 8
+    expected_result: partial
+    notes: >
+      Data preparation notebook — no model training. Partial counts as pass.
+      Run this before train_llama_mock_data to produce the tokenized dataset.
+
+  pretrain/train_llama_mock_data.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 8
+
+  pretrain/torchtitan_llama3.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 8
+
+  pretrain/torchtitan_deepseek.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 8
+
+  pretrain/training_with_primus.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 8
+
+  pretrain/SpecForge_SGlang.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 8
+    expected_result: partial
+    notes: >
+      Validate server startup and a short training run only.
+      Full GSM8K/MATH-500 benchmarking requires 12TB+ disk — skip benchmark cells and mark as partial.
+
+  pretrain/ddim_pretrain.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 1
+    expected_result: partial
+    notes: >
+      Full 100-epoch training run is too long for regression — validate first few steps only and mark as partial.
+
+  pretrain/se3transform_intro.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 1
+    expected_result: partial
+    notes: >
+      Skip the full training loop (30-60 min) — validate inference mode only and mark as partial.
+
+# ---------------------------------------------------------------------------
+# GPU dev & optimization
+# ---------------------------------------------------------------------------
+
+  gpu_dev_optimize/triton_kernel_dev.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 1
+
+  gpu_dev_optimize/aiter_mla_decode_kernel.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 1
+
+  gpu_dev_optimize/helion_gpu_kernel_dev.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 1
+    notes: >
+      Autotuning is long (~10 min per kernel) — validate basic kernel correctness check only.
+
+  gpu_dev_optimize/fp8_quantization_quark_vllm.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 1
+    expected_result: partial
+    notes: >
+      Full lm_eval evaluation harness is slow — validate quantization and a short inference check only and mark as partial.
+
+  gpu_dev_optimize/mxfp4_quantization_quark_vllm.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi355x, mi350x]
+    gpus_required: 1
+    notes: >
+      Requires MI355X or MI350X — native MXFP4 hardware support. Will be skipped on MI300X.
+
+  gpu_dev_optimize/llama4_profiling_vllm.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 8
+    expected_result: partial
+    notes: >
+      Validate server startup and one profiled request — skip Perfetto visualization cells and mark as partial.
+      Requires gated access to meta-llama/Llama-4-Scout-17B-16E-Instruct.

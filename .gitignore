@@ -6,7 +6,6 @@
 
 # Run artifacts
 results/*.json
-manifest.yaml
 
 # Python
 __pycache__/
