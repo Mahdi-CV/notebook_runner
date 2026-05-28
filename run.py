@@ -79,7 +79,8 @@ def resolve_notebook_config(nb_path, base_dir, manifest, cli_host, cli_user):
         server_hardware = srv.get("hardware")
 
     return {"host": host, "user": user,
-            "server_hardware": server_hardware, "manifest_entry": entry}
+            "server_hardware": server_hardware, "manifest_entry": entry,
+            "rel_key": rel_key}
 
 
 def collect_notebooks(directory, category):
@@ -274,11 +275,89 @@ def handle_stream(proc, notebook_name: str) -> dict:
     return meta
 
 
+# ── Environment check ─────────────────────────────────────────────────────────
+
+def run_env_check(
+    notebook_path: Path,
+    rel_key: str,
+    host: str,
+    user: str,
+    hf_token: str | None,
+    manifest_path: Path,
+    skip: bool = False,
+) -> dict | None:
+    """Run tools/env_check.py for this notebook.
+
+    Returns None if env_check passed (or was skipped, or itself errored —
+    in all those cases the caller should proceed with the agent run).
+    Returns a result dict if env_check BLOCKED — caller should return this
+    as the notebook's outcome and skip the agent.
+    """
+    if skip:
+        print("  [env_check] SKIPPED via --skip-env-check", flush=True)
+        return None
+
+    cmd = [
+        sys.executable, str(TOOLS_DIR / "env_check.py"),
+        "--notebook",       rel_key,
+        "--notebook-local", str(notebook_path),
+        "--ssh-cmd",        (f"ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "
+                             f"-o ForwardX11=no {user}@{host}"),
+        "--manifest",       str(manifest_path),
+        "--results-dir",    str(RESULTS_DIR),
+        "--write-result",
+    ]
+    if hf_token:
+        cmd += ["--hf-token", hf_token]
+
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=sys.stderr, text=True)
+        for line in proc.stdout:
+            print(line, end="", flush=True)
+        proc.wait(timeout=120)
+        rc = proc.returncode
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        print("warning: env_check timed out — proceeding with agent run", file=sys.stderr)
+        return None
+
+    if rc == 0:
+        print("  » env_check passed — proceeding to agent", flush=True)
+        return None
+    elif rc == 1:
+        print("  » env_check blocked the run — using env_check result as outcome", flush=True)
+        result = _find_latest_result(notebook_path)
+        if result is not None:
+            return result
+        return {"status": "fail",
+                "message": "env_check blocked the run but no result file was written",
+                "cost_usd": None, "num_turns": 0}
+    else:
+        print(f"warning: env_check itself errored (exit {rc}) — proceeding with agent run",
+              file=sys.stderr)
+        return None
+
+
 # ── Core runner ───────────────────────────────────────────────────────────────
 
 def run_notebook(notebook_path: Path, host: str, user: str,
                  hf_token: str | None, manifest_entry: dict,
-                 server_hardware: str | None, interactive: bool) -> dict:
+                 server_hardware: str | None, interactive: bool,
+                 rel_key: str = "", manifest_path: Path | None = None,
+                 skip_env_check: bool = False) -> dict:
+
+    # 0. Environment check — fail fast on unwinnable cases
+    env_blocked = run_env_check(
+        notebook_path = notebook_path,
+        rel_key       = rel_key,
+        host          = host,
+        user          = user,
+        hf_token      = hf_token,
+        manifest_path = manifest_path or HERE / "manifest.yaml",
+        skip          = skip_env_check,
+    )
+    if env_blocked is not None:
+        return env_blocked
 
     # 1. Copy notebook to remote server (infrastructure — not the agent's job)
     try:
@@ -418,6 +497,9 @@ def parse_args():
     p.add_argument("--category",    choices=["inference", "fine_tune", "pretrain", "gpu_dev_optimize"])
     p.add_argument("--log-level",   default="INFO", choices=["DEBUG", "INFO"])
     p.add_argument("--interactive", "-i", action="store_true")
+    p.add_argument("--skip-env-check", action="store_true",
+                   help="Bypass env_check.py entirely. Use only when env_check "
+                        "is known to be broken or for development debugging.")
     return p.parse_args()
 
 
@@ -482,6 +564,9 @@ def main():
                 manifest_entry  = cfg["manifest_entry"],
                 server_hardware = cfg["server_hardware"],
                 interactive     = args.interactive,
+                rel_key         = cfg["rel_key"],
+                manifest_path   = Path(args.manifest),
+                skip_env_check  = args.skip_env_check,
             )
         except Exception as exc:
             result = {"status": "fail", "message": f"Runner crashed: {exc}"}
