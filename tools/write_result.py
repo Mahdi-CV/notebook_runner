@@ -8,6 +8,7 @@ Usage:
     --summary "One paragraph summary" \\
     [--issues '[{"cell_index":3,"error_type":"version_incompatibility",...}]'] \\
     [--fixes  '[{"cell_index":3,"fix_description":"...","patch":"...","validated":true}]'] \\
+    [--docker-image-resolved "rocm/pytorch:rocm6.2.0_ubuntu22.04_py3.10_pytorch_2.3.0"] \\
     [--results-dir /path/to/results/]
 
 Prints the path of the written file to stdout.
@@ -27,13 +28,15 @@ def write_result(
     issues: list | None = None,
     fixes: list | None = None,
     results_dir: str | None = None,
+    docker_image_resolved: str | None = None,
 ) -> Path:
     """
     Write result JSON and return the path it was written to.
 
-    status:  "pass" | "fail" | "partial"
-    issues:  list of {cell_index, error_type, description, proposed_fix}
-    fixes:   list of {cell_index, fix_description, patch, validated}
+    status:                "pass" | "fail" | "partial"
+    issues:                list of {cell_index, error_type, description, proposed_fix}
+    fixes:                 list of {cell_index, fix_description, patch, validated}
+    docker_image_resolved: exact image:tag used at run time (omitted from JSON when None)
     """
     out_dir = Path(results_dir) if results_dir else Path(__file__).parent.parent / "results"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -51,6 +54,8 @@ def write_result(
         "timestamp": datetime.utcnow().isoformat(),
         "agent": "claude_code",
     }
+    if docker_image_resolved:
+        payload["docker_image_resolved"] = docker_image_resolved
 
     with open(out_file, "w") as f:
         json.dump(payload, f, indent=2)
@@ -63,9 +68,10 @@ def main():
     p.add_argument("--notebook",    required=True, help="Path to the notebook that was tested")
     p.add_argument("--status",      required=True, choices=["pass", "fail", "partial"])
     p.add_argument("--summary",     required=True, help="One paragraph summary of what happened")
-    p.add_argument("--issues",      default="[]",  help="JSON array of issue objects")
-    p.add_argument("--fixes",       default="[]",  help="JSON array of fix objects")
-    p.add_argument("--results-dir", default=None,  help="Override output directory")
+    p.add_argument("--issues",                default="[]",  help="JSON array of issue objects")
+    p.add_argument("--fixes",                 default="[]",  help="JSON array of fix objects")
+    p.add_argument("--docker-image-resolved", default=None,  help="Exact image:tag used at run time")
+    p.add_argument("--results-dir",           default=None,  help="Override output directory")
     args = p.parse_args()
 
     try:
@@ -82,6 +88,7 @@ def main():
         issues=issues,
         fixes=fixes,
         results_dir=args.results_dir,
+        docker_image_resolved=args.docker_image_resolved,
     )
 
     print(str(out_file))

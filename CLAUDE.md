@@ -113,8 +113,16 @@ Bash: python3 <TOOLS_DIR>/write_result.py \
   --summary "One paragraph: what ran, what broke, what was fixed" \
   --issues '<json array>' \
   --fixes  '<json array>' \
+  --docker-image-resolved "<image:tag>" \
   --results-dir "<RESULTS_DIR>"
 ```
+
+Pass `--docker-image-resolved` with the exact `image:tag` string that papermill
+ran inside. For Pattern A and Pattern C, this is the Docker image the notebook
+executed in. For Pattern B (server + client split), pass the **server** image
+tag — that is where the GPU work runs. For Pattern D (host Python, no Docker),
+omit the flag entirely. The value comes from the `resolve_docker_image.py`
+output you already captured in Step 1.
 
 After writing the result, print the final status line and stop. There is no
 `task_complete` signal — finishing naturally ends the run.
