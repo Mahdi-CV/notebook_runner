@@ -16,6 +16,12 @@ Usage:
   # Interactive mode (opens claude normally — no -p flag, full conversation)
   python run.py path/to/notebook.ipynb --interactive
 
+  # Run only the gap set (never-tested + stale per tools/status.py --gap)
+  python run.py --dir /path/to/notebooks/ --gap
+
+  # Gap set, filtered to one category
+  python run.py --dir /path/to/notebooks/ --gap --category inference
+
 Options:
   --dir         Run all notebooks under this directory
   --category    Filter notebooks by subdirectory name
@@ -94,6 +100,38 @@ def collect_notebooks(directory, category):
         print(f"No notebooks found in {base}", file=sys.stderr)
         sys.exit(1)
     return notebooks
+
+
+def collect_gap_notebooks(base_dir: Path, category: str | None) -> list[Path]:
+    """Subprocess tools/status.py --gap and resolve each line against base_dir."""
+    proc = subprocess.run(
+        [sys.executable, str(TOOLS_DIR / "status.py"), "--gap"],
+        capture_output=True, text=True, check=False, timeout=30,
+    )
+    if proc.returncode != 0:
+        sys.stderr.write(proc.stderr)
+        sys.exit(1)
+
+    lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
+
+    result: list[Path] = []
+    missing: list[str] = []
+    for line in lines:
+        p = (base_dir / line).resolve()
+        if not p.exists():
+            missing.append(line)
+            continue
+        result.append(p)
+
+    if missing:
+        print("warning: gap entries not found on disk (skipped):", file=sys.stderr)
+        for m in missing:
+            print(f"  {m}", file=sys.stderr)
+
+    if category:
+        result = [n for n in result if n.relative_to(base_dir).parts[0] == category]
+
+    return result
 
 
 # ── Notebook transfer (same as original agent) ────────────────────────────────
@@ -497,6 +535,9 @@ def parse_args():
     p.add_argument("--category",    choices=["inference", "fine_tune", "pretrain", "gpu_dev_optimize"])
     p.add_argument("--log-level",   default="INFO", choices=["DEBUG", "INFO"])
     p.add_argument("--interactive", "-i", action="store_true")
+    p.add_argument("--gap", action="store_true",
+                   help="Run only notebooks reported by tools/status.py --gap "
+                        "(never-tested or stale >7d). Requires --dir. Composes with --category.")
     p.add_argument("--skip-env-check", action="store_true",
                    help="Bypass env_check.py entirely. Use only when env_check "
                         "is known to be broken or for development debugging.")
@@ -508,7 +549,24 @@ def main():
     manifest = load_manifest(Path(args.manifest))
     base_dir = Path(args.dir).resolve() if args.dir else None
 
-    if args.notebook:
+    if args.gap and args.notebook:
+        print("Error: --gap cannot be combined with positional notebook paths",
+              file=sys.stderr)
+        sys.exit(2)
+    if args.gap and base_dir is None:
+        print("Error: --gap requires --dir to resolve manifest-relative paths to local files",
+              file=sys.stderr)
+        sys.exit(2)
+
+    if args.gap:
+        notebooks = collect_gap_notebooks(base_dir, args.category)
+        if not notebooks:
+            if args.category:
+                print(f"\nNo gap notebooks in category '{args.category}'.")
+            else:
+                print("\nGap is empty — every testable notebook has a recent result. Nothing to do.")
+            sys.exit(0)
+    elif args.notebook:
         notebooks = [Path(n).resolve() for n in args.notebook]
         if base_dir is None and notebooks:
             candidate = notebooks[0].parent
