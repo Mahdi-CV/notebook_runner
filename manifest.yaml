@@ -61,6 +61,7 @@ notebooks:
       Open WebUI setup cell requires a browser — skip it and mark as partial.
 
   inference/mtp.ipynb:
+    skip: true
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 8
@@ -124,6 +125,7 @@ notebooks:
       Audio playback cells (IPython.display.Audio) cannot run headlessly — skip and mark as partial.
 
   inference/SGlang_PD_Disagg_On_AMD_GPU.ipynb:
+    skip: true
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 2
@@ -137,6 +139,7 @@ notebooks:
     gpus_required: 1
 
   inference/vllm_v1_DSR1.ipynb:
+    skip: true
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 8
@@ -157,11 +160,13 @@ notebooks:
       Weights & Biases (wandb.init) is called — pass WANDB_DISABLED=true or skip that cell.
 
   fine_tune/llama_factory_llama3.ipynb:
+    skip: true
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 2
 
   fine_tune/torchtune_llama3.ipynb:
+    skip: true
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 2
@@ -180,6 +185,7 @@ notebooks:
       Validate setup and first training epoch only — full training is multi-hour.
 
   fine_tune/slime_qwen3_4B_GRPO.ipynb:
+    skip: true
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 8
@@ -191,6 +197,7 @@ notebooks:
 # ---------------------------------------------------------------------------
 
   pretrain/setup_tutorial.ipynb:
+    skip: true
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 8
@@ -200,26 +207,31 @@ notebooks:
       Run this before train_llama_mock_data to produce the tokenized dataset.
 
   pretrain/train_llama_mock_data.ipynb:
+    skip: true
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 8
 
   pretrain/torchtitan_llama3.ipynb:
+    skip: true
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 8
 
   pretrain/torchtitan_deepseek.ipynb:
+    skip: true
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 8
 
   pretrain/training_with_primus.ipynb:
+    skip: true
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 8
 
   pretrain/SpecForge_SGlang.ipynb:
+    skip: true
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 8
@@ -274,6 +286,7 @@ notebooks:
       Full lm_eval evaluation harness is slow — validate quantization and a short inference check only and mark as partial.
 
   gpu_dev_optimize/mxfp4_quantization_quark_vllm.ipynb:
+    skip: true
     server: mi300x-primary
     hardware_required: [mi355x, mi350x]
     gpus_required: 1
@@ -281,6 +294,7 @@ notebooks:
       Requires MI355X or MI350X — native MXFP4 hardware support. Will be skipped on MI300X.
 
   gpu_dev_optimize/llama4_profiling_vllm.ipynb:
+    skip: true
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 8

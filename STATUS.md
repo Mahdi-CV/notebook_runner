@@ -4,52 +4,38 @@
 
 ## Summary
 
-- Total testable notebooks: **34**
-- Pass: **5** (14.7%)
-- Fail: **7** (20.6%)
-- Never-tested: **22** (64.7%)
-- Results in last 7 days: **12** (pass rate within those: 41.7%)
+- Total testable notebooks: **20**
+- Pass: **3** (15.0%)
+- Fail: **11** (55.0%)
+- Never-tested: **6** (30.0%)
+- Results in last 7 days: **8** (pass rate within those: 12.5%)
 - Total cost across latest results: —
-- Most recent run: **2026-05-27 23:33**
+- Most recent run: **2026-05-29 22:57**
 
 ## Notebooks
 
 | Notebook | Category | Status | Last run (UTC) | Image tested | Top failure | Cost |
 |---|---|---|---|---|---|---|
 | fine_tune/fine_tuning_lora_qwen2vl.ipynb | fine_tune | never-tested | — | — |  |  |
-| fine_tune/llama_factory_llama3.ipynb | fine_tune | never-tested | — | — |  |  |
 | fine_tune/qwen_image.ipynb | fine_tune | fail | 2026-05-27 17:33 | — | version_incompatibility: The requirements-amd.txt constructed in the install cell uses pip editable in... |  |
-| fine_tune/slime_qwen3_4B_GRPO.ipynb | fine_tune | never-tested | — | — |  |  |
-| fine_tune/torchtune_llama3.ipynb | fine_tune | never-tested | — | — |  |  |
 | fine_tune/unsloth_Llama3_1_8B_GRPO.ipynb | fine_tune | never-tested | — | — |  |  |
 | | | | | | | |
 | gpu_dev_optimize/aiter_mla_decode_kernel.ipynb | gpu_dev_optimize | pass | 2026-05-27 18:53 | — |  |  |
 | gpu_dev_optimize/fp8_quantization_quark_vllm.ipynb | gpu_dev_optimize | never-tested | — | — |  |  |
 | gpu_dev_optimize/helion_gpu_kernel_dev.ipynb | gpu_dev_optimize | fail | 2026-05-27 20:44 | — | version_incompatibility: pip install triton==3.5.1 conflicts with the Docker image rocm/pytorch:rocm7.... |  |
-| gpu_dev_optimize/llama4_profiling_vllm.ipynb | gpu_dev_optimize | never-tested | — | — |  |  |
-| gpu_dev_optimize/mxfp4_quantization_quark_vllm.ipynb | gpu_dev_optimize | never-tested | — | — |  |  |
-| gpu_dev_optimize/triton_kernel_dev.ipynb | gpu_dev_optimize | never-tested | — | — |  |  |
+| gpu_dev_optimize/triton_kernel_dev.ipynb | gpu_dev_optimize | pass | 2026-05-28 19:02 | — |  |  |
 | | | | | | | |
-| inference/1_inference_ver3_HF_transformers.ipynb | inference | fail | 2026-05-27 22:41 | — | other: GatedRepoError: The HF token does not have approved access to meta-llama/Meta... |  |
-| inference/3_inference_ver3_HF_vllm.ipynb | inference | fail | 2026-05-27 22:44 | — | content_error: Cell 6 uses HfApi (imported in cell 3 as part of notebook_login import) but t... |  |
-| inference/SGlang_PD_Disagg_On_AMD_GPU.ipynb | inference | never-tested | — | — |  |  |
-| inference/build_airbnb_agent_mcp.ipynb | inference | pass | 2026-05-27 17:07 | — |  |  |
-| inference/deepseek_janus_cpu_gpu.ipynb | inference | fail | 2026-05-27 23:33 | — | version_incompatibility: Cell 6 installs torch and torchvision from the rocm6.3 wheel index, which wou... |  |
-| inference/deepseekr1_sglang.ipynb | inference | partial | 2026-05-27 17:23 | — | version_incompatibility: The notebook hardcodes the SGLang Docker image tag lmsysorg/sglang:v0.4.5.pos... |  |
-| inference/mtp.ipynb | inference | never-tested | — | — |  |  |
-| inference/opea_deployment_and_evaluation.ipynb | inference | never-tested | — | — |  |  |
+| inference/1_inference_ver3_HF_transformers.ipynb | inference | fail | 2026-05-29 22:25 | — | missing_dependency: HF_TOKEN lacks download access to gated model meta-llama/Llama-3.1-8B (HTTP 403) |  |
+| inference/3_inference_ver3_HF_vllm.ipynb | inference | fail | 2026-05-29 22:25 | — | missing_dependency: HF_TOKEN lacks download access to gated model meta-llama/Llama-3.1-8B (HTTP 403) |  |
+| inference/build_airbnb_agent_mcp.ipynb | inference | fail | 2026-05-29 22:33 | vllm/vllm-openai-rocm:v0.22.0 | content_error: MCPServerStdio is initialized with "python" as the executable (time_server = ... |  |
+| inference/deepseek_janus_cpu_gpu.ipynb | inference | fail | 2026-05-29 22:43 | rocm/pytorch:rocm7.2.4_ubuntu24.04_py3.12_pytorch_release_2.10.0 | version_incompatibility: Cell installs torch from rocm6.3 wheel index (https://download.pytorch.org/wh... |  |
+| inference/deepseekr1_sglang.ipynb | inference | fail | 2026-05-29 22:57 | lmsysorg/sglang:v0.5.12.post1-rocm720-mi30x | content_error: Port mismatch: the docker run command maps -p 3000:3000 and starts the server... |  |
+| inference/opea_deployment_and_evaluation.ipynb | inference | fail | 2026-05-29 18:55 | — | content_error: Cell contains raw vLLM CLI flags (--max-model-len 2048 --tensor-parallel-size... |  |
 | inference/power-Google-ADK-on-AMD-platform-and-local-LLMs.ipynb | inference | pass | 2026-05-27 23:25 | — |  |  |
-| inference/rag_ollama_llamaindex.ipynb | inference | never-tested | — | — |  |  |
+| inference/rag_ollama_llamaindex.ipynb | inference | fail | 2026-05-29 17:14 | — | other: SSH connection refused to GPU server 134.199.202.42 on all attempts. Server i... |  |
 | inference/rapbot_vllm.ipynb | inference | fail | 2026-05-27 18:32 | — | missing_dependency: The notebook hardcodes meta-llama/Meta-Llama-3-8B-Instruct which is a gated H... |  |
 | inference/speculative_decoding_deep_dive.ipynb | inference | never-tested | — | — |  |  |
-| inference/vllm_v1_DSR1.ipynb | inference | pass | 2026-05-27 23:08 | — |  |  |
 | inference/voice_pipeline_rag_ollama.ipynb | inference | never-tested | — | — |  |  |
 | | | | | | | |
-| pretrain/SpecForge_SGlang.ipynb | pretrain | never-tested | — | — |  |  |
 | pretrain/ddim_pretrain.ipynb | pretrain | fail | 2026-05-27 19:36 | — | deprecated_api: Cell imports huggingface_hub.Repository which was removed in huggingface_hub>... |  |
 | pretrain/se3transform_intro.ipynb | pretrain | never-tested | — | — |  |  |
-| pretrain/setup_tutorial.ipynb | pretrain | never-tested | — | — |  |  |
-| pretrain/torchtitan_deepseek.ipynb | pretrain | never-tested | — | — |  |  |
-| pretrain/torchtitan_llama3.ipynb | pretrain | never-tested | — | — |  |  |
-| pretrain/train_llama_mock_data.ipynb | pretrain | never-tested | — | — |  |  |
-| pretrain/training_with_primus.ipynb | pretrain | never-tested | — | — |  |  |
