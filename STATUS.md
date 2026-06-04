@@ -5,12 +5,12 @@
 ## Summary
 
 - Total testable notebooks: **20**
-- Pass: **5** (25.0%)
-- Fail: **10** (50.0%)
-- Never-tested: **5** (25.0%)
-- Results in last 7 days: **10** (pass rate within those: 30.0%)
+- Pass: **6** (30.0%)
+- Fail: **11** (55.0%)
+- Never-tested: **3** (15.0%)
+- Results in last 7 days: **11** (pass rate within those: 27.3%)
 - Total cost across latest results: —
-- Most recent run: **2026-06-04 18:18**
+- Most recent run: **2026-06-04 21:34**
 
 ## Notebooks
 
@@ -21,7 +21,7 @@
 | fine_tune/unsloth_Llama3_1_8B_GRPO.ipynb | fine_tune | never-tested | — | — |  |  |
 | | | | | | | |
 | gpu_dev_optimize/aiter_mla_decode_kernel.ipynb | gpu_dev_optimize | pass | 2026-05-27 18:53 | — |  |  |
-| gpu_dev_optimize/fp8_quantization_quark_vllm.ipynb | gpu_dev_optimize | never-tested | — | — |  |  |
+| gpu_dev_optimize/fp8_quantization_quark_vllm.ipynb | gpu_dev_optimize | fail | 2026-06-04 21:34 | vllm/vllm-openai-rocm:v0.22.0 | version_incompatibility: pip install amd-quark==0.8.1 fails in Python 3.12 (vllm/vllm-openai-rocm:v0.2... |  |
 | gpu_dev_optimize/helion_gpu_kernel_dev.ipynb | gpu_dev_optimize | fail | 2026-05-27 20:44 | — | version_incompatibility: pip install triton==3.5.1 conflicts with the Docker image rocm/pytorch:rocm7.... |  |
 | gpu_dev_optimize/triton_kernel_dev.ipynb | gpu_dev_optimize | pass | 2026-05-28 19:02 | — |  |  |
 | | | | | | | |
@@ -35,7 +35,7 @@
 | inference/rag_ollama_llamaindex.ipynb | inference | fail | 2026-05-29 17:14 | — | other: SSH connection refused to GPU server 134.199.202.42 on all attempts. Server i... |  |
 | inference/rapbot_vllm.ipynb | inference | pass | 2026-06-04 18:18 | vllm/vllm-openai-rocm:v0.22.0 |  |  |
 | inference/speculative_decoding_deep_dive.ipynb | inference | fail | 2026-06-04 17:50 | vllm/vllm-openai-rocm:v0.22.0 | content_error: %%bash cell runs docker commands but Docker is not available inside the vllm ... |  |
-| inference/voice_pipeline_rag_ollama.ipynb | inference | never-tested | — | — |  |  |
+| inference/voice_pipeline_rag_ollama.ipynb | inference | pass | 2026-06-04 18:37 | rocm/pytorch:rocm7.2.4_ubuntu24.04_py3.12_pytorch_release_2.10.0 |  |  |
 | | | | | | | |
 | pretrain/ddim_pretrain.ipynb | pretrain | fail | 2026-05-27 19:36 | — | deprecated_api: Cell imports huggingface_hub.Repository which was removed in huggingface_hub>... |  |
 | pretrain/se3transform_intro.ipynb | pretrain | never-tested | — | — |  |  |
