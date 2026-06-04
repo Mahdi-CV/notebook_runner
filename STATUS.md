@@ -5,12 +5,12 @@
 ## Summary
 
 - Total testable notebooks: **20**
-- Pass: **3** (15.0%)
-- Fail: **11** (55.0%)
-- Never-tested: **6** (30.0%)
-- Results in last 7 days: **8** (pass rate within those: 12.5%)
+- Pass: **5** (25.0%)
+- Fail: **10** (50.0%)
+- Never-tested: **5** (25.0%)
+- Results in last 7 days: **10** (pass rate within those: 30.0%)
 - Total cost across latest results: —
-- Most recent run: **2026-05-29 22:57**
+- Most recent run: **2026-06-04 18:18**
 
 ## Notebooks
 
@@ -25,16 +25,16 @@
 | gpu_dev_optimize/helion_gpu_kernel_dev.ipynb | gpu_dev_optimize | fail | 2026-05-27 20:44 | — | version_incompatibility: pip install triton==3.5.1 conflicts with the Docker image rocm/pytorch:rocm7.... |  |
 | gpu_dev_optimize/triton_kernel_dev.ipynb | gpu_dev_optimize | pass | 2026-05-28 19:02 | — |  |  |
 | | | | | | | |
-| inference/1_inference_ver3_HF_transformers.ipynb | inference | fail | 2026-05-29 22:25 | — | missing_dependency: HF_TOKEN lacks download access to gated model meta-llama/Llama-3.1-8B (HTTP 403) |  |
-| inference/3_inference_ver3_HF_vllm.ipynb | inference | fail | 2026-05-29 22:25 | — | missing_dependency: HF_TOKEN lacks download access to gated model meta-llama/Llama-3.1-8B (HTTP 403) |  |
+| inference/1_inference_ver3_HF_transformers.ipynb | inference | pass | 2026-06-04 17:57 | rocm/pytorch:rocm7.2.4_ubuntu24.04_py3.12_pytorch_release_2.10.0 |  |  |
+| inference/3_inference_ver3_HF_vllm.ipynb | inference | fail | 2026-06-04 18:08 | vllm/vllm-openai-rocm:v0.22.0 | content_error: Cell 8 launches the vLLM server as a foreground inline shell command (!HIP_VI... |  |
 | inference/build_airbnb_agent_mcp.ipynb | inference | fail | 2026-05-29 22:33 | vllm/vllm-openai-rocm:v0.22.0 | content_error: MCPServerStdio is initialized with "python" as the executable (time_server = ... |  |
 | inference/deepseek_janus_cpu_gpu.ipynb | inference | fail | 2026-05-29 22:43 | rocm/pytorch:rocm7.2.4_ubuntu24.04_py3.12_pytorch_release_2.10.0 | version_incompatibility: Cell installs torch from rocm6.3 wheel index (https://download.pytorch.org/wh... |  |
 | inference/deepseekr1_sglang.ipynb | inference | fail | 2026-05-29 22:57 | lmsysorg/sglang:v0.5.12.post1-rocm720-mi30x | content_error: Port mismatch: the docker run command maps -p 3000:3000 and starts the server... |  |
 | inference/opea_deployment_and_evaluation.ipynb | inference | fail | 2026-05-29 18:55 | — | content_error: Cell contains raw vLLM CLI flags (--max-model-len 2048 --tensor-parallel-size... |  |
 | inference/power-Google-ADK-on-AMD-platform-and-local-LLMs.ipynb | inference | pass | 2026-05-27 23:25 | — |  |  |
 | inference/rag_ollama_llamaindex.ipynb | inference | fail | 2026-05-29 17:14 | — | other: SSH connection refused to GPU server 134.199.202.42 on all attempts. Server i... |  |
-| inference/rapbot_vllm.ipynb | inference | fail | 2026-05-27 18:32 | — | missing_dependency: The notebook hardcodes meta-llama/Meta-Llama-3-8B-Instruct which is a gated H... |  |
-| inference/speculative_decoding_deep_dive.ipynb | inference | never-tested | — | — |  |  |
+| inference/rapbot_vllm.ipynb | inference | pass | 2026-06-04 18:18 | vllm/vllm-openai-rocm:v0.22.0 |  |  |
+| inference/speculative_decoding_deep_dive.ipynb | inference | fail | 2026-06-04 17:50 | vllm/vllm-openai-rocm:v0.22.0 | content_error: %%bash cell runs docker commands but Docker is not available inside the vllm ... |  |
 | inference/voice_pipeline_rag_ollama.ipynb | inference | never-tested | — | — |  |  |
 | | | | | | | |
 | pretrain/ddim_pretrain.ipynb | pretrain | fail | 2026-05-27 19:36 | — | deprecated_api: Cell imports huggingface_hub.Repository which was removed in huggingface_hub>... |  |
