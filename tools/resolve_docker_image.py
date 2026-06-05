@@ -43,11 +43,22 @@ def resolve(repo: str, hardware: str) -> str:
         raise RuntimeError(f"Docker Hub request failed: {e}") from e
 
     if repo == "vllm/vllm-openai-rocm":
-        # Plain semver tags only — ROCm support is baked in, no hardware suffix
-        candidates = [t for t in tags if re.match(r"^v\d+\.\d+\.\d+$", t)]
+        return "vllm/vllm-openai-rocm:latest"
     elif repo == "rocm/pytorch":
-        # Tags like rocm6.3.1_ubuntu22.04_py3.10_pytorch
-        candidates = [t for t in tags if re.match(r"^rocm\d+\.\d+", t)]
+        return "rocm/pytorch:latest"
+    elif repo == "rocm/dgl":
+        candidates = [t for t in tags if re.match(r"^dgl-\d+\.\d+", t)]
+        def _dgl_sort_key(tag):
+            m = re.search(r"rocm(\d+)\.(\d+)\.?(\d*)", tag)
+            rocm_ver = tuple(int(x) if x else 0 for x in m.groups()) if m else (0, 0, 0)
+            py312 = 1 if "py3.12" in tag else 0
+            ubuntu24 = 1 if "ubuntu24" in tag else 0
+            return (rocm_ver, py312, ubuntu24)
+        best = max(candidates, key=_dgl_sort_key)
+        return f"{repo}:{best}"
+    elif repo == "lmsysorg/sglang":
+        hw_suffix = _HW_TAG.get(hardware.lower(), hardware.lower())
+        candidates = [t for t in tags if hw_suffix in t]
     else:
         hw_suffix = _HW_TAG.get(hardware.lower(), hardware.lower())
         candidates = [t for t in tags if hw_suffix in t]
