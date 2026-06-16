@@ -125,7 +125,6 @@ notebooks:
       Audio playback cells (IPython.display.Audio) cannot run headlessly — skip and mark as partial.
 
   inference/SGlang_PD_Disagg_On_AMD_GPU.ipynb:
-    skip: true
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 2
@@ -148,6 +147,33 @@ notebooks:
       DeepSeek-R1 model is ~50GB+ — fail fast if disk space is insufficient.
       File upload UI cell and audio playback cells cannot run headlessly — skip and mark as partial.
 
+  # --- PR verification (ROCm/gpuaidev-internal) ---------------------------
+  # These two are under review (PR #99, #100). Their Docker images are NOT in
+  # resolve_docker_image.py's known repos, so use the author-pinned tags below.
+
+  inference/triton_inference_server_benchmark.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 1
+
+  inference/amd_comfyui_rocm_tutorial.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 1
+    expected_result: partial
+    notes: >
+      UNDER PR REVIEW (#100). Runs INSIDE the ComfyUI ROCm container.
+      resolve_docker_image.py does not support this repo — use the author-pinned
+      image exactly: rocm/comfyui:comfyui-0.18.2.amd0_rocm7.2.0_ubuntu24.04.
+      COMFYUI_PATH is preset inside that image (typically /workload/ComfyUI).
+      KNOWN GAP: the notebook depends on sibling workflows/*.json and
+      assets/*.png that are NOT included in the PR (only the .ipynb was added) —
+      cell 9 asserts the asset PNGs exist and will hard-fail without them.
+      Model checkpoints (~10GB Hunyuan3D, ~17GB Wan2.2) are large; cells skip
+      gracefully if absent (HUNYUAN_READY / WAN_I2V_READY flags) so the notebook
+      can go green without generating anything — note that explicitly.
+      Part 3 benchmarks default to RUN_BENCHMARKS=False (skipped by design).
+
 # ---------------------------------------------------------------------------
 # Fine-tuning
 # ---------------------------------------------------------------------------
@@ -160,13 +186,11 @@ notebooks:
       Weights & Biases (wandb.init) is called — pass WANDB_DISABLED=true or skip that cell.
 
   fine_tune/llama_factory_llama3.ipynb:
-    skip: true
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 2
 
   fine_tune/torchtune_llama3.ipynb:
-    skip: true
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 2
