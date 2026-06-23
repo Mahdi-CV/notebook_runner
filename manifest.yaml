@@ -51,6 +51,10 @@ notebooks:
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 1
+    notes: >
+      Use rocm/pytorch (not rocm/pytorch-training) — notebook has its own pip install
+      cells with --index-url pointing to pytorch.org wheels. Using pytorch-training
+      masks version incompatibility bugs because packages are pre-bundled.
 
   inference/deepseekr1_sglang.ipynb:
     server: mi300x-primary
@@ -107,6 +111,9 @@ notebooks:
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 1
+    notes: >
+      Notebook uses both vLLM and SGLang Docker images in different cells.
+      Use vllm/vllm-openai-rocm as the primary image for papermill execution.
 
   inference/t2v_comfyui_radeon.ipynb:
     skip: true
@@ -204,6 +211,8 @@ notebooks:
     hardware_required: [mi300x]
     gpus_required: 1
     notes: >
+      Use rocm/pytorch (not rocm/pytorch-training) — notebook has its own pip install
+      cells with --index-url pointing to pytorch.org wheels.
       Requires a single MI300X (192GB VRAM) to load three model pipelines simultaneously.
       Validate setup and first training epoch only — full training is multi-hour.
 
@@ -264,6 +273,8 @@ notebooks:
     gpus_required: 1
     expected_result: partial
     notes: >
+      Use rocm/pytorch (not rocm/pytorch-training) — notebook has its own pip install
+      cells with --index-url pointing to pytorch.org wheels.
       Full 100-epoch training run is too long for regression — validate first few steps only and mark as partial.
 
   pretrain/se3transform_intro.ipynb:

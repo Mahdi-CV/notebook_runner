@@ -29,6 +29,8 @@ def write_result(
     fixes: list | None = None,
     results_dir: str | None = None,
     docker_image_resolved: str | None = None,
+    agent: str = "claude_code",
+    verification_result: str | None = None,
 ) -> Path:
     """
     Write result JSON and return the path it was written to.
@@ -37,6 +39,8 @@ def write_result(
     issues:                list of {cell_index, error_type, description, proposed_fix}
     fixes:                 list of {cell_index, fix_description, patch, validated}
     docker_image_resolved: exact image:tag used at run time (omitted from JSON when None)
+    agent:                 which agent produced this result (e.g. "claude_code_verify", "claude_code_fix")
+    verification_result:   path to the verification result that this fix run is based on (fixer only)
     """
     out_dir = Path(results_dir) if results_dir else Path(__file__).parent.parent / "results"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -52,10 +56,12 @@ def write_result(
         "issues": issues or [],
         "fixes": fixes or [],
         "timestamp": datetime.utcnow().isoformat(),
-        "agent": "claude_code",
+        "agent": agent,
     }
     if docker_image_resolved:
         payload["docker_image_resolved"] = docker_image_resolved
+    if verification_result:
+        payload["verification_result"] = verification_result
 
     with open(out_file, "w") as f:
         json.dump(payload, f, indent=2)
@@ -72,6 +78,8 @@ def main():
     p.add_argument("--fixes",                 default="[]",  help="JSON array of fix objects")
     p.add_argument("--docker-image-resolved", default=None,  help="Exact image:tag used at run time")
     p.add_argument("--results-dir",           default=None,  help="Override output directory")
+    p.add_argument("--agent",                 default="claude_code", help="Agent identity (e.g. claude_code_verify, claude_code_fix)")
+    p.add_argument("--verification-result",   default=None,  help="Path to verification result JSON (fixer agent only)")
     args = p.parse_args()
 
     try:
@@ -89,6 +97,8 @@ def main():
         fixes=fixes,
         results_dir=args.results_dir,
         docker_image_resolved=args.docker_image_resolved,
+        agent=args.agent,
+        verification_result=args.verification_result,
     )
 
     print(str(out_file))

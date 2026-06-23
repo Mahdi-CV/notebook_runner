@@ -42,10 +42,51 @@ def resolve(repo: str, hardware: str) -> str:
     except Exception as e:
         raise RuntimeError(f"Docker Hub request failed: {e}") from e
 
-    if repo == "vllm/vllm-openai-rocm":
-        return "vllm/vllm-openai-rocm:latest"
-    elif repo == "rocm/pytorch":
-        return "rocm/pytorch:latest"
+    hw_suffix = _HW_TAG.get(hardware.lower(), hardware.lower())
+
+    if repo == "rocm/pytorch":
+        # Tags look like: rocm7.2.4_ubuntu24.04_py3.12_pytorch_release_2.10.0
+        # Filter for release tags (not nightly/internal), prefer latest ROCm + Python version.
+        candidates = [
+            t for t in tags
+            if "pytorch_release" in t or "pytorch_release" in t.replace("-", "_")
+        ]
+        if not candidates:
+            # Fallback: any tag with a ROCm version string
+            candidates = [t for t in tags if re.search(r"rocm\d+\.\d+", t)]
+
+        if candidates:
+            def _pytorch_sort_key(tag):
+                rocm_m = re.search(r"rocm(\d+)\.(\d+)\.?(\d*)", tag)
+                rocm_ver = tuple(int(x) if x else 0 for x in rocm_m.groups()) if rocm_m else (0, 0, 0)
+                pt_m = re.search(r"pytorch[_-]release[_-](\d+)\.(\d+)\.?(\d*)", tag)
+                pt_ver = tuple(int(x) if x else 0 for x in pt_m.groups()) if pt_m else (0, 0, 0)
+                py312 = 1 if "py3.12" in tag else 0
+                ubuntu24 = 1 if "ubuntu24" in tag else 0
+                return (rocm_ver, pt_ver, py312, ubuntu24)
+            best = max(candidates, key=_pytorch_sort_key)
+            return f"{repo}:{best}"
+
+    elif repo == "vllm/vllm-openai-rocm":
+        # Filter out 'latest' and nightly tags; prefer versioned release tags
+        candidates = [
+            t for t in tags
+            if t != "latest"
+            and not t.startswith("nightly")
+            and not t.endswith("-base")
+            and re.search(r"\d+\.\d+", t)
+        ]
+        if candidates:
+            def _vllm_sort_key(tag):
+                # Extract primary version (e.g., v0.8.3 or 0.8.3)
+                ver_m = re.match(r"v?(\d+)\.(\d+)\.?(\d*)", tag)
+                ver = tuple(int(x) if x else 0 for x in ver_m.groups()) if ver_m else (0, 0, 0)
+                rocm_m = re.search(r"rocm(\d+)\.(\d+)\.?(\d*)", tag)
+                rocm_ver = tuple(int(x) if x else 0 for x in rocm_m.groups()) if rocm_m else (0, 0, 0)
+                return (ver, rocm_ver)
+            best = max(candidates, key=_vllm_sort_key)
+            return f"{repo}:{best}"
+
     elif repo == "rocm/dgl":
         candidates = [t for t in tags if re.match(r"^dgl-\d+\.\d+", t)]
         def _dgl_sort_key(tag):
@@ -57,10 +98,8 @@ def resolve(repo: str, hardware: str) -> str:
         best = max(candidates, key=_dgl_sort_key)
         return f"{repo}:{best}"
     elif repo == "lmsysorg/sglang":
-        hw_suffix = _HW_TAG.get(hardware.lower(), hardware.lower())
         candidates = [t for t in tags if hw_suffix in t]
     else:
-        hw_suffix = _HW_TAG.get(hardware.lower(), hardware.lower())
         candidates = [t for t in tags if hw_suffix in t]
 
     if not candidates:

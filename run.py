@@ -137,11 +137,12 @@ def collect_gap_notebooks(base_dir: Path, category: str | None) -> list[Path]:
 # ── Notebook transfer (same as original agent) ────────────────────────────────
 
 def scp_notebook(local_path: Path, host: str, user: str) -> str:
-    """Copy notebook to remote server. Returns remote path."""
+    """Copy notebook and preflight_patch.py to remote server. Returns remote path."""
     stem       = local_path.stem
     remote_dir = f"/home/{user}/tutorial_agent_runs/{stem}"
     remote_path = f"{remote_dir}/{local_path.name}"
     target     = f"{user}@{host}"
+    preflight  = TOOLS_DIR / "preflight_patch.py"
 
     print(f"  Copying {local_path.name} → {target}:{remote_dir}/", flush=True)
     for attempt in range(1, 4):
@@ -153,7 +154,7 @@ def scp_notebook(local_path: Path, host: str, user: str) -> str:
             )
             subprocess.run(
                 ["scp", "-o", "StrictHostKeyChecking=no", "-o", "ForwardX11=no",
-                 str(local_path), f"{target}:{remote_path}"],
+                 str(local_path), str(preflight), f"{target}:{remote_dir}/"],
                 check=True, capture_output=True, timeout=60,
             )
             return remote_path
@@ -203,7 +204,7 @@ def _is_poll(stdout: str) -> bool:
     return any(m in stdout for m in markers) and "DONE" not in stdout
 
 
-def handle_stream(proc, notebook_name: str) -> dict:
+def handle_stream(proc, notebook_name: str, agent_label: str = "") -> dict:
     """
     Parse stream-json lines from claude process.
     Pretty-prints each step like the original agent.
@@ -496,7 +497,7 @@ write_result (call this when done):
         cwd=str(HERE),
     )
 
-    meta = handle_stream(proc, notebook_path.name)
+    meta = handle_stream(proc, notebook_path.name, agent_label="VERIFY")
 
     # 6. Read back the result JSON written by write_result.py
     result = _find_latest_result(notebook_path)
@@ -513,14 +514,151 @@ write_result (call this when done):
     }
 
 
+def run_fixer(notebook_path: Path, host: str, user: str,
+              hf_token: str | None, manifest_entry: dict,
+              server_hardware: str | None,
+              verification_result_path: Path,
+              rel_key: str = "") -> dict:
+    """Run the fixer agent on a notebook using a prior verification result."""
+
+    # 0. Check for auto_fixable issues — skip if none
+    if not _has_auto_fixable_issues(verification_result_path):
+        print("  No auto_fixable issues — skipping fixer agent", flush=True)
+        result = _find_latest_result(notebook_path)
+        return result or {"status": "fail", "message": "No auto_fixable issues"}
+
+    # 1. Copy notebook to remote server (verification cleaned up)
+    try:
+        remote_path = scp_notebook(notebook_path, host, user)
+    except RuntimeError as e:
+        return {"status": "fail", "message": str(e), "cost_usd": None}
+
+    # 2. Build the fixer prompt
+    prompt_lines = [
+        f"Fix the issues identified by the verification agent for: {notebook_path}",
+        "",
+        f"The verification result is at: {verification_result_path}",
+        "",
+        "Follow the CLAUDE_FIX.md playbook provided in the system prompt below.",
+        "Start by reading the verification result JSON and the notebook,",
+        "then proceed through all steps. Only fix issues marked auto_fixable.",
+        "Write the final result via write_result.py, then finish.",
+    ]
+    if manifest_entry:
+        expected = manifest_entry.get("expected_result")
+        if expected == "partial":
+            prompt_lines.append(
+                "\nexpected_result=partial: a 'partial' outcome counts as passing."
+            )
+        notes = manifest_entry.get("notes")
+        if notes:
+            prompt_lines.append(f"\nKnown issues / notes: {notes.strip()}")
+
+    prompt = "\n".join(prompt_lines)
+
+    # 3. Build runtime context (same as verification + VERIFICATION_RESULT)
+    ssh_flags  = "-o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ForwardX11=no"
+    ssh_target = f"{user}@{host}"
+    ssh_cmd    = f"ssh {ssh_flags} {ssh_target}"
+
+    runtime_ctx = f"""## Runtime Context for this Fix Run
+
+SSH_CMD     = {ssh_cmd}
+SSH_HF_CMD  = ssh {ssh_flags} {ssh_target} (prefix commands that need HF_TOKEN with: export HF_TOKEN='{hf_token}';)
+GPU_HARDWARE   = {server_hardware or 'unknown'}
+NOTEBOOK_LOCAL  = {notebook_path}
+NOTEBOOK_REMOTE = {remote_path}  (already on the server — do NOT copy again)
+TOOLS_DIR       = {TOOLS_DIR}
+RESULTS_DIR     = {RESULTS_DIR}
+VERIFICATION_RESULT = {verification_result_path}
+
+Use SSH_CMD like this:
+  Bash: {ssh_cmd} '<your command here>'
+
+For commands that need HF_TOKEN:
+  Bash: {ssh_cmd} 'export HF_TOKEN='{hf_token}'; <your command here>'
+
+resolve_docker_image:
+  Bash: python3 {TOOLS_DIR}/resolve_docker_image.py <repo> {server_hardware or 'mi300x'}
+
+write_result (call this when done):
+  Bash: python3 {TOOLS_DIR}/write_result.py \\
+    --notebook "{notebook_path}" \\
+    --status pass|fail \\
+    --summary "..." \\
+    --issues '<all issues>' \\
+    --fixes  '<fixes array>' \\
+    --agent "claude_code_fix" \\
+    --verification-result "{verification_result_path}" \\
+    --results-dir "{RESULTS_DIR}"
+"""
+
+    # 4. Read CLAUDE_FIX.md and append to system prompt
+    fixer_playbook_path = HERE / "CLAUDE_FIX.md"
+    with open(fixer_playbook_path) as f:
+        fixer_playbook = f.read()
+
+    system_prompt = fixer_playbook + "\n\n---\n\n" + runtime_ctx
+
+    # 5. Spawn headless fixer agent
+    print(f"\n  Starting fixer agent (headless)…", flush=True)
+    proc = subprocess.Popen(
+        [
+            "claude",
+            "-p", prompt,
+            "--append-system-prompt", system_prompt,
+            "--output-format", "stream-json",
+            "--verbose",
+            "--max-turns", "200",
+            "--dangerously-skip-permissions",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=sys.stderr,
+        text=True,
+        cwd=str(HERE),
+    )
+
+    meta = handle_stream(proc, notebook_path.name, agent_label="FIX")
+
+    # 6. Read back the result JSON
+    result = _find_latest_result(notebook_path)
+    if result:
+        result["cost_usd"]  = meta.get("cost_usd")
+        result["num_turns"] = meta.get("num_turns")
+        return result
+
+    return {
+        "status":    "fail",
+        "message":   "Fixer agent finished but did not write a result file",
+        "cost_usd":  meta.get("cost_usd"),
+        "num_turns": meta.get("num_turns"),
+    }
+
+
 def _find_latest_result(notebook_path: Path) -> dict | None:
     """Find the most recent result JSON written by write_result.py for this notebook."""
+    result_path = _find_latest_result_path(notebook_path)
+    if result_path is None:
+        return None
+    with open(result_path) as f:
+        return json.load(f)
+
+
+def _find_latest_result_path(notebook_path: Path) -> Path | None:
+    """Return the Path to the most recent result JSON for this notebook, or None."""
     stem    = notebook_path.stem
     matches = sorted(RESULTS_DIR.glob(f"{stem}_*.json"), reverse=True)
-    if not matches:
-        return None
-    with open(matches[0]) as f:
-        return json.load(f)
+    return matches[0] if matches else None
+
+
+def _has_auto_fixable_issues(result_path: Path) -> bool:
+    """Check whether a result JSON contains any auto_fixable issues."""
+    with open(result_path) as f:
+        data = json.load(f)
+    return any(
+        iss.get("fixability") == "auto_fixable"
+        for iss in data.get("issues", [])
+    )
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -541,6 +679,11 @@ def parse_args():
     p.add_argument("--skip-env-check", action="store_true",
                    help="Bypass env_check.py entirely. Use only when env_check "
                         "is known to be broken or for development debugging.")
+    p.add_argument("--mode", choices=["verify", "fix", "full"], default="full",
+                   help="verify=diagnosis only, fix=apply fixes from prior result, "
+                        "full=verify then fix (default)")
+    p.add_argument("--verification-result", default=None,
+                   help="Path to verification result JSON (required for --mode fix)")
     return p.parse_args()
 
 
@@ -582,9 +725,22 @@ def main():
         print("Error: provide a notebook path or --dir", file=sys.stderr)
         sys.exit(1)
 
+    # Validate --mode fix requires --verification-result (for single notebooks)
+    if args.mode == "fix" and not args.verification_result and len(notebooks) == 1:
+        # For single notebook fix mode, require explicit result path
+        result_path = _find_latest_result_path(notebooks[0])
+        if result_path is None:
+            print("Error: --mode fix requires --verification-result or a prior result in results/",
+                  file=sys.stderr)
+            sys.exit(1)
+
+    mode_label = args.mode
+    if args.interactive:
+        mode_label = "interactive"
+
     print(f"\nNotebook regression agent  [Claude Code]")
     print(f"  Notebooks : {len(notebooks)}")
-    print(f"  Mode      : {'interactive' if args.interactive else 'headless (autonomous)'}")
+    print(f"  Mode      : {mode_label}")
     print(f"  Results   : {RESULTS_DIR}\n")
 
     results = []
@@ -613,21 +769,77 @@ def main():
 
         print(f"  GPU server : {user}@{host}")
 
-        try:
-            result = run_notebook(
-                notebook_path   = nb,
-                host            = host,
-                user            = user,
-                hf_token        = os.getenv("HF_TOKEN"),
-                manifest_entry  = cfg["manifest_entry"],
-                server_hardware = cfg["server_hardware"],
-                interactive     = args.interactive,
-                rel_key         = cfg["rel_key"],
-                manifest_path   = Path(args.manifest),
-                skip_env_check  = args.skip_env_check,
-            )
-        except Exception as exc:
-            result = {"status": "fail", "message": f"Runner crashed: {exc}"}
+        result = None
+        verify_cost = 0.0
+        verify_turns = 0
+
+        # ── Phase: Verify ────────────────────────────────────────────────
+        if args.mode in ("verify", "full"):
+            print(f"\n  ── VERIFY ──")
+            try:
+                result = run_notebook(
+                    notebook_path   = nb,
+                    host            = host,
+                    user            = user,
+                    hf_token        = os.getenv("HF_TOKEN"),
+                    manifest_entry  = cfg["manifest_entry"],
+                    server_hardware = cfg["server_hardware"],
+                    interactive     = args.interactive,
+                    rel_key         = cfg["rel_key"],
+                    manifest_path   = Path(args.manifest),
+                    skip_env_check  = args.skip_env_check,
+                )
+            except Exception as exc:
+                result = {"status": "fail", "message": f"Runner crashed: {exc}"}
+
+            verify_cost  = result.get("cost_usd") or 0.0
+            verify_turns = result.get("num_turns") or 0
+
+            v_status = result.get("status", "fail")
+            v_icon   = "✓" if v_status == "pass" else "✗"
+            print(f"  {v_icon} VERIFY: {v_status.upper()}", flush=True)
+
+        # ── Phase: Fix ───────────────────────────────────────────────────
+        if args.mode == "fix" or (args.mode == "full" and result
+                                   and result.get("status") != "pass"):
+            # Determine verification result path
+            if args.mode == "fix" and args.verification_result:
+                vr_path = Path(args.verification_result)
+            else:
+                vr_path = _find_latest_result_path(nb)
+
+            if vr_path and vr_path.exists():
+                print(f"\n  ── FIX ──")
+                try:
+                    fix_result = run_fixer(
+                        notebook_path   = nb,
+                        host            = host,
+                        user            = user,
+                        hf_token        = os.getenv("HF_TOKEN"),
+                        manifest_entry  = cfg["manifest_entry"],
+                        server_hardware = cfg["server_hardware"],
+                        verification_result_path = vr_path,
+                        rel_key         = cfg["rel_key"],
+                    )
+                    # Accumulate costs from both agents
+                    fix_cost  = fix_result.get("cost_usd") or 0.0
+                    fix_turns = fix_result.get("num_turns") or 0
+                    fix_result["cost_usd"]  = verify_cost + fix_cost
+                    fix_result["num_turns"] = verify_turns + fix_turns
+                    result = fix_result
+
+                    f_status = result.get("status", "fail")
+                    f_icon   = "✓" if f_status == "pass" else "✗"
+                    print(f"  {f_icon} FIX: {f_status.upper()}", flush=True)
+                except Exception as exc:
+                    print(f"  ✗ Fixer crashed: {exc}", flush=True)
+            elif args.mode == "fix":
+                print(f"  ✗ No verification result found for {nb.name}", flush=True)
+                result = {"status": "fail",
+                          "message": "No verification result available for fixer"}
+
+        if result is None:
+            result = {"status": "fail", "message": "No result produced"}
 
         results.append({"notebook": str(nb), **result})
         status = result.get("status", "fail")
