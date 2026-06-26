@@ -144,6 +144,17 @@ notebooks:
     hardware_required: [mi300x]
     gpus_required: 1
 
+  inference/openclaw_vllm.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 8
+    notes: >
+      Pattern C — a %%bash cell launches the vLLM server with docker run -d,
+      then client cells poll http://localhost:8000 and drive an agent.
+      Serves Qwen3.5-122B-A10B-FP8 (~120GB) — needs multiple MI300X; fail fast
+      if disk/VRAM is insufficient. Run the docker run -d cell directly, poll
+      health, then execute the client cells.
+
   inference/vllm_v1_DSR1.ipynb:
     server: mi300x-primary
     hardware_required: [mi300x]
@@ -321,6 +332,16 @@ notebooks:
     gpus_required: 1
     notes: >
       Requires MI355X or MI350X — native MXFP4 hardware support. Will be skipped on MI300X.
+
+  gpu_dev_optimize/fp8_gemm_hip_cdna4.ipynb:
+    skip: true
+    server: mi300x-primary
+    hardware_required: [mi355x, mi350x]
+    gpus_required: 1
+    skip_reason: >
+      Requires CDNA4 (gfx950 — MI350X/MI355X). An early cell asserts
+      rocm_agent_enumerator reports gfx950 and hard-fails on MI300X (gfx942).
+      Not testable on the MI300X server.
 
   gpu_dev_optimize/llama4_profiling_vllm.ipynb:
     server: mi300x-primary

@@ -293,6 +293,21 @@ def render_gap(rows: list[dict]) -> str:
     return "\n".join([r["notebook"] for r in never + stale]) + ("\n" if (never or stale) else "")
 
 
+def render_failing(rows: list[dict]) -> str:
+    """Print manifest-relative paths of notebooks whose latest result is a hard fail.
+
+    A 'partial' that counts as pass (expected_result: partial) is NOT failing.
+    A 'partial' that does NOT count as pass is treated as failing — it needs work.
+    """
+    failing = [
+        r for r in rows
+        if r["status"] == "fail"
+        or (r["status"] == "partial" and not r["counts_as_pass"])
+    ]
+    failing.sort(key=lambda r: r["notebook"])
+    return "\n".join(r["notebook"] for r in failing) + ("\n" if failing else "")
+
+
 def render_json(rows: list[dict], summary: dict) -> str:
     def ts_iso(ts: datetime | None) -> str | None:
         return ts.isoformat() if ts else None
@@ -321,13 +336,16 @@ def render_json(rows: list[dict], summary: dict) -> str:
 def main() -> int:
     p = argparse.ArgumentParser(description="Aggregate notebook regression results.")
     p.add_argument("--gap", action="store_true", help="Print only never-tested/stale notebook paths.")
+    p.add_argument("--failing", action="store_true",
+                   help="Print only currently-failing notebook paths (status fail, "
+                        "or partial that does not count as pass).")
     p.add_argument("--json", dest="as_json", action="store_true", help="Print machine-readable JSON.")
     p.add_argument("--write", action="store_true", help="Also write STATUS.md to repo root.")
     p.add_argument("--results-dir", default=None, help="Override results directory.")
     args = p.parse_args()
 
-    if args.gap and args.as_json:
-        print("error: --gap and --json are mutually exclusive", file=sys.stderr)
+    if sum([args.gap, args.failing, args.as_json]) > 1:
+        print("error: --gap, --failing, and --json are mutually exclusive", file=sys.stderr)
         return 2
 
     results_dir = Path(args.results_dir).resolve() if args.results_dir else DEFAULT_RESULTS_DIR
@@ -338,6 +356,10 @@ def main() -> int:
 
     if args.gap:
         sys.stdout.write(render_gap(rows))
+        return 0
+
+    if args.failing:
+        sys.stdout.write(render_failing(rows))
         return 0
 
     if args.as_json:
