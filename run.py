@@ -47,6 +47,7 @@ load_dotenv()
 HERE        = Path(__file__).parent
 TOOLS_DIR   = (HERE / "tools").resolve()
 RESULTS_DIR = (HERE / "results").resolve()
+FIXES_DIR   = (HERE / "fixes").resolve()   # genuine-fix notebooks retrieved by the fixer (for PRs)
 
 # ── Manifest ──────────────────────────────────────────────────────────────────
 
@@ -557,6 +558,8 @@ def run_fixer(notebook_path: Path, host: str, user: str,
               rel_key: str = "") -> dict:
     """Run the fixer agent on a notebook using a prior verification result."""
 
+    FIXES_DIR.mkdir(parents=True, exist_ok=True)
+
     # 0. Check for auto_fixable issues — skip if none
     if not _has_auto_fixable_issues(verification_result_path):
         print("  No auto_fixable issues — skipping fixer agent", flush=True)
@@ -606,6 +609,7 @@ NOTEBOOK_LOCAL  = {notebook_path}
 NOTEBOOK_REMOTE = {remote_path}  (already on the server — do NOT copy again)
 TOOLS_DIR       = {TOOLS_DIR}
 RESULTS_DIR     = {RESULTS_DIR}
+FIXES_DIR       = {FIXES_DIR}  (retrieve <nb>_fixed.ipynb here as <stem>.ipynb — see CLAUDE_FIX.md Step 4d)
 VERIFICATION_RESULT = {verification_result_path}
 
 Use SSH_CMD like this:

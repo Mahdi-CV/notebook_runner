@@ -31,6 +31,7 @@ def write_result(
     docker_image_resolved: str | None = None,
     agent: str = "claude_code",
     verification_result: str | None = None,
+    fixed_notebook: str | None = None,
 ) -> Path:
     """
     Write result JSON and return the path it was written to.
@@ -41,6 +42,10 @@ def write_result(
     docker_image_resolved: exact image:tag used at run time (omitted from JSON when None)
     agent:                 which agent produced this result (e.g. "claude_code_verify", "claude_code_fix")
     verification_result:   path to the verification result that this fix run is based on (fixer only)
+    fixed_notebook:        local path to the retrieved genuine-fix notebook (fixer only) —
+                           the GitHub reporter diffs this against the original to build PRs/suggestions.
+                           This is the _fixed.ipynb (NOT _fixed_patched.ipynb): it must contain only
+                           the author-facing fix, never preflight scaffolding (gradio/audio/input skips).
     """
     out_dir = Path(results_dir) if results_dir else Path(__file__).parent.parent / "results"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -62,6 +67,8 @@ def write_result(
         payload["docker_image_resolved"] = docker_image_resolved
     if verification_result:
         payload["verification_result"] = verification_result
+    if fixed_notebook:
+        payload["fixed_notebook"] = fixed_notebook
 
     with open(out_file, "w") as f:
         json.dump(payload, f, indent=2)
@@ -80,6 +87,7 @@ def main():
     p.add_argument("--results-dir",           default=None,  help="Override output directory")
     p.add_argument("--agent",                 default="claude_code", help="Agent identity (e.g. claude_code_verify, claude_code_fix)")
     p.add_argument("--verification-result",   default=None,  help="Path to verification result JSON (fixer agent only)")
+    p.add_argument("--fixed-notebook",        default=None,  help="Local path to the retrieved genuine-fix notebook (fixer agent only)")
     args = p.parse_args()
 
     try:
@@ -99,6 +107,7 @@ def main():
         docker_image_resolved=args.docker_image_resolved,
         agent=args.agent,
         verification_result=args.verification_result,
+        fixed_notebook=args.fixed_notebook,
     )
 
     print(str(out_file))

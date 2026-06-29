@@ -6,6 +6,7 @@
 
 # Run artifacts
 results/*.json
+fixes/
 
 # Python
 __pycache__/

@@ -40,6 +40,7 @@ the system prompt appended below.
 | `NOTEBOOK_REMOTE`     | Remote path — already copied, ready to use              |
 | `TOOLS_DIR`           | Absolute path to the shared tools/ directory            |
 | `RESULTS_DIR`         | Where to write the result JSON                          |
+| `FIXES_DIR`           | Local dir to retrieve the genuine-fix notebook into     |
 | `VERIFICATION_RESULT` | Local path to the verification agent's result JSON      |
 
 ---
@@ -253,11 +254,14 @@ For each fix applied to cell N:
 unchanged). The fixer result must be a complete picture because the dashboard
 reads only the latest result per notebook.
 
-**Fixes array:** One entry per `auto_fixable` issue that was attempted:
+**Fixes array:** One entry per `auto_fixable` issue that was attempted. Record
+the full new cell source in `patch` so the GitHub reporter can build a diff
+without re-reading the notebook:
 ```json
 {
   "cell_index": 3,
   "description": "What was changed",
+  "patch": "<the complete new source of cell 3 after the fix>",
   "validated": true
 }
 ```
@@ -267,7 +271,24 @@ reads only the latest result per notebook.
   issues remain (or the manifest sets `expected_result: partial`)
 - `fail` — Any fix failed validation, or unfixable issues remain
 
-### 4c. Write the result
+### 4c. Retrieve the genuine-fix notebook (for the GitHub reporter)
+
+If **at least one** fix validated, copy the genuine-fix notebook back to this
+host so the reporter can diff it and propose the change to authors. Retrieve
+`<nb>_fixed.ipynb` — **NOT** `<nb>_fixed_patched.ipynb`. The `_patched` version
+contains preflight scaffolding (gradio/audio/input skips) that must never be
+shown to tutorial authors; only the genuine fix belongs in a PR.
+
+Do this **before Cleanup** (cleanup deletes the remote file):
+```
+Bash: scp -o StrictHostKeyChecking=no -o ForwardX11=no \
+  <user>@<host>:/home/amd/tutorial_agent_runs/<stem>/<nb>_fixed.ipynb \
+  <FIXES_DIR>/<stem>.ipynb
+```
+(Use the same `<user>@<host>` as in SSH_CMD. If no fix validated, skip this and
+omit `--fixed-notebook` below.)
+
+### 4d. Write the result
 
 ```
 Bash: python3 <TOOLS_DIR>/write_result.py \
@@ -279,8 +300,10 @@ Bash: python3 <TOOLS_DIR>/write_result.py \
   --agent "claude_code_fix" \
   --verification-result "<VERIFICATION_RESULT>" \
   --docker-image-resolved "<image:tag>" \
+  --fixed-notebook "<FIXES_DIR>/<stem>.ipynb" \
   --results-dir "<RESULTS_DIR>"
 ```
+(Omit `--fixed-notebook` if no fix validated in Step 4c.)
 
 After writing the result, print the final status line and stop.
 
