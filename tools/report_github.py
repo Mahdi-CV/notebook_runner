@@ -74,24 +74,35 @@ def _counts_as_pass(payload: dict, expected_partial: bool) -> bool:
 def split_issues(payload: dict) -> tuple[list, list]:
     """Return (pr_fixes, issue_problems).
 
-    pr_fixes        — auto_fixable issues whose fix validated (=> propose via PR)
-    issue_problems  — everything still unresolved (needs_author, infra_blocked,
-                      and auto_fixable that did NOT validate) (=> diagnose via issue)
+    pr_fixes        — the validated fix entries (=> propose via PR). Source of
+                      truth is the retrieved artifact + fixes[], NOT issue↔fix
+                      cell-index correlation: the verify and fix agents do not
+                      always index the same cell the same way, so we key off the
+                      presence of a validated fix + a genuine-fix notebook.
+    issue_problems  — issues still unresolved (=> diagnose via issue):
+                      always needs_author/infra_blocked; plus auto_fixable ONLY
+                      when no validated fix was produced for this notebook.
+
+    Limitation: if a notebook has several auto_fixable issues and the fixer only
+    validated some, we attribute all auto_fixable ones to the PR. The PR diff
+    shows exactly what changed, so a reviewer sees the real scope.
     """
     issues = payload.get("issues") or []
     fixes = payload.get("fixes") or []
-    validated_cells = {f.get("cell_index") for f in fixes if f.get("validated")}
     have_artifact = bool(payload.get("fixed_notebook"))
+    validated_fixes = [f for f in fixes if f.get("validated")]
+    has_validated = bool(validated_fixes) and have_artifact
 
-    pr_fixes, issue_problems = [], []
+    pr_fixes = validated_fixes if has_validated else []
+
+    issue_problems = []
     for iss in issues:
         fixability = iss.get("fixability")
-        is_validated_auto = (
-            fixability == "auto_fixable"
-            and iss.get("cell_index") in validated_cells
-            and have_artifact
-        )
-        (pr_fixes if is_validated_auto else issue_problems).append(iss)
+        if fixability in ("needs_author", "infra_blocked"):
+            issue_problems.append(iss)
+        elif fixability == "auto_fixable" and not has_validated:
+            issue_problems.append(iss)
+        # auto_fixable + has_validated => considered covered by the PR
     return pr_fixes, issue_problems
 
 
@@ -112,8 +123,12 @@ def desired_state(rows_payloads: list[dict]) -> list[dict]:
             "rel_key": r["rel_key"],
             "payload": payload,
             "passes": passes,
-            "want_issue": (not passes) and bool(issue_problems),
-            "want_pr": (not passes) and bool(pr_fixes),
+            # A validated fix is a proposal to make REGARDLESS of whether the
+            # locally-fixed notebook now passes — upstream is still broken until
+            # the PR merges. Issues only for unresolved problems on a notebook
+            # that does not (yet) pass.
+            "want_issue": bool(issue_problems) and not passes,
+            "want_pr": bool(pr_fixes),
             "pr_fixes": pr_fixes,
             "issue_problems": issue_problems,
         })
@@ -173,15 +188,19 @@ def _cell_diff(rel_key: str, fixed_path: str) -> list[str]:
     except (OSError, json.JSONDecodeError, KeyError):
         return ["_(diff unavailable — could not parse notebooks)_"]
 
+    import difflib
     out = []
     for i in range(min(len(orig), len(fixed))):
         o = "".join(orig[i].get("source", []))
         f = "".join(fixed[i].get("source", []))
         if o != f:
-            out += [f"#### Cell {i}", "```diff",
-                    *[f"- {ln}" for ln in o.splitlines()],
-                    *[f"+ {ln}" for ln in f.splitlines()],
-                    "```", ""]
+            diff = difflib.unified_diff(
+                o.splitlines(), f.splitlines(),
+                lineterm="", n=3,
+            )
+            # drop the ---/+++ file headers; keep @@ hunks and +/-/context lines
+            body = [ln for ln in diff if not ln.startswith(("---", "+++"))]
+            out += [f"#### Cell {i}", "```diff", *body, "```", ""]
     return out or ["_(no cell-source differences detected)_"]
 
 
@@ -255,8 +274,10 @@ def reconcile(plans: list[dict], repo: str | None, upstream_checkout: str | None
             action = UPDATE_PR if existing else CREATE_PR
             decisions.append({"stem": stem, "kind": "pr", "action": action,
                               "plan": plan, "existing": existing})
-        # Close side — passing notebook with any open managed artifact
-        if plan["passes"] and publish and repo:
+        # Close side — a notebook that passes as published (no fix to propose,
+        # no unresolved problems) with any open managed artifact.
+        if (plan["passes"] and not plan["want_pr"] and not plan["want_issue"]
+                and publish and repo):
             for kind, is_pr in (("issue", False), ("fix", True)):
                 ex = find_managed(repo, kind, stem, is_pr=is_pr)
                 if ex and ex.get("state") == "OPEN":
