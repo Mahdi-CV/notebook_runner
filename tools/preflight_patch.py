@@ -66,9 +66,40 @@ def _is_trivial_cell(src: str, pattern_re: re.Pattern) -> bool:
 
 
 def patch_notebook_login(src: str) -> tuple[str | None, str | None]:
-    if _NOTEBOOK_LOGIN_RE.search(src) or _NOTEBOOK_LOGIN_IMPORT_RE.search(src):
-        return HF_LOGIN_REPLACEMENT, "Replaced notebook_login() with login(token=os.environ['HF_TOKEN'])"
-    return None, None
+    if not _NOTEBOOK_LOGIN_RE.search(src) and not _NOTEBOOK_LOGIN_IMPORT_RE.search(src):
+        return None, None
+
+    lines = src.splitlines()
+    patched_lines = []
+    login_import_added = False
+
+    for line in lines:
+        stripped = line.strip()
+        # Handle import lines containing notebook_login
+        if _NOTEBOOK_LOGIN_IMPORT_RE.match(stripped):
+            # Extract other imports from the same line
+            # e.g. "from huggingface_hub import notebook_login, HfApi" → keep HfApi
+            match = re.match(r'from\s+huggingface_hub\s+import\s+(.+)', stripped)
+            if match:
+                imports = [s.strip() for s in match.group(1).split(',')]
+                remaining = [i for i in imports if i != 'notebook_login']
+                if remaining:
+                    patched_lines.append(f"from huggingface_hub import {', '.join(remaining)}")
+            if not login_import_added:
+                patched_lines.append("import os")
+                patched_lines.append("from huggingface_hub import login")
+                login_import_added = True
+        # Handle notebook_login() call lines
+        elif _NOTEBOOK_LOGIN_RE.search(stripped):
+            if not login_import_added:
+                patched_lines.append("import os")
+                patched_lines.append("from huggingface_hub import login")
+                login_import_added = True
+            patched_lines.append('login(token=os.environ["HF_TOKEN"])')
+        else:
+            patched_lines.append(line)
+
+    return '\n'.join(patched_lines), "Replaced notebook_login() with login(token=os.environ['HF_TOKEN'])"
 
 
 def patch_input_calls(src: str) -> tuple[str | None, str | None]:

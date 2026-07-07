@@ -90,6 +90,36 @@ def resolve_notebook_config(nb_path, base_dir, manifest, cli_host, cli_user):
             "rel_key": rel_key}
 
 
+def filter_by_max_gpus(notebooks, base_dir, manifest, max_gpus):
+    """Split notebooks into (kept, dropped) by manifest gpus_required <= max_gpus.
+
+    dropped is a list of (path, gpus_required) so the caller can report exactly
+    what was skipped — never silently truncate the run. Notebooks absent from the
+    manifest (or with no gpus_required) default to 1, i.e. runnable on any node.
+    """
+    if max_gpus is None:
+        return list(notebooks), []
+    nbs = manifest.get("notebooks", {})
+    kept, dropped = [], []
+    for nb in notebooks:
+        if base_dir:
+            try:
+                rel_key = str(nb.resolve().relative_to(Path(base_dir).resolve()))
+            except ValueError:
+                rel_key = nb.name
+        else:
+            rel_key = nb.name
+        entry = nbs.get(rel_key) or nbs.get(nb.name) or {}
+        req = entry.get("gpus_required", 1)
+        if req is None:
+            req = 1
+        if req > max_gpus:
+            dropped.append((nb, req))
+        else:
+            kept.append(nb)
+    return kept, dropped
+
+
 def collect_notebooks(directory, category):
     base = Path(directory)
     if not base.exists():
@@ -100,7 +130,11 @@ def collect_notebooks(directory, category):
     if not notebooks:
         print(f"No notebooks found in {base}", file=sys.stderr)
         sys.exit(1)
-    return notebooks
+    # Return resolved absolute paths so nb.relative_to(base_dir.resolve()) works
+    # downstream — matches the positional/gap/failing selectors, which already
+    # resolve. Without this, manifest lookups (skip/expected_result/server/gpus)
+    # silently miss on --dir runs because rel_key falls back to the bare name.
+    return [p.resolve() for p in notebooks]
 
 
 def collect_gap_notebooks(base_dir: Path, category: str | None) -> list[Path]:
@@ -176,7 +210,11 @@ def collect_failing_notebooks(base_dir: Path, category: str | None) -> list[Path
 def scp_notebook(local_path: Path, host: str, user: str) -> str:
     """Copy notebook and preflight_patch.py to remote server. Returns remote path."""
     stem       = local_path.stem
-    remote_dir = f"/home/{user}/tutorial_agent_runs/{stem}"
+    # Fixed workspace base (not /home/{user}) so it matches the literal
+    # /home/amd/tutorial_agent_runs/<stem> paths the agent uses from CLAUDE.md,
+    # regardless of the SSH user. On the amd@ server this is amd's home; as root
+    # on other nodes it is created/cleaned by root.
+    remote_dir = f"/home/amd/tutorial_agent_runs/{stem}"
     remote_path = f"{remote_dir}/{local_path.name}"
     target     = f"{user}@{host}"
     preflight  = TOOLS_DIR / "preflight_patch.py"
@@ -711,6 +749,10 @@ def parse_args():
     p.add_argument("--dir",         help="Run all notebooks under this directory")
     p.add_argument("--manifest",    default=str(HERE / "manifest.yaml"))
     p.add_argument("--category",    choices=["inference", "fine_tune", "pretrain", "gpu_dev_optimize"])
+    p.add_argument("--max-gpus",    type=int, default=None,
+                   help="Only run notebooks whose manifest gpus_required is <= this. "
+                        "Notebooks needing more GPUs are skipped (reported, not failed). "
+                        "Notebooks with no gpus_required in the manifest default to 1.")
     p.add_argument("--log-level",   default="INFO", choices=["DEBUG", "INFO"])
     p.add_argument("--interactive", "-i", action="store_true")
     p.add_argument("--gap", action="store_true",
@@ -778,6 +820,18 @@ def main():
     else:
         print("Error: provide a notebook path or --dir", file=sys.stderr)
         sys.exit(1)
+
+    # Filter by GPU capacity of the target node (e.g. --max-gpus 1 for a 1-GPU box).
+    if args.max_gpus is not None:
+        notebooks, dropped = filter_by_max_gpus(notebooks, base_dir, manifest, args.max_gpus)
+        if dropped:
+            print(f"Skipping {len(dropped)} notebook(s) needing > {args.max_gpus} GPU(s):")
+            for nb, req in sorted(dropped, key=lambda d: d[0].name):
+                print(f"  - {nb.name} (needs {req})")
+            print()
+        if not notebooks:
+            print(f"No notebooks require <= {args.max_gpus} GPU(s). Nothing to do.")
+            sys.exit(0)
 
     # Validate --mode fix requires --verification-result (for single notebooks)
     if args.mode == "fix" and not args.verification_result and len(notebooks) == 1:
