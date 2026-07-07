@@ -9,8 +9,8 @@ One command that runs an automated regression pass and updates the dashboard:
                         in --mode full. Deduped against Phase A so nothing that
                         already ran this pass runs twice.
   Phase C — Dashboard : regenerate STATUS.md from the fresh results.
-  Phase D — Commit    : auto-commit STATUS.md + results/ + manifest.yaml
-                        (skip with --no-commit).
+  Phase D — Commit    : auto-commit STATUS.md + manifest.yaml (results/ is a
+                        gitignored local cache) (skip with --no-commit).
 
 Everything is tee'd to logs/ci_<timestamp>.log.
 
@@ -21,17 +21,28 @@ Usage:
   python3 tools/ci_run.py --skip-gap            # only attack current failures
   python3 tools/ci_run.py --dry-run             # print the plan, run nothing
 
-Scheduling (deferred — pick one once the baseline looks right):
-  - cron on this host (GPU access is via SSH from here):
-      # nightly at 02:17 local
-      17 2 * * *  cd /path/to/notebook_runner && \
-                  ./venv/bin/python tools/ci_run.py >> logs/cron.log 2>&1
-  - systemd timer: an equivalent OnCalendar=*-*-* 02:17 unit calling the same line.
-  - GitHub Actions: only viable with a self-hosted runner that has SSH access to
-    the GPU server plus HF_TOKEN/GPU_HOST/GPU_USER secrets — the GPU box is private.
+Scheduling:
+  The weekly trigger runs this script via the tools/ci_cron.sh wrapper (flock so
+  passes never overlap, output tee'd to logs/). Install the schedule with
+  `crontab -e` and add:
+
+      # weekly notebook regression — Sundays 03:17 local
+      17 3 * * 0  /mnt/c/Users/karchaka/notebook_runner/tools/ci_cron.sh
+
+  The wrapper calls `ci_run.py --push`, so results (STATUS.md + manifest.yaml)
+  are committed and pushed to origin automatically.
+
+  WSL caveat: Linux cron only fires while WSL is running. If the machine is off
+  at the scheduled time the run is silently missed (no catch-up). For a host
+  that sleeps/reboots, drive the wrapper from Windows Task Scheduler instead:
+      wsl.exe bash -lc '/mnt/c/Users/karchaka/notebook_runner/tools/ci_cron.sh'
+
+  Future: a self-hosted GitHub Actions runner (SSH to the GPU box + HF_TOKEN/
+  GPU_HOST/GPU_USER secrets) — required for the PR trigger, optional here.
 """
 
 import argparse
+import os
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -109,10 +120,31 @@ def run_batch(paths: list[Path], base_dir: Path, tee: Tee, dry_run: bool) -> Non
     tee.line(f"[batch finished, run.py exit={rc}]")
 
 
-def git_commit(tee: Tee, ts: str, dry_run: bool) -> None:
-    paths = ["STATUS.md", "results/", "manifest.yaml"]
+def git_push(tee: Tee, dry_run: bool) -> None:
+    """Push the current branch to origin. Non-interactive (BatchMode) so it is
+    safe under cron: never prompts, never hangs. A push failure is logged, not
+    fatal — the pass already succeeded; only publication failed."""
+    if dry_run:
+        tee.line("[push] would: git push origin HEAD")
+        return
+    env = {**os.environ, "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o ConnectTimeout=10"}
+    rc = subprocess.run(
+        ["git", "push", "origin", "HEAD"], cwd=str(REPO_ROOT), check=False,
+        capture_output=True, text=True, env=env,
+    )
+    tee.write(rc.stdout + rc.stderr)
+    tee.line("[push] done" if rc.returncode == 0 else "[push] FAILED (commit is local only)")
+
+
+def git_commit(tee: Tee, ts: str, dry_run: bool, push: bool) -> None:
+    # results/*.json is gitignored (local cache that feeds STATUS.md). The
+    # committed record is the dashboard + manifest; detailed evidence for authors
+    # lives in upstream_prs/ and GitHub issues/PRs, not raw JSON in git history.
+    paths = ["STATUS.md", "manifest.yaml"]
     if dry_run:
         tee.line(f"[dry-run] would: git add {' '.join(paths)} && git commit")
+        if push:
+            git_push(tee, dry_run)
         return
     subprocess.run(["git", "add", *paths], cwd=str(REPO_ROOT), check=False)
     staged = subprocess.run(
@@ -127,7 +159,12 @@ def git_commit(tee: Tee, ts: str, dry_run: bool) -> None:
         capture_output=True, text=True,
     )
     tee.write(rc.stdout + rc.stderr)
-    tee.line("[commit] done" if rc.returncode == 0 else "[commit] FAILED")
+    if rc.returncode != 0:
+        tee.line("[commit] FAILED")
+        return
+    tee.line("[commit] done")
+    if push:
+        git_push(tee, dry_run)
 
 
 def main() -> int:
@@ -140,6 +177,10 @@ def main() -> int:
                    help="Skip Phase A (freshness); only re-attempt current failures.")
     p.add_argument("--no-commit", action="store_true",
                    help="Update STATUS.md/results but do not git commit.")
+    p.add_argument("--push", action="store_true",
+                   help="After committing, push the branch to origin (BatchMode SSH, "
+                        "non-interactive). Intended for the cron trigger; off by default "
+                        "so manual runs stay local.")
     p.add_argument("--dry-run", action="store_true",
                    help="Print the plan and the batches that would run; execute nothing.")
     args = p.parse_args()
@@ -194,7 +235,7 @@ def main() -> int:
         if args.no_commit:
             tee.line("[commit] skipped (--no-commit)")
         else:
-            git_commit(tee, ts, args.dry_run)
+            git_commit(tee, ts, args.dry_run, args.push)
 
         tee.line(f"\nCI pass complete. Log: {logpath}")
 
