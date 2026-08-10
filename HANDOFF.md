@@ -1,400 +1,364 @@
-# Handoff: notebook-runner-agent
+# Handoff — Autonomous Regression Testing for AMD ROCm AI Tutorials
 
-**Owner passing off:** Mahdi Ghodsi (AI Solution Architect, AMD)
-**Taking over:** [intern name]
-**Repo:** https://github.com/Mahdi-CV/notebook_runner
+**Author:** Kalyan Archakam (AI Software Intern)
+**Repo:** `notebook_runner`
+**Active branch at handoff:** `feature/two-agent-verify-fix`
+**Status:** Working end-to-end. 33 of 40 hub tutorials are testable and run on every pass; 18/33 pass end-to-end today.
 
----
-
-## What this is
-
-An autonomous agent that regression-tests AMD ROCm Jupyter notebooks on remote GPU servers. You point it at a notebook, it copies it to a GPU box, runs every cell via papermill inside the correct Docker container, diagnoses failures, attempts fixes, and writes a structured JSON report — all without human input.
-
-The philosophy: **health auditor, not a CI runner**. It surfaces bugs so tutorial authors can fix them. It does not silently patch content errors to make numbers look green.
+This document is the "start here" orientation for whoever picks this up next. It explains what the
+system is, how it was built and why, how to run it, and exactly where to continue. For deep reference
+on individual pieces, this doc points you at the authoritative files (`README.md`, `CLAUDE.md`,
+`CLAUDE_FIX.md`) rather than duplicating them.
 
 ---
 
-## How we got here (read this before anything else)
+## 1. TL;DR — the 60-second version
 
-This project went through two generations. Understanding why matters for understanding what you're working on.
+The AMD AI Tutorial Hub has ~40 Jupyter notebooks. They are not linear scripts; most need
+human-style, multi-step setup (Docker, vLLM servers, model downloads, tool calls). Testing them by
+hand costs ~1–4 hours per notebook, every release. Nothing was automated.
 
-### Generation 1: custom ReAct agent
+This repo is an **agent that regression-tests those notebooks autonomously** on AMD Instinct GPU
+servers over SSH. It runs each notebook as published, decides pass/fail, and produces a structured,
+per-cell report of what broke and whether it is auto-fixable.
 
-The first version was a hand-rolled ReAct loop — the standard AI agent pattern: send prompt → model responds with a tool call → execute the tool → append result → repeat until done. ~2,200 lines across 7 modules:
+It is a **two-agent pipeline**:
 
-```
-run.py        (348 LOC)  — CLI and manifest loading
-agent.py      (437 LOC)  — the ReAct loop itself
-tools.py      (410 LOC)  — 5 custom tools with JSON schemas
-context.py    (179 LOC)  — message history, context window trimming
-llm.py         (83 LOC)  — HTTP client for AMD's LLM gateway
-events.py      (71 LOC)  — event bus for the dashboard
-dashboard.py  (104 LOC)  — Flask/SSE real-time browser UI
-SKILL.md      (267 LOC)  — the actual playbook (what the agent should do)
-```
+1. **Verify agent** (playbook: `CLAUDE.md`) — runs the notebook once, diagnoses failures, classifies
+   each issue. Never fixes.
+2. **Fix agent** (playbook: `CLAUDE_FIX.md`) — applies only the mechanically-fixable issues, re-runs
+   once to validate, reports. Never re-diagnoses.
 
-It worked. Benchmarked against 24 AMD ROCm notebooks: **25% pass rate, 23 issues found, 8 validated fixes**.
+A launcher (`run.py`) spawns each agent as a headless Claude Code process. Results are JSON in
+`results/`, rolled up into `STATUS.md`, and optionally reported to GitHub as issues (content bugs) and
+PRs (validated fixes).
 
-The problem: roughly 1,300 of those 2,200 lines — the loop, the tool schemas, the XML parser, the context trimmer, the HTTP client — solve problems that are not specific to our notebooks at all. That's infrastructure overhead.
-
-### Generation 2: this repo
-
-The second version replaces the entire custom loop with Claude Code's headless mode. `run.py` builds a prompt, calls `claude -p` as a subprocess, and reads the result file. Claude Code handles the loop, tool execution, context management, and streaming internally.
-
-Same benchmark, 24 notebooks: **48% pass rate, 68 issues found, 15 validated fixes**.
-
-```
-CLAUDE.md    (386 LOC)  — the full playbook (equivalent to the original SKILL.md)
-run.py       (533 LOC)  — subprocess launcher + stream-json parser + result collector
-tools/resolve_docker_image.py  — Docker Hub API (called by the agent via Bash)
-tools/write_result.py          — JSON result writer (called by the agent via Bash)
-```
-
-No custom loop. No tool schemas. No XML parser. No context trimmer. No HTTP client.
-
-The jump in results comes from two things: a stronger underlying model (Claude vs the previous gateway model), and a playbook that enforces two independent checks per failing cell instead of stopping at the first issue found.
-
-### What the benchmark proved
-
-The custom infrastructure was not the bottleneck. The playbook and the model were. That is the central lesson, and it's why the playbook (`CLAUDE.md`) is the most important file in this repo — not the launcher.
-
-The full benchmark writeup, including case studies and a head-to-head table, lives in the original `team-agents` repo under `docs/lessons-learned-agents-comparison.md`.
+**Guiding principle: this is a health auditor, not a CI runner.** It surfaces content bugs to tutorial
+authors instead of silently patching notebooks green and shipping hidden defects to users.
 
 ---
 
-## Architecture
+## 2. How we got here (design history — read this before changing the architecture)
 
-### The mental model
+The two-agent design is not arbitrary. It's the result of testing three approaches against the same 5
+notebooks, then scaling:
 
-Every agentic project of this type has the same shape:
+| Approach | Result | Problem |
+|---|---|---|
+| **Manual testing** | 2/5 passed end-to-end | ~1–4 hrs/notebook, not scalable |
+| **Naive single agent** (Claude Code, no structure) | 4/5 reported pass | 2 were **false positives** — it green-washed |
+| **Prior single-agent** (baseline it was forked from) | 2/5 passed (+1 partial) | Flags problems but **misdiagnoses cause** and keeps applying wrong fixes |
 
-```
-[List of items to process]
-    │
-    ▼  for each item:
-    │
-    ├─ deterministic steps  →  scripts (tools/)
-    └─ variable-depth reasoning  →  Claude Code agent (CLAUDE.md)
-            │
-            ▼
-    [Structured output per item]  →  results/*.json
-```
+Neither manual nor a naive agent was reliable *or* scalable.
 
-The separator between deterministic and reasoning is the most important design decision. Get it wrong and you either over-build the scripts (too rigid) or under-build them (the agent inventing schemas on every run).
+The single-agent baseline was then run across all 33 testable notebooks → **48.5% baseline pass rate
+(16/33)**. Improvements applied at that stage: two independent checks per failing cell (structural +
+code-quality), better timeouts, a hardened docker-image resolver, and a single fix cycle (no
+recursion).
 
-**In this project:**
+**The failure mode that forced two agents:** one agent doing verify *and* fix would lose context at
+the fixing stage, hallucinate, and fix the wrong issue. Refining the playbook helped but not enough.
+The fix was **separation of concerns**:
 
-| Step | Type | Where it lives |
-|------|------|---------------|
-| Copy notebook to GPU server | Deterministic | `run.py` (SCP) |
-| Resolve latest Docker image tag | Deterministic, external API | `tools/resolve_docker_image.py` |
-| Read notebook cells, identify execution pattern | Reasoning | `CLAUDE.md` Phase 0 |
-| Run notebook via papermill | Deterministic shell | `CLAUDE.md` Phase 1 (agent uses Bash tool) |
-| Diagnose cell failures, classify error types | Reasoning | `CLAUDE.md` Phase 2 |
-| Apply patches, validate fixes | Reasoning + shell | `CLAUDE.md` Phase 3 |
-| Write JSON result | Deterministic, fixed schema | `tools/write_result.py` |
+- Verify agent diagnoses only → can't green-wash.
+- Fix agent repairs only, and only issues the verifier already classified as `auto_fixable` → can't
+  invent problems.
 
-### The files and what they do
-
-**`CLAUDE.md` — the playbook**
-
-This is the agent's system prompt. Claude reads it automatically when the session starts. It defines:
-- What the agent is and what it must never do
-- What runtime variables are available (SSH commands, paths, hardware)
-- The exact 3-phase workflow, step by step, with explicit commands
-- The 4 allowed pre-flight patches (everything else is a reported bug, not a fix)
-- Hard rules that override everything else
-
-If you want to change how the agent behaves, you edit this file. Not `run.py`. Not a Python config. This file.
-
-**`run.py` — the launcher**
-
-Pure plumbing. It does four things:
-1. Reads `.env` and `manifest.yaml` (if present) to get server config for this notebook
-2. Copies the notebook to the GPU server via SCP
-3. Builds the task prompt + runtime context block and spawns `claude -p` as a subprocess
-4. Parses the `stream-json` output to print live progress, then reads the result JSON the agent wrote
-
-There is no reasoning logic in `run.py`. If you find yourself adding if/else branches about what the agent should do, that logic belongs in `CLAUDE.md`.
-
-**`tools/resolve_docker_image.py` — Docker Hub resolver**
-
-Queries the Docker Hub API for the latest image tag matching the target AMD hardware. Called by the agent via the Bash tool:
-
-```bash
-python3 tools/resolve_docker_image.py rocm/pytorch mi300x
-# → rocm/pytorch:rocm6.3.1_ubuntu22.04_py3.10_pytorch
-```
-
-Hardware mappings: `mi300x`/`mi308x` → `mi30x` tag suffix; `mi355x`/`mi350x` → `mi35x`. The agent always resolves the tag at runtime — never trusts what the notebook itself says, because notebooks go stale.
-
-**`tools/write_result.py` — result writer**
-
-Writes the structured JSON result file to `results/`. The agent always calls this at the end, even on failure. This is what makes results machine-readable and aggregatable downstream.
-
-The schema is fixed and validated inside the script. The agent cannot write a malformed result even if its reasoning goes wrong.
-
-**`.claude/settings.json` — permissions**
-
-Restricts the agent to exactly five tools: `Bash`, `Read`, `Write`, `Glob`, `Grep`. The agent cannot browse the web, call external APIs directly, or do anything outside those five primitives. This is the safety boundary for headless autonomous operation.
-
-The `--dangerously-skip-permissions` flag used in `run.py` skips interactive confirmation prompts — it does NOT bypass these deny rules. Deny rules always apply.
-
-### How the agent executes
-
-When `run.py` spawns `claude -p`, the following happens entirely inside Claude Code:
-
-**Phase 0 — Read and Plan**
-- Reads every cell of the notebook locally with the `Read` tool
-- Identifies the execution pattern based on cell content (not just markdown headers):
-  - Pattern A: GPU libraries imported (torch, vllm, etc.) → papermill inside Docker
-  - Pattern B: explicit server+client split (`docker run -d` in markdown) → server in Docker background, client cells on host Python
-  - Pattern C: `%%bash` cell contains `docker run -d` → run that bash directly, poll health
-  - Pattern D: no Docker → papermill on host Python
-- Resolves the correct Docker image tag via `resolve_docker_image.py`
-
-**Phase 1 — Baseline Run**
-- Applies exactly 4 allowed pre-flight patches (no others):
-  1. `notebook_login()` → `login(token=os.environ["HF_TOKEN"])`
-  2. `input()` calls → static stub value
-  3. Gradio `launch()` cells → skip
-  4. Audio playback cells → skip
-- Runs the notebook exactly once via papermill inside Docker
-- If it fails for a content reason, that failure is the result — no retry, no workaround
-
-**Phase 2 — Analysis**
-For every failing cell, performs two independent checks — both are mandatory:
-- Check 1 (structural): does the cell block sequential execution? (foreground server, `input()`, GUI) → `content_error`
-- Check 2 (code quality): is there a deprecated API, version mismatch, or missing dependency, independent of the structural issue? → `deprecated_api`, `version_incompatibility`, `missing_dependency`
-
-The two-check discipline is why this agent finds 3× more issues than the previous one. A cell that hangs because of a foreground server may also be using a deprecated CLI flag. Both get reported.
-
-**Phase 3 — Fix and Validate**
-- Writes a patched notebook to `_patched.ipynb` on the remote server
-- Re-runs Docker with the patched notebook
-- Marks each fix `validated: true` or `validated: false`
-- One fix cycle per run — no recursion
+Each agent has a focused, auditable playbook. This is why behavior lives in `CLAUDE.md` /
+`CLAUDE_FIX.md`, **not** in `run.py`. Keep it that way.
 
 ---
 
-## The manifest and why it exists
+## 3. Architecture
 
-`manifest.yaml` is the per-item configuration file. It answers: what varies across notebooks or environments, that shouldn't be hardcoded?
+```
+                         run.py  (launcher / CLI)
+                            │  reads manifest.yaml (server · hardware · skips · expected result)
+                            │  runs tools/env_check.py first (fail fast)
+                            ▼
+        ┌──────────────────────────────┐        ┌──────────────────────────────┐
+        │  VERIFY AGENT (CLAUDE.md)     │        │  FIX AGENT (CLAUDE_FIX.md)    │
+        │  "The Diagnostician"          │  ───▶  │  "The Surgeon"                │
+        │  • read all cells, ID pattern │  only  │  • load verification result   │
+        │  • apply 4 pre-flight patches │  if    │  • filter to auto_fixable     │
+        │  • run notebook ONCE          │  fail  │  • validate version pins in   │
+        │  • 2 checks: structural +     │        │    the real Docker image      │
+        │    code quality               │        │  • apply + run patched nb once│
+        │  • classify fixability        │        │  • validate + report          │
+        └───────────────┬──────────────┘        └───────────────┬──────────────┘
+                        │ result JSON                            │ result JSON
+                        ▼                                        ▼
+                     results/*.json  ──▶  tools/status.py ──▶  STATUS.md (dashboard)
+                                     └──▶  tools/report_github.py ──▶ GitHub issues + fix PRs
 
-The agent's reasoning rules go in `CLAUDE.md`. But things like "this specific notebook needs a different server," "this notebook is known-broken upstream so partial is acceptable," "skip this one because it requires hardware we don't have" — those are configuration, not reasoning. They go in the manifest.
-
-```yaml
-servers:
-  mi300x-primary:
-    host: gpu1.example.com
-    user: amd
-    hardware: mi300x
-  mi308x-secondary:
-    host: gpu2.example.com
-    user: amd
-    hardware: mi308x
-
-notebooks:
-  inference/vllm_v1_DSR1.ipynb:
-    server: mi300x-primary
-    expected_result: partial     # partial counts as passing for this notebook
-    notes: "Known issue: huggingface_hub 1.x breaks CLI entrypoint"
-
-  fine_tune/huge_model.ipynb:
-    skip: true
-    skip_reason: "Requires 8x GPU, not available on current test server"
-
-  inference/my_notebook.ipynb:
-    server: mi308x-secondary
-    docker_overrides:
-      "rocm/pytorch:rocm6\\.3.*": "rocm/pytorch:rocm6.2.4_ubuntu22.04_py3.10_pytorch"
+  Shared tools (tools/):  resolve_docker_image.py · env_check.py · preflight_patch.py · write_result.py
+  CI:  tools/ci_run.py (4-phase pass)  ←  tools/ci_cron.sh (weekly, flock-guarded)
 ```
 
-`run.py` reads the manifest before doing anything. Notebooks marked `skip: true` never touch the LLM. Per-notebook server config overrides `.env`. `expected_result: partial` tells the launcher to treat partial as pass in the final summary.
+### Execution phases inside the verify agent
+- **Phase 0 (env_check):** cheap pre-flight — HF token access to gated models, GPU count vs required,
+  disk space. Blocks the run early on unwinnable cases.
+- **Phase 1 (baseline run):** classify the notebook's execution pattern (A: papermill in Docker; B:
+  server+client split; C: notebook launches Docker itself; D: host Python), apply the **only 4
+  allowed pre-flight patches**, then run **once**. No retries on content failures.
+- **Phase 2 (analysis):** for every failed/timed-out cell, do **two independent checks** —
+  structural (does it block sequential execution?) and code-quality (deprecated API, version
+  mismatch, missing dep?). Report all findings, not just the first.
 
-The manifest is gitignored because it's environment-specific — different people have different servers. When you set up your environment, create your own.
+### Fixability classification (routes the fixer)
+- `auto_fixable` → fixer attempts it (version pin, import rename, flag update, clear API migration).
+- `needs_author` → raised as an issue for the human author (placeholder content, redesign, foreground
+  server, unknown replacement API).
+- `infra_blocked` → reported, not fixable in the notebook (missing system package, wrong GPU count,
+  base-image bug).
+
+The four allowed pre-flight patches (and nothing else) are: `notebook_login()` → `login(token=...)`,
+`input()` → static value/skip, Gradio launch → skip, audio playback → skip. Everything else is a
+content bug and gets reported. See `CLAUDE.md` "HARD RULES" for the exact list.
 
 ---
 
-## Repo layout
+## 4. Repo layout
 
 ```
-notebook-runner-agent/
-├── CLAUDE.md              # The agent playbook — the source of truth for agent behavior
-├── run.py                 # Launcher: SCP → spawn claude → parse stream-json → read result
+notebook_runner/
+├── run.py                 # Launcher/CLI. Spawns claude headless. Modes: verify | fix | full.
+├── CLAUDE.md              # VERIFY agent playbook (source of truth for verify behavior)
+├── CLAUDE_FIX.md          # FIX agent playbook (source of truth for fix behavior)
+├── README.md              # Current, authoritative usage reference
+├── HANDOFF.md             # This file
+├── STATUS.md              # Auto-generated dashboard (do not hand-edit)
+├── manifest.yaml          # Per-notebook config: server, hardware, skip, expected_result, notes
+├── .env                   # GPU_HOST, GPU_USER, HF_TOKEN  (gitignored; copy from .env.example)
 ├── tools/
-│   ├── resolve_docker_image.py  # Docker Hub tag resolution for AMD hardware
-│   └── write_result.py          # Structured JSON result writer
-├── .claude/settings.json  # Permitted tools: Bash, Read, Write, Glob, Grep
-├── .env.example           # Documents required secrets
-├── .gitignore
-└── results/               # JSON result files land here (gitignored)
+│   ├── env_check.py           # Phase-0 pre-flight checks (token/GPU/disk)
+│   ├── resolve_docker_image.py# Resolve latest repo:tag from Docker Hub for a hardware family
+│   ├── preflight_patch.py     # Applies exactly the 4 allowed patches, prints JSON report
+│   ├── write_result.py        # Writes results/<stem>_<ts>.json
+│   ├── status.py              # Aggregates results → STATUS.md; also --gap / --failing / --json
+│   ├── ci_run.py              # 4-phase CI pass (freshness → failures → dashboard → commit)
+│   ├── ci_cron.sh             # Weekly cron wrapper (flock, venv, logging, --push)
+│   └── report_github.py       # Reconciles results ↔ GitHub issues/PRs (idempotent, marker-based)
+├── notebooks/             # Local copies of the hub notebooks under test (by category)
+│   ├── inference/  fine_tune/  pretrain/  gpu_dev_optimize/
+├── results/               # One JSON per (notebook, run). status.py reads the latest per stem.
+├── fixes/                 # Genuine fixed notebooks (_fixed.ipynb) retrieved for PR diffs
+├── logs/                  # Run logs, CI logs, github_preview/ (dry-run PR/issue bodies)
+└── upstream_prs/          # Scratch/notes for upstream PR work
 ```
+
+There is **no `.github/` directory** — CI is a local cron job (`tools/ci_cron.sh`), not GitHub
+Actions. That is intentional: the runner needs the GPU server and a Gateway-certified Claude on the
+same machine (see §9).
 
 ---
 
-## How to set it up
+## 5. Setup
 
+**Requirements**
+- Python 3.10+ with `pyyaml` and `python-dotenv` (a `venv/` already exists in the repo).
+- **Claude Code CLI** on PATH (`claude`). `run.py` spawns it headless with
+  `--dangerously-skip-permissions --output-format stream-json --max-turns 200`. In production this
+  must be an **AMD Gateway-certified Claude** (see §9).
+- SSH access to an AMD Instinct GPU server (key-based, no password prompts).
+- `gh` CLI authenticated (`gh auth login`) — only needed for GitHub reporting.
+
+**Configure**
 ```bash
-git clone https://github.com/Mahdi-CV/notebook_runner.git
-cd notebook_runner
-
-pip install python-dotenv pyyaml
-
 cp .env.example .env
-# Fill in:
-#   GPU_HOST — hostname or IP of the AMD GPU server
-#   GPU_USER — SSH username (must have Docker access)
-#   HF_TOKEN — HuggingFace token for gated model downloads
+# then fill in:
+#   GPU_HOST=<ip-or-host>
+#   GPU_USER=<ssh-user>
+#   HF_TOKEN=<huggingface-token>   # for gated model downloads
+source venv/bin/activate
 ```
 
-You need SSH key-based access to the GPU server already configured. Test with:
-```bash
-ssh $GPU_USER@$GPU_HOST 'echo ok'
-```
-If that requires a password, set up key-based auth first.
-
-You also need the `claude` CLI. As an AMD employee you already have this configured through the AMD company offering — the CLI routes through AMD's internal LLM gateway using environment variables set in your shell profile. Verify:
-
-```bash
-claude --version
-claude -p "say hello"   # should respond without any auth error
-```
-
-If either fails, the AMD Claude env vars are not active in your current shell. Check your `.bashrc` / `.zshrc`, or ask Mahdi.
+The workspace on the server is always `/home/amd/tutorial_agent_runs/<stem>/`, regardless of SSH
+user, because the playbooks reference that literal path. `run.py` scp's the notebook and
+`preflight_patch.py` there before each run.
 
 ---
 
-## How to run it
+## 6. How to run it
 
 ```bash
-# Single notebook — fully autonomous
-python3 run.py path/to/notebook.ipynb
+# One notebook, full pipeline (verify, then fix if it failed):
+python run.py notebooks/inference/foo.ipynb
 
-# All notebooks in a directory
-python3 run.py --dir /path/to/notebooks/
+# Verify only (diagnosis, no fixing):
+python run.py notebooks/inference/foo.ipynb --mode verify
 
-# Filter to one category
-python3 run.py --dir /path/to/notebooks/ --category inference
+# Fix only, from a prior verification result:
+python run.py notebooks/inference/foo.ipynb --mode fix --verification-result results/foo_<ts>.json
 
-# Override server for a single run
-python3 run.py path/to/notebook.ipynb --host gpu1.example.com --user amd
+# A whole directory / one category:
+python run.py --dir notebooks/ --category inference
 
-# Interactive mode — opens a live Claude session with runtime context pre-loaded
-# Good for debugging a specific notebook
-python3 run.py path/to/notebook.ipynb --interactive
+# Only the work that matters:
+python run.py --dir notebooks/ --gap       # never-tested or stale (>7d)
+python run.py --dir notebooks/ --failing   # latest result is a hard fail
+
+# Node capacity filter (skip notebooks needing more GPUs than the node has):
+python run.py --dir notebooks/ --max-gpus 1
+
+# Point at a specific server (overrides .env / manifest):
+python run.py notebooks/inference/foo.ipynb --host <ip> --user root
+
+# Interactive (opens a full Claude session with the runtime context loaded):
+python run.py notebooks/inference/foo.ipynb -i
 ```
 
-**Categories:** `inference` | `fine_tune` | `pretrain` | `gpu_dev_optimize`
+**Modes:** `verify` = diagnosis only · `fix` = apply fixes from a prior result · `full` = verify then
+fix (default; fix only runs if verify didn't pass and there are `auto_fixable` issues).
+
+### CI (automated passes)
+```bash
+python tools/ci_run.py            # full 4-phase pass, commit locally
+python tools/ci_run.py --push     # + push to origin (used by cron)
+python tools/ci_run.py --dry-run  # print the plan, run nothing
+```
+Phases: **A** freshness (gap set) → **B** current failures → **C** regenerate `STATUS.md` → **D**
+commit (`--push` to push). The weekly cron wrapper `tools/ci_cron.sh` adds a `flock` guard (fine-tune
+notebooks can run for hours, so overlapping passes must be prevented), venv resolution, and logging to
+`logs/cron_<ts>.log`. Install it via `crontab -e`; on WSL that only fires while WSL is running, so use
+Windows Task Scheduler (`wsl.exe bash -lc '.../tools/ci_cron.sh'`) if the box sleeps.
+
+### Status & reporting
+```bash
+python tools/status.py                 # print dashboard;  --write updates STATUS.md
+python tools/status.py --gap|--failing # work-order lists (paths, one per line)
+
+python tools/report_github.py --mode audit                       # dry-run; previews in logs/github_preview/
+python tools/report_github.py --mode audit --repo AMD-ROCm-Internal/gpuaidev-internal \
+    --upstream-checkout <checkout-of-gpuaidev-internal> --publish  # create/update/close issues + PRs
+```
+The GitHub reporter is idempotent: every artifact carries a hidden marker
+(`<!-- agent-managed: issue:STEM -->`), so re-runs update the existing issue/PR instead of duplicating.
+Issues = content bugs for authors; PRs (branch `agent/fix/<stem>`) = validated fixes; both auto-close
+when the notebook starts passing.
 
 ---
 
-## Reading the output
+## 7. The manifest (`manifest.yaml`)
 
-Result files land in `results/` as `{notebook_stem}_{timestamp_UTC}.json`:
+Per-notebook config the launcher reads. Top-level keys: `servers` (named host/hardware defs) and
+`notebooks` (path → metadata). Supported notebook fields:
+
+- `server` — named entry from the `servers` block (sets host/user/hardware).
+- `hardware_required` — list, e.g. `[mi300x]` or `[mi355x, mi350x]`.
+- `gpus_required` — integer; used by `--max-gpus` filtering (default 1 if absent).
+- `expected_result: partial` — a "partial" outcome counts as passing (for notebooks with genuinely
+  untestable cells, e.g. a final Gradio UI).
+- `skip: true` + `skip_reason: "..."` — exclude from runs (report, don't fail).
+- `docker_overrides` — regex→replacement map applied to image tags (rarely needed; resolver handles
+  the common case).
+- `notes` — free-form, surfaced into the agent prompt (external services, known untestable cells,
+  large-model warnings).
+
+Docker images are **never** taken from the notebook. The agent always calls
+`resolve_docker_image.py <repo> <hardware>` and uses that exact tag. Repos: `rocm/pytorch` (torch/
+transformers/diffusers), `vllm/vllm-openai-rocm` (vLLM), `lmsysorg/sglang` (SGLang).
+
+---
+
+## 8. Result JSON & where the numbers come from
+
+Each run writes `results/<stem>_<ISO-timestamp>.json`. `status.py` keeps the **latest per stem**.
+Shape (see `tools/write_result.py`):
 
 ```json
 {
-  "notebook": "/path/to/rag_ollama_llamaindex.ipynb",
-  "status": "pass",
-  "summary": "The notebook builds a RAG pipeline using LlamaIndex and Ollama. Phase 1 failed at cell 6 (systemctl hang) and cell 19 (flatbuffers PEP 440 error). Both were fixed and validated in Phase 3. All 47 cells ran to completion.",
-  "issues": [
-    {
-      "cell_index": 6,
-      "error_type": "content_error",
-      "description": "Cell uses sudo systemctl start ollama — hangs when Ollama is already running on port 11434.",
-      "proposed_fix": "Replace with !ollama list to verify Ollama is running without relying on systemd."
-    },
-    {
-      "cell_index": 19,
-      "error_type": "version_incompatibility",
-      "description": "pip install chromadb blocked by system flatbuffers with a non-PEP 440 version string, rejected by pip 24.1+.",
-      "proposed_fix": "Add --ignore-installed flatbuffers to the pip install command."
-    }
-  ],
-  "fixes": [
-    {"description": "Replaced systemctl cell with !ollama list", "validated": true},
-    {"description": "Added --ignore-installed flatbuffers to pip install chromadb", "validated": true}
-  ],
-  "timestamp": "2026-03-22T20:07:20.511678",
-  "agent": "claude_code"
+  "notebook": "notebooks/inference/foo.ipynb",
+  "status": "pass | fail | partial",
+  "summary": "one paragraph: what ran, what broke",
+  "issues": [{"cell_index": 8, "error_type": "deprecated_api",
+              "description": "...", "proposed_fix": "...", "fixability": "auto_fixable"}],
+  "fixes":  [{"cell_index": 8, "fix_description": "...", "patch": "...", "validated": true}],
+  "docker_image_resolved": "vllm/vllm-openai-rocm:v0.23.0",
+  "agent": "claude_code_verify | claude_code_fix",
+  "timestamp": "..."
 }
 ```
 
-| Status | Meaning |
-|--------|---------|
-| `pass` | All cells ran, or all fixable errors were validated |
-| `fail` | Errors remain that could not be fixed |
-| `partial` | Some fixed, some remain (used with `expected_result: partial` in manifest) |
-
-| Error type | Meaning |
-|------------|---------|
-| `content_error` | Cell blocks sequential execution (foreground server, `input()`, GUI, audio) |
-| `deprecated_api` | Uses an API the library has deprecated or removed |
-| `version_incompatibility` | Package version mismatch or non-standard version string |
-| `missing_dependency` | Package not installed in the container |
+**Impact at handoff (from `STATUS.md`):** 0% of tutorials were automatically tested before this; now
+**33 of 40** are tested on every run. **54.5% pass end-to-end (18/33)** — those 18 are ready for
+end-users. Of the 15 that fail, 14 need author intervention (which the agent raises) and 1 the agent
+auto-fixes. **Determinism was verified: running any notebook 20× gives the same verdict.**
 
 ---
 
-## How to change agent behavior
+## 9. What's next / path to production (the ask)
 
-Edit `CLAUDE.md`. That is the complete answer.
+**The production goal is to run this agent continuously against the internal tutorials repo,
+`AMD-ROCm-Internal/gpuaidev-internal`** (the internal staging of the public `ROCm/gpuaidev` AI
+Developer Hub), so every tutorial is regression-tested on a schedule and every content bug is filed
+against that repo before it reaches users.
 
-The launcher (`run.py`) is plumbing. The tools are deterministic scripts with fixed schemas. All reasoning logic — what execution patterns to look for, what patches are allowed, what counts as a content error vs a code quality issue, how many fix cycles to attempt — lives in `CLAUDE.md`.
+Getting there needs infrastructure decisions that are above the code:
 
-Specific cases:
-- Add a new execution pattern → add a Pattern E section to `CLAUDE.md`
-- Allow an additional pre-flight patch → add it to the Hard Rules section in `CLAUDE.md`
-- Change timeout values → update the timeout table in `CLAUDE.md`
-- Add a new error type → update the Phase 2 section and the `--status` choices in `tools/write_result.py`
-- Support a new Docker registry → add it to `tools/resolve_docker_image.py`
-- Support a new hardware target → add it to the `_HW_TAG` dict in `tools/resolve_docker_image.py`
+1. **A contracted node dedicated to the CI runner** for this agent.
+2. **A Gateway-certified Claude installed on that node** — `run.py` spawns Claude Code, so the CI box
+   needs an approved Claude install.
+3. **The node's IP allow-listed in the `AMD-ROCm-Internal` org** (needs org-level approval) so the
+   agent can pull `gpuaidev-internal` and the reporter can open issues/PRs against it.
+4. **More hardware** for the 7 non-testable tutorials: notebooks that don't run on MI300X (Radeon
+   Cloud, MI355X, multi-node) and GUI/Gradio/browser-only notebooks that need a headed harness.
 
----
+All four are required before the agent can run against `gpuaidev-internal` unattended; until then it
+runs manually against local copies of the notebooks.
 
-## Debugging a run
+**Where it goes after that:**
+- Gate new tutorial proposals: require a CI pass before human review (already used on 2 notebooks that
+  were verified, fixed, and published).
+- Extend to AI Academy notebooks (minimal agent changes) to catch outages before Discord does.
+- Scale across the full catalog and additional repos.
 
-**Agent didn't write a result file:**
-Run with `--interactive`. The runtime context is pre-loaded, so you can step through the playbook manually or ask Claude what it would do next.
-
-**SSH / SCP failures:**
-Confirm `ssh $GPU_USER@$GPU_HOST 'echo ok'` works without a password prompt. The launcher retries SCP 3 times — if all 3 fail, check connectivity and key-based auth.
-
-**Docker image not found:**
-```bash
-python3 tools/resolve_docker_image.py rocm/pytorch mi300x
-python3 tools/resolve_docker_image.py vllm/vllm-openai-rocm mi300x
-```
-If this returns `ERROR`, the hardware name spelling is wrong or Docker Hub is unreachable. Valid hardware names: `mi300x`, `mi308x`, `mi355x`, `mi350x`.
-
-**Agent hit max turns (200):**
-Usually means a hanging cell (foreground server, very long training run) or the agent retrying an infrastructure issue. Check the partial output in the terminal. You can increase `--max-turns` in `run.py` line 373 or use `--interactive` to investigate.
-
-**Cost is higher than expected:**
-A typical run is 30–80 turns. Near-200 turns means the agent worked hard or got stuck. Check `num_turns` in the result JSON. Fine-tuning notebooks legitimately need more turns due to longer waits.
+Concrete near-term code work if you want to keep improving the agent itself:
+- Parallelize runs across multiple GPU nodes (currently sequential).
+- `report_github.py` `pr-comment` mode (stubbed; only `audit` exists today).
+- Tighten fixer version-pin validation and broaden `auto_fixable` coverage where it's safe.
 
 ---
 
-## What to work on next
+## 10. A worked example: the tutorial authored *with* the agent
 
-The agent is validated against 30+ AMD ROCm notebooks. The areas most ready for extension:
+A new inference tutorial was written and validated using this pipeline and is up for review to
+publish to the AI Developer Hub: **"Graph Engineering with OpenClaw: a Multi-Agent Incident Triage
+System."** It is maintained outside this repo and submitted through the normal hub review process.
 
-**Parallelism** — the architecture is already designed for it. Each agent run is one subprocess processing one notebook and writing to its own result file. Running N notebooks simultaneously is a `ThreadPoolExecutor` wrapping the existing `run_notebook()` call. The only constraint is Docker container name conflicts on a single GPU server — use the manifest to route different notebooks to different servers.
-
-**Result aggregation** — results are individual JSON files. There is no dashboard or batch summary report. A simple script that reads all JSONs, groups by status, and outputs a markdown table would be immediately useful.
-
-**Scheduled runs** — nothing triggers this automatically. A cron job or CI pipeline calling `run.py --dir` on a schedule is the natural next step. The result files are already structured for this.
-
-**Notification** — no Slack, email, or JIRA integration when a notebook fails. The result JSON has everything needed to file a ticket or send a message.
-
-**memory.md** — the agent currently has no persistent memory across runs. Adding a `memory.md` would let it accumulate known infrastructure facts (Docker images that fail on this server, ROCm driver versions, known-broken upstream packages) and avoid re-diagnosing the same infrastructure issues on every run.
+It's a useful reference for two reasons: (a) it's an example of the agent catching real content bugs
+during authoring (version drift in OpenClaw 2026.7.1-2 — installer TUI, gateway process-name change,
+lean-mode hiding spawn tools, a workspace sandbox), and (b) it shows the hub's expected structure
+(Prerequisites with Hardware/Software subsections, AMD Developer Cloud credits, numbered Parts). If you
+extend the agent to *gate* new tutorials, this notebook is a good end-to-end test case.
 
 ---
 
-## Who to ask
+## 11. Debugging a run (quick reference)
 
-Mahdi Ghodsi — for architecture questions, the history of decisions, or if something is fundamentally broken.
+- **SSH hangs / drops:** the agent redirects stdin for background processes; if you see hangs, check
+  the `SSH_CMD` flags and that key-based auth works non-interactively.
+- **`env_check` blocked the run:** the result JSON says why (token/GPU/disk). Fix the environment or
+  use `--skip-env-check` for development only.
+- **Agent finished but no result file:** it hit `--max-turns` (200) or crashed; check the run log in
+  `logs/` and the stream-json output.
+- **Wrong Docker image:** never hand-set it; confirm `resolve_docker_image.py <repo> <hardware>`
+  returns a sane tag. `:latest` is a rule violation.
+- **Behavior is wrong:** edit the **playbooks** (`CLAUDE.md` for verify, `CLAUDE_FIX.md` for fix), not
+  `run.py`. `run.py` only wires context and streams output; all reasoning lives in the playbooks.
 
-The full design context — the pattern, the component decisions, the benchmark data, the field guide for building new agents — is in the `team-agents` repo under `docs/`. Start with `agentic-projects-field-guide.md`.
+---
 
-For everything else, the answer is in `CLAUDE.md`.
+## 12. Where to continue — a checklist for the next person
+
+1. Read `README.md` (authoritative usage), then `CLAUDE.md` and `CLAUDE_FIX.md` (the two playbooks —
+   this is where all agent behavior is defined).
+2. `source venv/bin/activate`, fill in `.env`, confirm `claude` is on PATH and SSH to the GPU box works.
+3. Run one notebook end-to-end: `python run.py notebooks/inference/build_airbnb_agent_mcp.ipynb`.
+4. Regenerate the dashboard: `python tools/status.py --write` and read `STATUS.md`.
+5. Do a dry-run report: `python tools/report_github.py --mode audit` and inspect `logs/github_preview/`.
+6. Pick up production work from §9 (contracted node + Gateway-certified Claude + IP allow-list) and/or
+   the code work at the end of §9.
+
+If in doubt: the philosophy is **surface bugs to authors, never green-wash**. Every issue you hide is
+a defect that ships to users.

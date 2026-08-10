@@ -21,8 +21,6 @@
 # ---------------------------------------------------------------------------
 servers:
   mi300x-primary:
-    host: YOUR_GPU_SERVER_HOST
-    user: amd
     hardware: mi300x
 
 # ---------------------------------------------------------------------------
@@ -53,6 +51,10 @@ notebooks:
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 1
+    notes: >
+      Use rocm/pytorch (not rocm/pytorch-training) — notebook has its own pip install
+      cells with --index-url pointing to pytorch.org wheels. Using pytorch-training
+      masks version incompatibility bugs because packages are pre-bundled.
 
   inference/deepseekr1_sglang.ipynb:
     server: mi300x-primary
@@ -63,6 +65,7 @@ notebooks:
       Open WebUI setup cell requires a browser — skip it and mark as partial.
 
   inference/mtp.ipynb:
+    skip: true
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 8
@@ -108,6 +111,9 @@ notebooks:
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 1
+    notes: >
+      Notebook uses both vLLM and SGLang Docker images in different cells.
+      Use vllm/vllm-openai-rocm as the primary image for papermill execution.
 
   inference/t2v_comfyui_radeon.ipynb:
     skip: true
@@ -138,6 +144,17 @@ notebooks:
     hardware_required: [mi300x]
     gpus_required: 1
 
+  inference/openclaw_vllm.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 8
+    notes: >
+      Pattern C — a %%bash cell launches the vLLM server with docker run -d,
+      then client cells poll http://localhost:8000 and drive an agent.
+      Serves Qwen3.5-122B-A10B-FP8 (~120GB) — needs multiple MI300X; fail fast
+      if disk/VRAM is insufficient. Run the docker run -d cell directly, poll
+      health, then execute the client cells.
+
   inference/vllm_v1_DSR1.ipynb:
     server: mi300x-primary
     hardware_required: [mi300x]
@@ -146,6 +163,33 @@ notebooks:
     notes: >
       DeepSeek-R1 model is ~50GB+ — fail fast if disk space is insufficient.
       File upload UI cell and audio playback cells cannot run headlessly — skip and mark as partial.
+
+  # --- PR verification (ROCm/gpuaidev-internal) ---------------------------
+  # These two are under review (PR #99, #100). Their Docker images are NOT in
+  # resolve_docker_image.py's known repos, so use the author-pinned tags below.
+
+  inference/triton_inference_server_benchmark.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 1
+
+  inference/amd_comfyui_rocm_tutorial.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 1
+    expected_result: partial
+    notes: >
+      UNDER PR REVIEW (#100). Runs INSIDE the ComfyUI ROCm container.
+      resolve_docker_image.py does not support this repo — use the author-pinned
+      image exactly: rocm/comfyui:comfyui-0.18.2.amd0_rocm7.2.0_ubuntu24.04.
+      COMFYUI_PATH is preset inside that image (typically /workload/ComfyUI).
+      KNOWN GAP: the notebook depends on sibling workflows/*.json and
+      assets/*.png that are NOT included in the PR (only the .ipynb was added) —
+      cell 9 asserts the asset PNGs exist and will hard-fail without them.
+      Model checkpoints (~10GB Hunyuan3D, ~17GB Wan2.2) are large; cells skip
+      gracefully if absent (HUNYUAN_READY / WAN_I2V_READY flags) so the notebook
+      can go green without generating anything — note that explicitly.
+      Part 3 benchmarks default to RUN_BENCHMARKS=False (skipped by design).
 
 # ---------------------------------------------------------------------------
 # Fine-tuning
@@ -178,6 +222,8 @@ notebooks:
     hardware_required: [mi300x]
     gpus_required: 1
     notes: >
+      Use rocm/pytorch (not rocm/pytorch-training) — notebook has its own pip install
+      cells with --index-url pointing to pytorch.org wheels.
       Requires a single MI300X (192GB VRAM) to load three model pipelines simultaneously.
       Validate setup and first training epoch only — full training is multi-hour.
 
@@ -212,6 +258,7 @@ notebooks:
     gpus_required: 8
 
   pretrain/torchtitan_deepseek.ipynb:
+    skip: true
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 8
@@ -222,6 +269,7 @@ notebooks:
     gpus_required: 8
 
   pretrain/SpecForge_SGlang.ipynb:
+    skip: true
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 8
@@ -236,6 +284,8 @@ notebooks:
     gpus_required: 1
     expected_result: partial
     notes: >
+      Use rocm/pytorch (not rocm/pytorch-training) — notebook has its own pip install
+      cells with --index-url pointing to pytorch.org wheels.
       Full 100-epoch training run is too long for regression — validate first few steps only and mark as partial.
 
   pretrain/se3transform_intro.ipynb:
@@ -276,11 +326,22 @@ notebooks:
       Full lm_eval evaluation harness is slow — validate quantization and a short inference check only and mark as partial.
 
   gpu_dev_optimize/mxfp4_quantization_quark_vllm.ipynb:
+    skip: true
     server: mi300x-primary
     hardware_required: [mi355x, mi350x]
     gpus_required: 1
     notes: >
       Requires MI355X or MI350X — native MXFP4 hardware support. Will be skipped on MI300X.
+
+  gpu_dev_optimize/fp8_gemm_hip_cdna4.ipynb:
+    skip: true
+    server: mi300x-primary
+    hardware_required: [mi355x, mi350x]
+    gpus_required: 1
+    skip_reason: >
+      Requires CDNA4 (gfx950 — MI350X/MI355X). An early cell asserts
+      rocm_agent_enumerator reports gfx950 and hard-fails on MI300X (gfx942).
+      Not testable on the MI300X server.
 
   gpu_dev_optimize/llama4_profiling_vllm.ipynb:
     server: mi300x-primary
