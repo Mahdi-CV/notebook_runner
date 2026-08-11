@@ -49,6 +49,11 @@ TOOLS_DIR   = (HERE / "tools").resolve()
 RESULTS_DIR = (HERE / "results").resolve()
 FIXES_DIR   = (HERE / "fixes").resolve()   # genuine-fix notebooks retrieved by the fixer (for PRs)
 
+# Remote workspace base for per-notebook run dirs. Defaults to /home/amd for the
+# tw* servers (where amd is the login user); override with WORKSPACE_BASE on nodes
+# that use a different home (e.g. /home/gh-runner on the self-hosted CI box).
+WORKSPACE_BASE = os.getenv("WORKSPACE_BASE", "/home/amd").rstrip("/")
+
 # ── Manifest ──────────────────────────────────────────────────────────────────
 
 def load_manifest(path: Path) -> dict:
@@ -210,11 +215,11 @@ def collect_failing_notebooks(base_dir: Path, category: str | None) -> list[Path
 def scp_notebook(local_path: Path, host: str, user: str) -> str:
     """Copy notebook and preflight_patch.py to remote server. Returns remote path."""
     stem       = local_path.stem
-    # Fixed workspace base (not /home/{user}) so it matches the literal
-    # /home/amd/tutorial_agent_runs/<stem> paths the agent uses from CLAUDE.md,
-    # regardless of the SSH user. On the amd@ server this is amd's home; as root
-    # on other nodes it is created/cleaned by root.
-    remote_dir = f"/home/amd/tutorial_agent_runs/{stem}"
+    # Fixed workspace base (WORKSPACE_BASE, not /home/{user}) so it matches the
+    # literal <base>/tutorial_agent_runs/<stem> paths the agent uses from the
+    # runtime context, regardless of the SSH user. Defaults to /home/amd for the
+    # tw* servers; the self-hosted CI box sets WORKSPACE_BASE=/home/gh-runner.
+    remote_dir = f"{WORKSPACE_BASE}/tutorial_agent_runs/{stem}"
     remote_path = f"{remote_dir}/{local_path.name}"
     target     = f"{user}@{host}"
     preflight  = TOOLS_DIR / "preflight_patch.py"
@@ -520,6 +525,7 @@ SSH_HF_CMD  = ssh {ssh_flags} {ssh_target} (prefix commands that need HF_TOKEN w
 GPU_HARDWARE   = {server_hardware or 'unknown'}
 NOTEBOOK_LOCAL  = {notebook_path}
 NOTEBOOK_REMOTE = {remote_path}  (already on the server — do NOT copy again)
+WORKSPACE_BASE  = {WORKSPACE_BASE}  (per-notebook run dir is {WORKSPACE_BASE}/tutorial_agent_runs/<stem>)
 TOOLS_DIR       = {TOOLS_DIR}
 RESULTS_DIR     = {RESULTS_DIR}
 
@@ -645,6 +651,7 @@ SSH_HF_CMD  = ssh {ssh_flags} {ssh_target} (prefix commands that need HF_TOKEN w
 GPU_HARDWARE   = {server_hardware or 'unknown'}
 NOTEBOOK_LOCAL  = {notebook_path}
 NOTEBOOK_REMOTE = {remote_path}  (already on the server — do NOT copy again)
+WORKSPACE_BASE  = {WORKSPACE_BASE}  (per-notebook run dir is {WORKSPACE_BASE}/tutorial_agent_runs/<stem>)
 TOOLS_DIR       = {TOOLS_DIR}
 RESULTS_DIR     = {RESULTS_DIR}
 FIXES_DIR       = {FIXES_DIR}  (retrieve <nb>_fixed.ipynb here as <stem>.ipynb — see CLAUDE_FIX.md Step 4d)

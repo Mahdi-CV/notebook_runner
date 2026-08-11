@@ -35,6 +35,9 @@ HTTP_TIMEOUT = 10
 SSH_TIMEOUT = 15
 USER_AGENT = "notebook-runner-env-check/0.1"
 MIN_DISK_GB = 100
+# Remote workspace base to check for free disk. Defaults to /home/amd for the
+# tw* servers; the self-hosted CI box sets WORKSPACE_BASE=/home/gh-runner.
+WORKSPACE_BASE = os.getenv("WORKSPACE_BASE", "/home/amd").rstrip("/")
 
 
 def warn(msg: str) -> None:
@@ -247,7 +250,7 @@ def run_check_gpu(ssh_cmd: str, gpus_required: int) -> Check:
 
 def run_check_disk(ssh_cmd: str) -> Check:
     chk = Check("Disk space")
-    remote = "df -BG --output=avail /home/amd | tail -1 | tr -dc '0-9'"
+    remote = f"df -BG --output=avail {WORKSPACE_BASE} | tail -1 | tr -dc '0-9'"
     try:
         rc, out, serr = ssh_run(ssh_cmd, remote)
     except subprocess.TimeoutExpired:
@@ -271,14 +274,14 @@ def run_check_disk(ssh_cmd: str) -> Check:
         warn(f"could not parse disk avail from output: {out.strip()[:80]!r}")
         return chk
 
-    print(f"    {avail_gb} GB free on /home/amd; require >= {MIN_DISK_GB} GB")
+    print(f"    {avail_gb} GB free on {WORKSPACE_BASE}; require >= {MIN_DISK_GB} GB")
     if avail_gb < MIN_DISK_GB:
-        reason = f"only {avail_gb} GB free on /home/amd, need >= {MIN_DISK_GB} GB"
+        reason = f"only {avail_gb} GB free on {WORKSPACE_BASE}, need >= {MIN_DISK_GB} GB"
         chk.fail(reason, {
             "cell_index": None,
             "error_type": "missing_dependency",
             "description": reason,
-            "proposed_fix": f"Free disk space on the server until /home/amd has at least {MIN_DISK_GB} GB available.",
+            "proposed_fix": f"Free disk space on the server until {WORKSPACE_BASE} has at least {MIN_DISK_GB} GB available.",
         })
     else:
         chk.ok()

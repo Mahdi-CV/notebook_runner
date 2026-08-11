@@ -38,10 +38,15 @@ the system prompt appended below.
 | `GPU_HARDWARE`        | Hardware name (e.g. mi300x) for Docker image resolution |
 | `NOTEBOOK_LOCAL`      | Local path to the notebook being tested                 |
 | `NOTEBOOK_REMOTE`     | Remote path — already copied, ready to use              |
+| `WORKSPACE_BASE`      | Remote base for run dirs (`<WORKSPACE_BASE>/tutorial_agent_runs/<stem>`) |
 | `TOOLS_DIR`           | Absolute path to the shared tools/ directory            |
 | `RESULTS_DIR`         | Where to write the result JSON                          |
 | `FIXES_DIR`           | Local dir to retrieve the genuine-fix notebook into     |
 | `VERIFICATION_RESULT` | Local path to the verification agent's result JSON      |
+
+Everywhere this playbook shows `<WORKSPACE_BASE>/tutorial_agent_runs/<stem>`,
+substitute the literal `WORKSPACE_BASE` value from the runtime context (it
+defaults to `/home/amd` but is `/home/gh-runner` on the self-hosted CI box).
 
 ---
 
@@ -80,9 +85,9 @@ Do not manually edit cells for pre-flight patching. The runner copies
 `preflight_patch.py` to the remote workspace. After writing the fixed
 notebook, run:
 ```
-Bash: <SSH_CMD> 'python3 /home/amd/tutorial_agent_runs/<stem>/preflight_patch.py \
-  --input /home/amd/tutorial_agent_runs/<stem>/<nb>_fixed.ipynb \
-  --output /home/amd/tutorial_agent_runs/<stem>/<nb>_fixed_patched.ipynb'
+Bash: <SSH_CMD> 'python3 <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/preflight_patch.py \
+  --input <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/<nb>_fixed.ipynb \
+  --output <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/<nb>_fixed_patched.ipynb'
 ```
 Then use `<nb>_fixed_patched.ipynb` for the validation run.
 
@@ -172,7 +177,7 @@ Write a Python script on the remote server that:
 Do NOT apply pre-flight patches manually — that is Step 3b's job.
 
 ```
-Bash: <SSH_CMD> 'cat > /home/amd/tutorial_agent_runs/<stem>/patch.py << '"'"'SCRIPT'"'"'
+Bash: <SSH_CMD> 'cat > <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/patch.py << '"'"'SCRIPT'"'"'
 import json
 
 nb = json.load(open("/workspace/<nb>.ipynb"))
@@ -188,7 +193,7 @@ json.dump(nb, open("/workspace/<nb>_fixed.ipynb", "w"), indent=1)
 print("Fixed notebook written")
 SCRIPT'
 
-Bash: <SSH_CMD> 'python3 /home/amd/tutorial_agent_runs/<stem>/patch.py'
+Bash: <SSH_CMD> 'python3 <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/patch.py'
 ```
 
 ### 3b. Apply pre-flight patches with preflight_patch.py
@@ -205,7 +210,7 @@ audio) deterministically. Use `<nb>_fixed_patched.ipynb` for the run.
 ### 3c. Write the run script
 
 ```
-Bash: <SSH_CMD> 'cat > /home/amd/tutorial_agent_runs/<stem>/run.sh << '"'"'SCRIPT'"'"'
+Bash: <SSH_CMD> 'cat > <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh << '"'"'SCRIPT'"'"'
 #!/bin/bash
 set -e
 pip install -q papermill ipykernel
@@ -213,7 +218,7 @@ python -m ipykernel install --sys-prefix
 python -m papermill /workspace/<nb>_fixed_patched.ipynb /workspace/<nb>_fixed_out.ipynb \
   --kernel python3 --execution-timeout 3000
 SCRIPT
-chmod +x /home/amd/tutorial_agent_runs/<stem>/run.sh'
+chmod +x <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh'
 ```
 
 ### 3d. Run the notebook
@@ -226,7 +231,7 @@ verification run. Follow the Docker run templates in CLAUDE.md exactly.
 ```
 Bash: <SSH_CMD> 'python3 << '"'"'PYEOF'"'"'
 import json
-nb = json.load(open("/home/amd/tutorial_agent_runs/<stem>/<nb>_fixed_out.ipynb"))
+nb = json.load(open("<WORKSPACE_BASE>/tutorial_agent_runs/<stem>/<nb>_fixed_out.ipynb"))
 for i, cell in enumerate(nb["cells"]):
     for out in cell.get("outputs", []):
         if out.get("output_type") == "error":
@@ -282,7 +287,7 @@ shown to tutorial authors; only the genuine fix belongs in a PR.
 Do this **before Cleanup** (cleanup deletes the remote file):
 ```
 Bash: scp -o StrictHostKeyChecking=no -o ForwardX11=no \
-  <user>@<host>:/home/amd/tutorial_agent_runs/<stem>/<nb>_fixed.ipynb \
+  <user>@<host>:<WORKSPACE_BASE>/tutorial_agent_runs/<stem>/<nb>_fixed.ipynb \
   <FIXES_DIR>/<stem>.ipynb
 ```
 (Use the same `<user>@<host>` as in SSH_CMD. If no fix validated, skip this and
@@ -314,7 +319,7 @@ After writing the result, print the final status line and stop.
 Always run after any outcome — same as CLAUDE.md:
 ```
 Bash: <SSH_CMD> 'docker stop <name> 2>/dev/null || true'
-Bash: <SSH_CMD> 'docker run --rm -v /home/amd/tutorial_agent_runs/<stem>:/workspace alpine \
+Bash: <SSH_CMD> 'docker run --rm -v <WORKSPACE_BASE>/tutorial_agent_runs/<stem>:/workspace alpine \
   sh -c "rm -rf /workspace/*" 2>/dev/null || true'
-Bash: <SSH_CMD> 'rm -rf /home/amd/tutorial_agent_runs/<stem> 2>/dev/null || true'
+Bash: <SSH_CMD> 'rm -rf <WORKSPACE_BASE>/tutorial_agent_runs/<stem> 2>/dev/null || true'
 ```

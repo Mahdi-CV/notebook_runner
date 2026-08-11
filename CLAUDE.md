@@ -37,8 +37,13 @@ appended below the playbook.
 | `GPU_HARDWARE`    | Hardware name (e.g. mi300x) for Docker image resolution |
 | `NOTEBOOK_LOCAL`  | Local path to the notebook being tested                 |
 | `NOTEBOOK_REMOTE` | Remote path — already copied, ready to use              |
+| `WORKSPACE_BASE`  | Remote base for run dirs (`<WORKSPACE_BASE>/tutorial_agent_runs/<stem>`) |
 | `TOOLS_DIR`       | Absolute path to the shared tools/ directory            |
 | `RESULTS_DIR`     | Where to write the result JSON                          |
+
+Everywhere this playbook shows `<WORKSPACE_BASE>/tutorial_agent_runs/<stem>`,
+substitute the literal `WORKSPACE_BASE` value from the runtime context (it
+defaults to `/home/amd` but is `/home/gh-runner` on the self-hosted CI box).
 
 ---
 
@@ -60,7 +65,7 @@ embed multi-line logic in the SSH argument (quoting breaks):
 
 ```
 # Write the script
-Bash: <SSH_CMD> 'cat > /home/amd/tutorial_agent_runs/<stem>/run.sh << '"'"'SCRIPT'"'"'
+Bash: <SSH_CMD> 'cat > <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh << '"'"'SCRIPT'"'"'
 #!/bin/bash
 set -e
 pip install -q papermill ipykernel
@@ -68,7 +73,7 @@ python -m ipykernel install --sys-prefix
 python -m papermill /workspace/<nb>.ipynb /workspace/<nb>_out.ipynb \
   --kernel python3 --execution-timeout 3000
 SCRIPT
-chmod +x /home/amd/tutorial_agent_runs/<stem>/run.sh'
+chmod +x <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh'
 
 # Run it
 Bash: <SSH_HF_CMD> 'docker run ... -v ...:/workspace <image> -l /workspace/run.sh'
@@ -170,9 +175,9 @@ Do not manually edit notebook cells for pre-flight patching. The runner
 automatically copies `preflight_patch.py` to the remote workspace alongside
 the notebook. Run it before Phase 1:
 ```
-Bash: <SSH_CMD> 'python3 /home/amd/tutorial_agent_runs/<stem>/preflight_patch.py \
-  --input /home/amd/tutorial_agent_runs/<stem>/<nb>.ipynb \
-  --output /home/amd/tutorial_agent_runs/<stem>/<nb>_patched.ipynb'
+Bash: <SSH_CMD> 'python3 <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/preflight_patch.py \
+  --input <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/<nb>.ipynb \
+  --output <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/<nb>_patched.ipynb'
 ```
 
 This tool applies exactly the 4 allowed patches and prints a JSON report
@@ -245,7 +250,7 @@ and use it as the image in ALL subsequent `docker run` commands for this noteboo
 
 **Write the script on the remote server:**
 ```
-Bash: <SSH_CMD> 'cat > /home/amd/tutorial_agent_runs/<stem>/run.sh << '"'"'SCRIPT'"'"'
+Bash: <SSH_CMD> 'cat > <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh << '"'"'SCRIPT'"'"'
 #!/bin/bash
 set -e
 pip install -q papermill ipykernel
@@ -253,7 +258,7 @@ python -m ipykernel install --sys-prefix
 python -m papermill /workspace/<nb>.ipynb /workspace/<nb>_out.ipynb \
   --kernel python3 --execution-timeout 3000
 SCRIPT
-chmod +x /home/amd/tutorial_agent_runs/<stem>/run.sh'
+chmod +x <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh'
 ```
 
 **Run Docker — rocm/pytorch (pass `-l` for login shell so conda activates py_3.10):**
@@ -263,7 +268,7 @@ Bash: <SSH_HF_CMD> 'docker run --rm --name <stem> --network=host \
   --ipc=host --shm-size=8g --memory=64g \
   --entrypoint /bin/bash \
   -e HF_TOKEN=$HF_TOKEN \
-  -v /home/amd/tutorial_agent_runs/<stem>:/workspace \
+  -v <WORKSPACE_BASE>/tutorial_agent_runs/<stem>:/workspace \
   rocm/pytorch:<tag> -l /workspace/run.sh'
 ```
 
@@ -274,7 +279,7 @@ Bash: <SSH_HF_CMD> 'docker run --rm --name <stem> --network=host \
   --ipc=host --shm-size=8g --memory=64g \
   --entrypoint /bin/bash \
   -e HF_TOKEN=$HF_TOKEN \
-  -v /home/amd/tutorial_agent_runs/<stem>:/workspace \
+  -v <WORKSPACE_BASE>/tutorial_agent_runs/<stem>:/workspace \
   <image> /workspace/run.sh'
 ```
 
@@ -313,7 +318,7 @@ Bash: <SSH_CMD> 'python3 -m papermill <nb>.ipynb <nb>_out.ipynb --kernel python3
 ```
 Bash: <SSH_CMD> 'python3 << '"'"'PYEOF'"'"'
 import json
-nb = json.load(open("/home/amd/tutorial_agent_runs/<stem>/<nb>_out.ipynb"))
+nb = json.load(open("<WORKSPACE_BASE>/tutorial_agent_runs/<stem>/<nb>_out.ipynb"))
 for i, cell in enumerate(nb["cells"]):
     for out in cell.get("outputs", []):
         if out.get("output_type") == "error":
@@ -413,9 +418,9 @@ echo $! > op.pid
 Always run after any outcome:
 ```
 Bash: <SSH_CMD> 'docker stop <name> 2>/dev/null || true'
-Bash: <SSH_CMD> 'docker run --rm -v /home/amd/tutorial_agent_runs/<stem>:/workspace alpine \
+Bash: <SSH_CMD> 'docker run --rm -v <WORKSPACE_BASE>/tutorial_agent_runs/<stem>:/workspace alpine \
   sh -c "rm -rf /workspace/*" 2>/dev/null || true'
-Bash: <SSH_CMD> 'rm -rf /home/amd/tutorial_agent_runs/<stem> 2>/dev/null || true'
+Bash: <SSH_CMD> 'rm -rf <WORKSPACE_BASE>/tutorial_agent_runs/<stem> 2>/dev/null || true'
 ```
 
 ---
