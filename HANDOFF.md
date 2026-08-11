@@ -147,9 +147,9 @@ notebook_runner/
 └── upstream_prs/          # Scratch/notes for upstream PR work
 ```
 
-There is **no `.github/` directory** — CI is a local cron job (`tools/ci_cron.sh`), not GitHub
-Actions. That is intentional: the runner needs the GPU server and a Gateway-certified Claude on the
-same machine (see §9).
+CI now runs two ways: (a) the original local cron job (`tools/ci_cron.sh`), and (b) GitHub Actions
+on a **self-hosted runner that is itself the MI300X GPU box** (`.github/workflows/nightly.yml` here,
+plus a PR-trigger workflow in `gpuaidev-internal`). See §9 for the deployed setup and secrets.
 
 ---
 
@@ -294,18 +294,52 @@ auto-fixes. **Determinism was verified: running any notebook 20× gives the same
 Developer Hub), so every tutorial is regression-tested on a schedule and every content bug is filed
 against that repo before it reaches users.
 
-Getting there needs infrastructure decisions that are above the code:
+### 9a. Deployed self-hosted CI (built — see also §4)
 
-1. **A contracted node dedicated to the CI runner** for this agent.
-2. **A Gateway-certified Claude installed on that node** — `run.py` spawns Claude Code, so the CI box
-   needs an approved Claude install.
-3. **The node's IP allow-listed in the `AMD-ROCm-Internal` org** (needs org-level approval) so the
-   agent can pull `gpuaidev-internal` and the reporter can open issues/PRs against it.
-4. **More hardware** for the 7 non-testable tutorials: notebooks that don't run on MI300X (Radeon
+The runner + Gateway-Claude items below are now DONE. The CI is a **GitHub Actions self-hosted
+runner that is itself the MI300X box** (`134.199.202.143`), running as the `gh-runner` user. Because
+the runner IS the GPU box, `run.py` talks to `localhost` (no SSH hop): `GPU_HOST=localhost`,
+`GPU_USER=gh-runner`, `WORKSPACE_BASE=/home/gh-runner`.
+
+Deployed pieces:
+- **Harness** at `/home/gh-runner/notebook_runner` (public HTTPS clone of `Mahdi-CV/notebook_runner`),
+  with a `.venv` (pyyaml, python-dotenv). Workflows do `git pull --ff-only` to refresh it.
+- **Claude** via the native installer at `~/.local/bin/claude`. `run.py` spawns bare `claude` as a
+  LOCAL subprocess, and the runner's base PATH does NOT include `~/.local/bin`, so every workflow
+  prepends it: `echo "$HOME/.local/bin" >> "$GITHUB_PATH"`. (This is why the earlier scaffolded
+  `regression.yml` could never find claude.)
+- **`gh` CLI** installed at `/usr/bin/gh` (on the base PATH) for `report_github.py --publish`.
+- **Passwordless self-SSH** (`gh-runner@localhost`) + `gh-runner` in the `docker` group, so the agent
+  can drive docker/papermill on the 8 MI300X GPUs (1.8 TB free on `/home/gh-runner`).
+
+Two workflows:
+- **Nightly** (`notebook_runner/.github/workflows/nightly.yml`): cron `17 3 * * *` + manual dispatch.
+  Runs `tools/ci_run.py --push` (gap + failing sets in `--mode full`, regenerates `STATUS.md`,
+  commits/pushes it back to the harness repo) then `report_github.py --mode audit --publish`.
+- **PR** (`gpuaidev-internal/.github/workflows/notebook-ci.yml`): `pull_request` on
+  `docs/notebooks/**/*.ipynb`. Diffs the PR to find changed notebooks, runs only those in
+  `--mode full`, then `report_github.py --mode pr-comment --publish` posts ONE idempotent status
+  comment, and gates the check on pass/partial.
+
+Both use `concurrency.group: notebook-regression` so only one job ever touches the single GPU node.
+
+Runner registration: the box has a prepared but unregistered `actions-runner-internal/` slot (the two
+live runners — `amd/skills` and a personal tutorials fork — must NOT be touched). Register it against
+`AMD-ROCm-Internal/gpuaidev-internal` with labels `self-hosted,mi300x,gpuaidev-internal` using a
+runner token from that repo's Settings > Actions > Runners.
+
+Secrets to set on both repos (Actions secrets):
+`ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_CUSTOM_HEADERS`, `ANTHROPIC_MODEL` (AMD Gateway),
+`HF_TOKEN`. Nightly (harness repo) also needs `GPUAIDEV_GH_TOKEN` (read gpuaidev-internal + `gh` auth
+for reporting) and `HARNESS_PUSH_TOKEN` (write access to `Mahdi-CV/notebook_runner` for the STATUS.md
+push). The PR workflow uses the built-in `github.token` for its PR comment.
+
+### 9b. Still open
+
+1. **More hardware** for the 7 non-testable tutorials: notebooks that don't run on MI300X (Radeon
    Cloud, MI355X, multi-node) and GUI/Gradio/browser-only notebooks that need a headed harness.
-
-All four are required before the agent can run against `gpuaidev-internal` unattended; until then it
-runs manually against local copies of the notebooks.
+2. **Org approval** to register the internal runner and let the reporter open issues/PRs against
+   `AMD-ROCm-Internal/gpuaidev-internal` (runner token + repo write scope).
 
 **Where it goes after that:**
 - Gate new tutorial proposals: require a CI pass before human review (already used on 2 notebooks that
@@ -315,7 +349,6 @@ runs manually against local copies of the notebooks.
 
 Concrete near-term code work if you want to keep improving the agent itself:
 - Parallelize runs across multiple GPU nodes (currently sequential).
-- `report_github.py` `pr-comment` mode (stubbed; only `audit` exists today).
 - Tighten fixer version-pin validation and broaden `auto_fixable` coverage where it's safe.
 
 ---
@@ -357,8 +390,8 @@ extend the agent to *gate* new tutorials, this notebook is a good end-to-end tes
 3. Run one notebook end-to-end: `python run.py notebooks/inference/build_airbnb_agent_mcp.ipynb`.
 4. Regenerate the dashboard: `python tools/status.py --write` and read `STATUS.md`.
 5. Do a dry-run report: `python tools/report_github.py --mode audit` and inspect `logs/github_preview/`.
-6. Pick up production work from §9 (contracted node + Gateway-certified Claude + IP allow-list) and/or
-   the code work at the end of §9.
+6. For CI: read §9a (self-hosted runner is deployed). Remaining production work is in §9b — register
+   the `actions-runner-internal` slot against `gpuaidev-internal` and set the Actions secrets.
 
 If in doubt: the philosophy is **surface bugs to authors, never green-wash**. Every issue you hide is
 a defect that ships to users.

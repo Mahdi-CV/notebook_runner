@@ -18,7 +18,8 @@ instead of opening duplicates.
 
 Modes:
   --mode audit       Reconcile issues/PRs from the latest result of every notebook.
-                     (--mode pr-comment is added in Phase 2 for the PR trigger.)
+  --mode pr-comment  Post ONE idempotent status comment on a PR summarising the
+                     result of the notebooks changed in that PR (the PR trigger).
 
 Safety:
   --dry-run is the DEFAULT. It computes the desired GitHub state and prints it
@@ -32,6 +33,14 @@ Usage:
   # Actually file/update/close against a repo (requires gh auth + access):
   python3 tools/report_github.py --mode audit --repo ORG/tutorials \
       --upstream-checkout /path/to/tutorials --publish
+
+  # Preview the PR status comment for the notebooks changed in PR #42:
+  python3 tools/report_github.py --mode pr-comment --pr-number 42 \
+      --notebooks inference/foo.ipynb fine_tune/bar.ipynb
+
+  # Post/update the single status comment on PR #42 (requires gh auth + access):
+  python3 tools/report_github.py --mode pr-comment --pr-number 42 \
+      --repo ORG/tutorials --notebooks inference/foo.ipynb --publish
 """
 
 import argparse
@@ -229,6 +238,172 @@ def render_pr_body(plan: dict) -> str:
     return "\n".join(lines)
 
 
+# ── PR status comment (the PR trigger) ────────────────────────────────────────
+
+def pr_comment_marker(pr_number: int) -> str:
+    """Hidden fingerprint so the PR status comment is updated in place, not duplicated."""
+    return f"<!-- {MANAGED}: pr-comment:{pr_number} -->"
+
+
+_STATUS_EMOJI = {"pass": "✅", "partial": "🟡", "fail": "❌"}
+
+
+def _pr_row_status(payload: dict, expected_partial: bool) -> str:
+    """Human status label for the table: pass / partial / fail / (no result)."""
+    st = payload.get("status")
+    if st == "pass":
+        return "pass"
+    if st == "partial":
+        return "pass" if expected_partial else "partial"
+    if st == "fail":
+        return "fail"
+    return st or "unknown"
+
+
+def _top_failure_reason(payload: dict) -> str:
+    """The single most useful line to show authors for a failing notebook."""
+    issues = payload.get("issues") or []
+    if issues:
+        first = issues[0]
+        et = first.get("error_type", "error")
+        desc = (first.get("description") or "").strip().replace("\n", " ")
+        if len(desc) > 160:
+            desc = desc[:157] + "…"
+        return f"`{et}` — {desc}" if desc else f"`{et}`"
+    summary = (payload.get("summary") or "").strip().replace("\n", " ")
+    if len(summary) > 160:
+        summary = summary[:157] + "…"
+    return summary or "—"
+
+
+def build_pr_comment_rows(changed: list[str], results_dir: Path) -> list[dict]:
+    """For each changed notebook (rel path), pull its latest result payload.
+
+    Returns rows: {rel_key, stem, payload_or_None, expected_partial}. Notebooks
+    with no result JSON are reported explicitly as "no result" — never hidden.
+    """
+    manifest = status_mod.load_manifest()
+    results = status_mod.load_results(results_dir)
+    rows = []
+    for rel in changed:
+        stem = Path(rel).stem
+        entry = manifest.get(rel) or manifest.get(Path(rel).name) or {}
+        rec = results.get(stem)
+        rows.append({
+            "rel_key": rel,
+            "stem": stem,
+            "payload": rec["payload"] if rec else None,
+            "expected_partial": entry.get("expected_result") == "partial",
+        })
+    return rows
+
+
+def render_pr_comment(pr_number: int, rows: list[dict]) -> str:
+    """One Markdown comment: header + per-notebook status table + failure detail."""
+    n_total = len(rows)
+    n_pass = sum(1 for r in rows if r["payload"] and _pr_row_status(r["payload"], r["expected_partial"]) == "pass")
+    n_fail = sum(1 for r in rows if r["payload"] and _pr_row_status(r["payload"], r["expected_partial"]) == "fail")
+    n_partial = sum(1 for r in rows if r["payload"] and _pr_row_status(r["payload"], r["expected_partial"]) == "partial")
+    n_missing = sum(1 for r in rows if not r["payload"])
+
+    lines = [
+        pr_comment_marker(pr_number),
+        "## Notebook regression — changed notebooks",
+        "",
+        "_Posted automatically by the notebook regression agent. Each changed "
+        "notebook below was executed on an AMD ROCm GPU. This is a report, not a "
+        "merge gate._",
+        "",
+        f"**Summary:** {n_pass}/{n_total} pass"
+        + (f", {n_partial} partial" if n_partial else "")
+        + (f", {n_fail} fail" if n_fail else "")
+        + (f", {n_missing} no-result" if n_missing else ""),
+        "",
+        "| Notebook | Result | Detail |",
+        "|----------|--------|--------|",
+    ]
+    for r in rows:
+        if not r["payload"]:
+            lines.append(f"| `{r['rel_key']}` | ⚠️ no result | _agent produced no result JSON_ |")
+            continue
+        st = _pr_row_status(r["payload"], r["expected_partial"])
+        emoji = _STATUS_EMOJI.get(st, "❔")
+        detail = "—" if st == "pass" else _top_failure_reason(r["payload"])
+        # Escape pipes in detail so the table doesn't break.
+        detail = detail.replace("|", "\\|")
+        lines.append(f"| `{r['rel_key']}` | {emoji} {st} | {detail} |")
+
+    lines += [
+        "",
+        "---",
+        "_Agent-managed: this comment is updated in place on every push to the PR._",
+    ]
+    return "\n".join(lines)
+
+
+def find_pr_comment(repo: str, pr_number: int) -> dict | None:
+    """Find the existing agent-managed status comment on this PR via its marker."""
+    proc = subprocess.run(
+        ["gh", "api", f"repos/{repo}/issues/{pr_number}/comments", "--paginate"],
+        capture_output=True, text=True, check=False,
+    )
+    if proc.returncode != 0:
+        sys.stderr.write(proc.stderr)
+        return None
+    try:
+        comments = json.loads(proc.stdout or "[]")
+    except json.JSONDecodeError:
+        return None
+    mk = pr_comment_marker(pr_number)
+    for c in comments:
+        if mk in (c.get("body") or ""):
+            return c
+    return None
+
+
+def post_pr_comment(repo: str, pr_number: int, body: str) -> None:
+    """Create or update (in place) the single agent-managed PR status comment."""
+    existing = find_pr_comment(repo, pr_number)
+    if existing:
+        subprocess.run(
+            ["gh", "api", "--method", "PATCH",
+             f"repos/{repo}/issues/comments/{existing['id']}",
+             "-f", f"body={body}"],
+            check=False,
+        )
+    else:
+        subprocess.run(
+            ["gh", "pr", "comment", str(pr_number), "--repo", repo, "--body", body],
+            check=False,
+        )
+
+
+def run_pr_comment(pr_number: int, changed: list[str], repo: str | None,
+                   results_dir: Path, publish: bool) -> int:
+    rows = build_pr_comment_rows(changed, results_dir)
+    body = render_pr_comment(pr_number, rows)
+
+    PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+    preview = PREVIEW_DIR / f"pr-{pr_number}.comment.md"
+    preview.write_text(body)
+
+    mode = "PUBLISH" if publish else "DRY-RUN"
+    n_fail = sum(1 for r in rows if r["payload"]
+                 and _pr_row_status(r["payload"], r["expected_partial"]) == "fail")
+    print(f"\n[{mode}] pr-comment on PR #{pr_number} → {len(rows)} changed notebook(s), "
+          f"{n_fail} failing")
+    print(f"Preview written to {preview}")
+    if publish:
+        if not repo:
+            print("error: --publish requires --repo OWNER/NAME", file=sys.stderr)
+            return 2
+        post_pr_comment(repo, pr_number, body)
+        print(f"Posted/updated status comment on {repo}#{pr_number}")
+    else:
+        print("(dry-run — nothing sent to GitHub. Re-run with --repo ... --publish to post.)")
+    return 0
+
+
 # ── gh CLI layer (only touched when --publish) ────────────────────────────────
 
 def gh_json(repo: str, args: list[str]) -> list:
@@ -383,11 +558,15 @@ def load_rows_payloads(results_dir: Path) -> list[dict]:
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Report regression results to GitHub.")
-    p.add_argument("--mode", choices=["audit"], default="audit")
+    p.add_argument("--mode", choices=["audit", "pr-comment"], default="audit")
     p.add_argument("--repo", default=None, help="Target repo OWNER/NAME (required for --publish).")
     p.add_argument("--upstream-checkout", default=None,
                    help="Local checkout of the notebooks repo (required to open PRs).")
     p.add_argument("--results-dir", default=None)
+    p.add_argument("--pr-number", type=int, default=None,
+                   help="PR number to comment on (required for --mode pr-comment).")
+    p.add_argument("--notebooks", nargs="*", default=[],
+                   help="Changed notebook rel-paths for --mode pr-comment.")
     p.add_argument("--publish", action="store_true",
                    help="Actually create/update/close via gh. Default is dry-run.")
     args = p.parse_args()
@@ -397,6 +576,17 @@ def main() -> int:
         return 2
 
     results_dir = Path(args.results_dir).resolve() if args.results_dir else (REPO_ROOT / "results")
+
+    if args.mode == "pr-comment":
+        if args.pr_number is None:
+            print("error: --mode pr-comment requires --pr-number", file=sys.stderr)
+            return 2
+        if not args.notebooks:
+            print("error: --mode pr-comment requires --notebooks <paths...>", file=sys.stderr)
+            return 2
+        return run_pr_comment(args.pr_number, args.notebooks, args.repo,
+                              results_dir, args.publish)
+
     rows = load_rows_payloads(results_dir)
     plans = desired_state(rows)
     decisions = reconcile(plans, args.repo, args.upstream_checkout, args.publish)

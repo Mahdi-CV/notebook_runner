@@ -1,0 +1,136 @@
+name: Nightly Notebook Regression
+
+# Full nightly sweep of the gpuaidev-internal notebook set on the self-hosted
+# MI300X box. Runs the two-agent pipeline (verify then auto-fix) over the gap
+# set and still-failing notebooks via tools/ci_run.py, regenerates STATUS.md,
+# commits it, and files/refreshes GitHub issues + fix PRs via report_github.py.
+#
+# This is the notebook_runner side of CI. The PR trigger lives in the
+# gpuaidev-internal repo (.github/workflows/notebook-ci.yml) and calls the same
+# harness for changed notebooks only.
+
+on:
+  schedule:
+    # 03:17 UTC daily. Off-peak; the single GPU node is otherwise free.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      category:
+        description: "Optional category filter (inference|fine_tune|pretrain|gpu_dev_optimize)"
+        required: false
+        default: ""
+      skip_gap:
+        description: "Skip the freshness (gap) phase; only re-attempt current failures"
+        required: false
+        default: "false"
+
+# One regression job at a time on the single GPU node.
+concurrency:
+  group: notebook-regression
+  cancel-in-progress: false
+
+jobs:
+  nightly:
+    runs-on: [self-hosted, mi300x, gpuaidev-internal]
+    timeout-minutes: 1440
+    env:
+      # Harness lives on the runner box, cloned from the public repo.
+      HARNESS_DIR: /home/gh-runner/notebook_runner
+      # Notebooks under test are checked out into GITHUB_WORKSPACE.
+      NOTEBOOKS_REPO: AMD-ROCm-Internal/gpuaidev-internal
+      NOTEBOOKS_SUBDIR: docs/notebooks
+      # Local topology: the runner IS the GPU box. run.py SSHes to localhost for
+      # docker/papermill; claude runs as a local subprocess.
+      WORKSPACE_BASE: /home/gh-runner
+      GPU_HOST: localhost
+      GPU_USER: gh-runner
+      GPU_HARDWARE: mi300x
+      # AMD Claude gateway (headless claude) — env-var driven.
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+      ANTHROPIC_CUSTOM_HEADERS: ${{ secrets.ANTHROPIC_CUSTOM_HEADERS }}
+      ANTHROPIC_MODEL: ${{ secrets.ANTHROPIC_MODEL }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      GH_TOKEN: ${{ secrets.GPUAIDEV_GH_TOKEN }}
+    steps:
+      - name: Put native claude on PATH
+        # run.py spawns bare `claude` as a local subprocess. The native installer
+        # puts it at ~/.local/bin, which the runner's base .path does NOT include.
+        # Prepend it for every subsequent step in this job.
+        run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Verify toolchain
+        run: |
+          set -euo pipefail
+          which claude
+          claude --version
+          "$HARNESS_DIR/.venv/bin/python" --version
+          # Fail fast if the gateway secret is missing.
+          test -n "${ANTHROPIC_API_KEY:-}" || { echo "ANTHROPIC_API_KEY unset"; exit 1; }
+
+      - name: Configure git identity + authenticated remotes
+        run: |
+          set -euo pipefail
+          # ci_run.py commits STATUS.md + manifest.yaml and pushes them back to the
+          # harness repo. The runner box has no git identity or credentials, so set
+          # both here. HARNESS_PUSH_TOKEN needs write access to Mahdi-CV/notebook_runner.
+          git -C "$HARNESS_DIR" config user.name  "gpuaidev-ci-bot"
+          git -C "$HARNESS_DIR" config user.email "gpuaidev-ci-bot@users.noreply.github.com"
+          git -C "$HARNESS_DIR" remote set-url origin \
+            "https://x-access-token:${HARNESS_PUSH_TOKEN}@github.com/Mahdi-CV/notebook_runner.git"
+          # report_github.py --publish shells out to `gh`; authenticate it against
+          # the notebooks repo using the same token used to check it out.
+          echo "${GPUAIDEV_GH_TOKEN}" | gh auth login --with-token
+        env:
+          HARNESS_PUSH_TOKEN: ${{ secrets.HARNESS_PUSH_TOKEN }}
+          GPUAIDEV_GH_TOKEN: ${{ secrets.GPUAIDEV_GH_TOKEN }}
+
+      - name: Refresh harness
+        run: git -C "$HARNESS_DIR" pull --ff-only
+
+      - name: Checkout notebooks under test
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.NOTEBOOKS_REPO }}
+          token: ${{ secrets.GPUAIDEV_GH_TOKEN }}
+          path: notebooks-repo
+
+      - name: Run nightly regression pass
+        run: |
+          set -euo pipefail
+          cd "$HARNESS_DIR"
+          EXTRA=""
+          if [ -n "${{ github.event.inputs.category }}" ]; then
+            EXTRA="$EXTRA --category ${{ github.event.inputs.category }}"
+          fi
+          if [ "${{ github.event.inputs.skip_gap }}" = "true" ]; then
+            EXTRA="$EXTRA --skip-gap"
+          fi
+          # ci_run.py drives run.py in --mode full over the gap + failing sets,
+          # regenerates STATUS.md, and commits+pushes it to the harness repo.
+          # shellcheck disable=SC2086
+          .venv/bin/python tools/ci_run.py \
+            --dir "$GITHUB_WORKSPACE/notebooks-repo/$NOTEBOOKS_SUBDIR" \
+            --push $EXTRA
+
+      - name: File / refresh GitHub issues and fix PRs
+        if: always()
+        run: |
+          set -euo pipefail
+          cd "$HARNESS_DIR"
+          .venv/bin/python tools/report_github.py \
+            --mode audit \
+            --repo "$NOTEBOOKS_REPO" \
+            --publish
+
+      - name: Upload results + logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-regression-results
+          path: |
+            ${{ env.HARNESS_DIR }}/results/*.json
+            ${{ env.HARNESS_DIR }}/logs/*.log
+            ${{ env.HARNESS_DIR }}/STATUS.md
+          if-no-files-found: warn
+          retention-days: 30
