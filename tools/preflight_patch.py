@@ -52,16 +52,22 @@ _AUDIO_IMPORT_RE = re.compile(
 )
 
 
-def _is_trivial_cell(src: str, pattern_re: re.Pattern) -> bool:
-    """Check if the cell contains only the pattern match and nothing else meaningful."""
+def _is_trivial_cell(src: str, pattern_re: re.Pattern, import_re: re.Pattern | None = None) -> bool:
+    """Check if the cell contains only the pattern match (and, optionally, imports
+    that are themselves related to the pattern) and nothing else meaningful."""
     lines = [ln.strip() for ln in src.strip().splitlines()
              if ln.strip() and not ln.strip().startswith('#')]
     if not lines:
         return True
+
+    def _is_related_import(ln: str) -> bool:
+        if not (ln.startswith('import ') or ln.startswith('from ')):
+            return False
+        return import_re.search(ln) is not None if import_re else True
+
     non_matching = [ln for ln in lines
                     if not pattern_re.search(ln)
-                    and not ln.startswith('import ')
-                    and not ln.startswith('from ')]
+                    and not _is_related_import(ln)]
     return len(non_matching) == 0
 
 
@@ -106,7 +112,7 @@ def patch_input_calls(src: str) -> tuple[str | None, str | None]:
     if not _INPUT_CALL_RE.search(src):
         return None, None
 
-    if _is_trivial_cell(src, _INPUT_CALL_RE):
+    if _is_trivial_cell(src, _INPUT_CALL_RE, None):
         return SKIP_CELL.format(reason="cell is only input() calls"), "Skipped cell containing only input() calls"
 
     patched = _INPUT_CALL_RE.sub('"test"', src)
@@ -118,7 +124,7 @@ def patch_gradio_launch(src: str) -> tuple[str | None, str | None]:
     if not _GRADIO_LAUNCH_RE.search(src):
         return None, None
 
-    if _is_trivial_cell(src, _GRADIO_LAUNCH_RE):
+    if _is_trivial_cell(src, _GRADIO_LAUNCH_RE, _GRADIO_IMPORT_RE):
         return SKIP_CELL.format(reason="Gradio .launch()"), "Skipped cell containing only .launch()"
 
     lines = src.splitlines()
@@ -135,7 +141,7 @@ def patch_audio_playback(src: str) -> tuple[str | None, str | None]:
     if not _AUDIO_RE.search(src) and not _AUDIO_IMPORT_RE.search(src):
         return None, None
 
-    if _is_trivial_cell(src, _AUDIO_RE):
+    if _is_trivial_cell(src, _AUDIO_RE, _AUDIO_IMPORT_RE):
         return SKIP_CELL.format(reason="audio playback"), "Skipped cell containing only audio playback"
 
     lines = src.splitlines()
