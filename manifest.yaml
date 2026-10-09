@@ -64,6 +64,19 @@ notebooks:
     notes: >
       Open WebUI setup cell requires a browser — skip it and mark as partial.
 
+  inference/graph_multiagent_openclaw.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 1
+    expected_result: partial
+    notes: >
+      Multi-agent incident triage on OpenClaw + vLLM, serving Qwen3.6-35B-A3B.
+      Needs ~70GB free disk for model weights. Parts 5.2 and 6 are markdown-only
+      instructions for the reader (agent briefings, running/challenging the
+      triage manually) — not executable cells; skip and mark as partial.
+      Authored using this agent; a useful end-to-end reference for the hub's
+      expected tutorial structure.
+
   inference/mtp.ipynb:
     skip: true
     server: mi300x-primary
@@ -115,6 +128,19 @@ notebooks:
       Notebook uses both vLLM and SGLang Docker images in different cells.
       Use vllm/vllm-openai-rocm as the primary image for papermill execution.
 
+  inference/t2v_comfyui_api_mode_instinct.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 1
+    notes: >
+      ComfyUI driven entirely from Python (no browser) via its HTTP API.
+      Uses rocm/comfyui:comfyui-0.18.2.amd0_rocm7.2.0_ubuntu24.04 — not in
+      resolve_docker_image.py's known repos, so pin this tag directly.
+      Generates a 3D mesh (Hunyuan3D v2.1) and a short video (Wan2.2 5B) from
+      the same input photos. Part 3 (throughput benchmark) is optional and
+      defaults to RUN_BENCHMARK=False — skipped by design, not a failure.
+      Tested 2026-09-16: passed.
+
   inference/t2v_comfyui_radeon.ipynb:
     skip: true
     skip_reason: >
@@ -135,6 +161,12 @@ notebooks:
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 2
+    skip: true
+    skip_reason: &one_real_gpu >
+      mi300x-primary currently exposes only 1 real GPU (shared node repurposed
+      for an unrelated workshop demo; env_check's GPU count is unreliable here —
+      it counts stale /dev/dri/renderD* nodes, not actual ROCm-visible GPUs).
+      Remove this skip once gpus_required GPUs are actually available.
     notes: >
       Single-node 1P1D configuration requires 2 GPUs minimum.
       Multi-node cells require RDMA and etcd — test single-node path only.
@@ -148,6 +180,8 @@ notebooks:
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 8
+    skip: true
+    skip_reason: *one_real_gpu
     notes: >
       Pattern C — a %%bash cell launches the vLLM server with docker run -d,
       then client cells poll http://localhost:8000 and drive an agent.
@@ -159,19 +193,17 @@ notebooks:
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 8
+    skip: true
+    skip_reason: *one_real_gpu
     expected_result: partial
     notes: >
       DeepSeek-R1 model is ~50GB+ — fail fast if disk space is insufficient.
       File upload UI cell and audio playback cells cannot run headlessly — skip and mark as partial.
 
   # --- PR verification (ROCm/gpuaidev-internal) ---------------------------
-  # These two are under review (PR #99, #100). Their Docker images are NOT in
-  # resolve_docker_image.py's known repos, so use the author-pinned tags below.
-
-  inference/triton_inference_server_benchmark.ipynb:
-    server: mi300x-primary
-    hardware_required: [mi300x]
-    gpus_required: 1
+  # PR #99 (triton_inference_server_benchmark) has merged upstream — it now
+  # lives at pretrain/triton_inference_server_benchmark.ipynb below with a
+  # full entry. Only #100 remains pending.
 
   inference/amd_comfyui_rocm_tutorial.ipynb:
     server: mi300x-primary
@@ -206,11 +238,15 @@ notebooks:
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 2
+    skip: true
+    skip_reason: *one_real_gpu
 
   fine_tune/torchtune_llama3.ipynb:
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 2
+    skip: true
+    skip_reason: *one_real_gpu
 
   fine_tune/unsloth_Llama3_1_8B_GRPO.ipynb:
     server: mi300x-primary
@@ -231,6 +267,8 @@ notebooks:
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 8
+    skip: true
+    skip_reason: *one_real_gpu
     notes: >
       Validate environment setup and a short rollout only — full training is multi-hour.
 
@@ -242,6 +280,8 @@ notebooks:
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 8
+    skip: true
+    skip_reason: *one_real_gpu
     expected_result: partial
     notes: >
       Data preparation notebook — no model training. Partial counts as pass.
@@ -251,11 +291,15 @@ notebooks:
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 8
+    skip: true
+    skip_reason: *one_real_gpu
 
   pretrain/torchtitan_llama3.ipynb:
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 8
+    skip: true
+    skip_reason: *one_real_gpu
 
   pretrain/torchtitan_deepseek.ipynb:
     skip: true
@@ -267,6 +311,8 @@ notebooks:
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 8
+    skip: true
+    skip_reason: *one_real_gpu
 
   pretrain/SpecForge_SGlang.ipynb:
     skip: true
@@ -296,6 +342,22 @@ notebooks:
     notes: >
       Skip the full training loop (30-60 min) — validate inference mode only and mark as partial.
 
+  pretrain/triton_inference_server_benchmark.ipynb:
+    server: mi300x-primary
+    hardware_required: [mi300x]
+    gpus_required: 1
+    expected_result: partial
+    notes: >
+      Trains FinalNet (FuxiCTR) on Criteo_x4, exports to ONNX, serves via the
+      ROCm port of Triton Inference Server (MIGraphX execution provider), then
+      benchmarks with perf_analyzer. Uses --gpu 0 explicitly — single GPU by
+      design, unlike most of this category. Docker images
+      (rocm/tritoninferenceserver, rocm/primus) are not in
+      resolve_docker_image.py's known repos — use the author-pinned tags in
+      the notebook. Was tracked as a pending-PR placeholder (#99) under
+      inference/; that PR merged and the notebook now lives here — mark
+      partial until a real run confirms training + serving end-to-end.
+
 # ---------------------------------------------------------------------------
 # GPU dev & optimization
 # ---------------------------------------------------------------------------
@@ -324,6 +386,9 @@ notebooks:
     expected_result: partial
     notes: >
       Full lm_eval evaluation harness is slow — validate quantization and a short inference check only and mark as partial.
+      Quantizing the 8B model (quantizer.quantize_model() + .freeze()) needs more than
+      CLAUDE.md's default --memory=64g — it was OOM-killed at ~66GB RSS against that limit
+      in a prior run. Use --memory=128g in the docker run command for this notebook only.
 
   gpu_dev_optimize/mxfp4_quantization_quark_vllm.ipynb:
     skip: true
@@ -347,6 +412,8 @@ notebooks:
     server: mi300x-primary
     hardware_required: [mi300x]
     gpus_required: 8
+    skip: true
+    skip_reason: *one_real_gpu
     expected_result: partial
     notes: >
       Validate server startup and one profiled request — skip Perfetto visualization cells and mark as partial.
