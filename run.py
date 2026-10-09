@@ -1,7 +1,9 @@
 """
-Notebook regression agent — Claude Code edition.
+Notebook regression agent — launcher for the verify and fix agents.
 
-Identical CLI to the original run.py. Swaps agent.run() for claude -p.
+Copies each notebook to the GPU node, runs a headless `claude -p` verify agent
+(CLAUDE.md) and, if it fails, a fix agent (CLAUDE_FIX.md). Every outcome is
+recorded in results/runs.db; the agents also write results/*.json.
 
 Usage:
   # Single notebook
@@ -13,6 +15,9 @@ Usage:
   # Specific category only
   python run.py --dir /path/to/notebooks/ --category inference
 
+  # Diagnose only, never auto-fix
+  python run.py path/to/notebook.ipynb --mode verify
+
   # Interactive mode (opens claude normally — no -p flag, full conversation)
   python run.py path/to/notebook.ipynb --interactive
 
@@ -22,12 +27,10 @@ Usage:
   # Gap set, filtered to one category
   python run.py --dir /path/to/notebooks/ --gap --category inference
 
-Options:
-  --dir         Run all notebooks under this directory
-  --category    Filter notebooks by subdirectory name
-  --manifest    Path to manifest YAML (default: manifest.yaml next to this file)
-  --log-level   DEBUG | INFO (default: INFO)
-  --interactive Open claude interactively instead of headless
+  # Post this run's summary to Teams afterwards
+  python run.py path/to/notebook.ipynb --notify
+
+See `python run.py --help` for every option.
 """
 
 import argparse
@@ -168,46 +171,16 @@ def collect_notebooks(directory, category):
     return [p.resolve() for p in notebooks]
 
 
-def collect_gap_notebooks(base_dir: Path, category: str | None) -> list[Path]:
-    """Subprocess tools/status.py --gap and resolve each line against base_dir."""
-    proc = subprocess.run(
-        [sys.executable, str(TOOLS_DIR / "status.py"), "--gap"],
-        capture_output=True, text=True, check=False, timeout=30,
-    )
-    if proc.returncode != 0:
-        sys.stderr.write(proc.stderr)
-        sys.exit(1)
+def collect_status_notebooks(selector: str, base_dir: Path,
+                             category: str | None) -> list[Path]:
+    """Subprocess `tools/status.py <selector>` (--gap or --failing) and resolve
+    each line against base_dir.
 
-    lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
-
-    result: list[Path] = []
-    missing: list[str] = []
-    for line in lines:
-        p = (base_dir / line).resolve()
-        if not p.exists():
-            missing.append(line)
-            continue
-        result.append(p)
-
-    if missing:
-        print("warning: gap entries not found on disk (skipped):", file=sys.stderr)
-        for m in missing:
-            print(f"  {m}", file=sys.stderr)
-
-    if category:
-        result = [n for n in result if n.relative_to(base_dir).parts[0] == category]
-
-    return result
-
-
-def collect_failing_notebooks(base_dir: Path, category: str | None) -> list[Path]:
-    """Subprocess tools/status.py --failing and resolve each line against base_dir.
-
-    Mirrors collect_gap_notebooks(), but targets notebooks whose latest result
-    is a hard failure (or a partial that does not count as pass).
+    --gap:     never-tested or stale >7d
+    --failing: latest result is a hard fail (or a partial that does not count as pass)
     """
     proc = subprocess.run(
-        [sys.executable, str(TOOLS_DIR / "status.py"), "--failing"],
+        [sys.executable, str(TOOLS_DIR / "status.py"), selector],
         capture_output=True, text=True, check=False, timeout=30,
     )
     if proc.returncode != 0:
@@ -226,7 +199,7 @@ def collect_failing_notebooks(base_dir: Path, category: str | None) -> list[Path
         result.append(p)
 
     if missing:
-        print("warning: failing entries not found on disk (skipped):", file=sys.stderr)
+        print(f"warning: {selector} entries not found on disk (skipped):", file=sys.stderr)
         for m in missing:
             print(f"  {m}", file=sys.stderr)
 
@@ -875,7 +848,7 @@ def main():
         sys.exit(2)
 
     if args.gap:
-        notebooks = collect_gap_notebooks(base_dir, args.category)
+        notebooks = collect_status_notebooks("--gap", base_dir, args.category)
         if not notebooks:
             if args.category:
                 print(f"\nNo gap notebooks in category '{args.category}'.")
@@ -883,7 +856,7 @@ def main():
                 print("\nGap is empty — every testable notebook has a recent result. Nothing to do.")
             sys.exit(0)
     elif args.failing:
-        notebooks = collect_failing_notebooks(base_dir, args.category)
+        notebooks = collect_status_notebooks("--failing", base_dir, args.category)
         if not notebooks:
             if args.category:
                 print(f"\nNo failing notebooks in category '{args.category}'.")

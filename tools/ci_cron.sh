@@ -8,11 +8,11 @@
 #
 # Install (Linux cron):
 #   crontab -e
-#   17 3 * * 0  /mnt/c/Users/karchaka/notebook_runner/tools/ci_cron.sh
+#   17 3 * * 0  /path/to/notebook_runner/tools/ci_cron.sh
 #
 # WSL note: cron only fires while WSL is running. If the host may be asleep at
 # the scheduled time, drive this from Windows Task Scheduler instead:
-#   wsl.exe bash -lc '/mnt/c/Users/karchaka/notebook_runner/tools/ci_cron.sh'
+#   wsl.exe bash -lc '/path/to/notebook_runner/tools/ci_cron.sh'
 
 set -uo pipefail
 

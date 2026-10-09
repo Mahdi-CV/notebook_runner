@@ -30,7 +30,7 @@ Scheduling:
   `crontab -e` and add:
 
       # weekly notebook regression — Sundays 03:17 local
-      17 3 * * 0  /mnt/c/Users/karchaka/notebook_runner/tools/ci_cron.sh
+      17 3 * * 0  /path/to/notebook_runner/tools/ci_cron.sh
 
   The wrapper calls `ci_run.py --push`, so results (STATUS.md + manifest.yaml)
   are committed and pushed to origin automatically.
@@ -38,7 +38,7 @@ Scheduling:
   WSL caveat: Linux cron only fires while WSL is running. If the machine is off
   at the scheduled time the run is silently missed (no catch-up). For a host
   that sleeps/reboots, drive the wrapper from Windows Task Scheduler instead:
-      wsl.exe bash -lc '/mnt/c/Users/karchaka/notebook_runner/tools/ci_cron.sh'
+      wsl.exe bash -lc '/path/to/notebook_runner/tools/ci_cron.sh'
 
   Future: a self-hosted GitHub Actions runner (SSH to the GPU box + HF_TOKEN/
   GPU_HOST/GPU_USER secrets) — required for the PR trigger, optional here.

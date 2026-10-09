@@ -120,7 +120,7 @@ fi
 # --- no-overlap guard -----------------------------------------------------
 # A fine-tune pass can run for hours. flock -n means a new scheduled fire is
 # skipped, never queued — two passes driving the same GPU node would fight
-# over /home/amd/tutorial_agent_runs and produce garbage verdicts.
+# over $WORKSPACE_BASE/tutorial_agent_runs and produce garbage verdicts.
 exec 9>"$LOCKFILE"
 if ! flock -n 9; then
   echo "run-ci: previous pass still running — skipping $TS" \
