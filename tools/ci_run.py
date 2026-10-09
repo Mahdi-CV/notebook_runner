@@ -11,6 +11,8 @@ One command that runs an automated regression pass and updates the dashboard:
   Phase C — Dashboard : regenerate STATUS.md from the fresh results.
   Phase D — Commit    : auto-commit STATUS.md + manifest.yaml (results/ is a
                         gitignored local cache) (skip with --no-commit).
+  Phase E — Notify    : post a summary card to Teams (skip with --no-notify;
+                        also skipped when TEAMS_WEBHOOK_URL is unset).
 
 Everything is tee'd to logs/ci_<timestamp>.log.
 
@@ -52,6 +54,7 @@ HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent
 RUN_PY = REPO_ROOT / "run.py"
 STATUS_PY = HERE / "status.py"
+TEAMS_PY = HERE / "report_teams.py"
 LOGS_DIR = REPO_ROOT / "logs"
 
 
@@ -181,6 +184,8 @@ def main() -> int:
                    help="After committing, push the branch to origin (BatchMode SSH, "
                         "non-interactive). Intended for the cron trigger; off by default "
                         "so manual runs stay local.")
+    p.add_argument("--no-notify", action="store_true",
+                   help="Skip the Teams notification (Phase E).")
     p.add_argument("--dry-run", action="store_true",
                    help="Print the plan and the batches that would run; execute nothing.")
     args = p.parse_args()
@@ -236,6 +241,20 @@ def main() -> int:
             tee.line("[commit] skipped (--no-commit)")
         else:
             git_commit(tee, ts, args.dry_run, args.push)
+
+        # ── Phase E — Notify ────────────────────────────────────────────────
+        # Runs after the commit so the card's "newly failing/passing" delta is
+        # computed against the previous pass's committed STATUS.md, not this
+        # one's. Never fatal: the pass already did its work, and a Teams outage
+        # must not turn a successful regression run into a failed one.
+        tee.line("\n── Phase E — Notify ──")
+        if args.no_notify:
+            tee.line("[teams] skipped (--no-notify)")
+        else:
+            notify_cmd = [sys.executable, str(TEAMS_PY), "--log-name", logpath.name]
+            if args.dry_run:
+                notify_cmd.append("--dry-run")
+            stream(notify_cmd, tee)
 
         tee.line(f"\nCI pass complete. Log: {logpath}")
 

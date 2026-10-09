@@ -1,0 +1,38 @@
+# SSH client config for the notebook-runner container.
+#
+# run.py builds its own `ssh -o ...` prefixes for the agent to copy-paste, but
+# these host-level defaults apply to every connection the container makes,
+# including the scp of the notebook and preflight_patch.py.
+
+Host *
+    # Never prompt. Under cron there is no tty to answer a password or
+    # host-key question, so a prompt is an infinite hang, not an error.
+    BatchMode yes
+
+    # Verify the GPU host against the known_hosts mounted at runtime.
+    # Do NOT relax this to "no": the agent runs arbitrary commands on whatever
+    # answers, so silently trusting a new key is a real compromise path.
+    StrictHostKeyChecking yes
+    UserKnownHostsFile /home/agent/.ssh/known_hosts
+
+    # Fail fast on a dead node instead of blocking a whole CI pass.
+    ConnectTimeout 15
+
+    # Long GPU jobs are silent for minutes at a time; without keepalives a
+    # stateful firewall drops the session and papermill output is lost.
+    ServerAliveInterval 30
+    ServerAliveCountMax 10
+
+    # No X11, no agent forwarding — the container has no display, and
+    # forwarding an agent into an AI-driven shell would let it reuse the
+    # host's keys to reach machines this pipeline has no business touching.
+    ForwardX11 no
+    ForwardAgent no
+
+# The GPU node under test (MI300X, 192GB, ROCm 7.2). `ssh eddie` resolves here.
+# HostName is an IP, so it is stable inside the container regardless of whether
+# the container inherits the host's DNS or /etc/hosts.
+Host eddie
+    HostName 134.199.202.42
+    User root
+    IdentityFile /home/agent/.ssh/id_gpu
