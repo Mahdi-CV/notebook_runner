@@ -172,6 +172,7 @@ def run_check_hf(notebook_local: Path, hf_token: str | None) -> Check:
                 "error_type": "missing_dependency",
                 "description": reason,
                 "proposed_fix": "Set HF_TOKEN to a valid HuggingFace user access token. Generate one at https://huggingface.co/settings/tokens",
+                "fixability": "infra_blocked",
             }
             print(f"    {mid}: HTTP 401 (token invalid or expired)")
             break
@@ -183,6 +184,7 @@ def run_check_hf(notebook_local: Path, hf_token: str | None) -> Check:
                 "error_type": "missing_dependency",
                 "description": reason,
                 "proposed_fix": f"Request access at https://huggingface.co/{mid} and wait for approval, then re-run.",
+                "fixability": "infra_blocked",
             }
             print(f"    {mid}: HTTP 403 (no download access — gated model)")
             break
@@ -242,6 +244,7 @@ def run_check_gpu(ssh_cmd: str, gpus_required: int) -> Check:
             "error_type": "missing_dependency",
             "description": reason,
             "proposed_fix": f"Run this notebook on a server with at least {gpus_required} GPU(s), or update the manifest gpus_required field.",
+            "fixability": "infra_blocked",
         })
     else:
         chk.ok()
@@ -282,6 +285,7 @@ def run_check_disk(ssh_cmd: str) -> Check:
             "error_type": "missing_dependency",
             "description": reason,
             "proposed_fix": f"Free disk space on the server until {WORKSPACE_BASE} has at least {MIN_DISK_GB} GB available.",
+            "fixability": "infra_blocked",
         })
     else:
         chk.ok()
