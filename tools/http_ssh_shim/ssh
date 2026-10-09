@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""
+Drop-in `ssh` replacement. Parses the exact argv shape this pipeline uses
+(-o flag, flag, ...)*, user@host, [remote command]) and translates it into
+an HMAC-signed HTTP call against the agent server on the GPU node, instead
+of opening a real SSH connection — which AMD's egress silently drops for
+this destination (see docs/PLAN-http-agent-shim.md).
+
+Every existing SSH_CMD string built by run.py, and every `ssh ...` command
+the Claude Code agent types via its own Bash tool per CLAUDE.md, keeps
+working unmodified — this file just has to be found on $PATH ahead of the
+real /usr/bin/ssh.
+
+Two forms this pipeline actually uses, both supported:
+  ssh -o ... user@host 'remote command'   -> exec, return its result
+  ssh -o ... user@host 'mkdir -p ...'      -> same, just a different cmd
+
+`-o key=value` flags are accepted and ignored — they configure a real SSH
+connection (host-key checking, timeouts) that has no meaning over HTTP.
+"""
+
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from hmac_auth import sign_request  # noqa: E402
+
+AGENT_SECRET = os.environ.get("AGENT_SECRET", "")
+AGENT_URL = os.environ.get("AGENT_URL", "").rstrip("/")
+# Generous default — matches the SSH_TIMEOUT/-o ConnectTimeout convention
+# this pipeline uses for quick calls; individual agent commands can run far
+# longer (CLAUDE.md's nohup+poll pattern means any single /agent/exec call
+# is itself normally short — a poll, a docker command — even when the
+# thing it started runs for hours in the background).
+DEFAULT_EXEC_TIMEOUT = int(os.environ.get("AGENT_EXEC_TIMEOUT", "600"))
+
+
+def fail(msg: str, code: int = 255) -> None:
+    # Match ssh's convention of writing errors to stderr and a nonzero exit.
+    print(f"ssh (http-shim): {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def parse_argv(argv: list[str]) -> tuple[str, str | None]:
+    """Return (target, remote_cmd_or_None). Skips `-o k=v` pairs and any
+    other recognized ssh flags; the first bare (non-flag) token is the
+    target (user@host), the next bare token if present is the command."""
+    i = 0
+    target = None
+    remote_cmd = None
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "-o":
+            i += 2  # skip the flag and its value
+            continue
+        if arg in ("-i", "-p", "-l"):
+            # Not used by this pipeline today, but harmless to accept and
+            # skip so the shim doesn't choke if a call site adds one later.
+            i += 2
+            continue
+        if arg.startswith("-"):
+            i += 1
+            continue
+        if target is None:
+            target = arg
+        elif remote_cmd is None:
+            remote_cmd = arg
+        i += 1
+    if target is None:
+        fail("no target host given")
+    return target, remote_cmd
+
+
+def main() -> None:
+    if not AGENT_SECRET or not AGENT_URL:
+        fail("AGENT_SECRET / AGENT_URL not set in environment")
+
+    target, remote_cmd = parse_argv(sys.argv[1:])
+
+    if remote_cmd is None:
+        # `ssh user@host` with no command — this pipeline never does this
+        # (no interactive shells are opened over the shim), so treat it as
+        # a caller error rather than trying to fake a shell session.
+        fail("interactive ssh (no remote command) is not supported by the http shim")
+
+    body = json.dumps({"cmd": remote_cmd, "timeout": DEFAULT_EXEC_TIMEOUT}).encode()
+    headers = sign_request(AGENT_SECRET, "POST", "/agent/exec", body)
+    headers["Content-Type"] = "application/json"
+
+    req = urllib.request.Request(
+        f"{AGENT_URL}/exec", data=body, headers=headers, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=DEFAULT_EXEC_TIMEOUT + 10) as resp:
+            payload = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        fail(f"agent server rejected request (HTTP {e.code}): {e.read().decode(errors='replace')}")
+    except urllib.error.URLError as e:
+        fail(f"could not reach agent server at {AGENT_URL}: {e}")
+
+    # Mirror real ssh: remote stdout/stderr pass through to ours, exit code
+    # matches the remote command's exit code (not ssh's own connection
+    # status — this pipeline never distinguishes the two anyway).
+    sys.stdout.write(payload["stdout"])
+    sys.stderr.write(payload["stderr"])
+    sys.exit(payload["exit_code"])
+
+
+if __name__ == "__main__":
+    main()

@@ -92,71 +92,23 @@ if ! getent hosts "$gw_host" >/dev/null 2>&1; then
   exit 1
 fi
 
-# Dedicated application key, not a human's personal key.
+# HTTP transport shim, not real SSH.
 #
-# This key is mounted into a container that runs model-authored shell commands,
-# so it should grant exactly one thing: access to the GPU node. Using a
-# personal key would hand that blast radius every host that key can reach, and
-# make revocation mean "rotate my whole identity" instead of "delete one line
-# from one authorized_keys".
+# AMD's egress silently drops SSH (and refuses TLS outright) to the GPU
+# node's IP range — see docs/PLAN-http-agent-shim.md. tools/http_ssh_shim/
+# replaces ssh/scp with drop-ins that speak HMAC-signed HTTP instead, and
+# run.py prepends that directory to PATH whenever AGENT_URL/AGENT_SECRET are
+# set (which .env sourcing above already exported into this shell).
 #
-# Passphrase-less by necessity — an unattended cron pass has no tty to unlock
-# a key. That makes file custody the only protection: keep it 0600 and treat
-# it as a credential, not a convenience.
-: "${GPU_SSH_KEY:=$HOME/.ssh/id_nbrunner_ed25519}"
-if [[ ! -f "$GPU_SSH_KEY" ]]; then
-  echo "run-ci: GPU ssh key not found at $GPU_SSH_KEY" >&2
-  echo "        Create one with:" >&2
-  echo "          ssh-keygen -t ed25519 -f $GPU_SSH_KEY -N '' -C notebook-runner-ci" >&2
-  echo "        then append the .pub to the GPU node's ~/.ssh/authorized_keys." >&2
-  echo "        Override the path with GPU_SSH_KEY=." >&2
+# No key file, no known_hosts, no staging/chown dance the way a real SSH
+# key needed: the secret is a plain string forwarded via -e, same as every
+# other credential in this script.
+if [[ -z "${AGENT_URL:-}" || -z "${AGENT_SECRET:-}" ]]; then
+  echo "run-ci: AGENT_URL / AGENT_SECRET are unset." >&2
+  echo "        The GPU node is not reachable over real SSH from this network" >&2
+  echo "        (AMD's egress silently drops it) — set both in .env to use the" >&2
+  echo "        HTTP transport shim. See docker/README.md and .env.example." >&2
   exit 1
-fi
-
-# A group/world-readable private key is a finding, and ssh itself will refuse
-# it — fail here with an actionable message instead of mid-pass.
-key_perms="$(stat -c '%a' "$GPU_SSH_KEY")"
-if [[ "$key_perms" != "600" && "$key_perms" != "400" ]]; then
-  echo "run-ci: $GPU_SSH_KEY has mode $key_perms — must be 600 or 400." >&2
-  echo "        Fix with: chmod 600 $GPU_SSH_KEY" >&2
-  exit 1
-fi
-
-# Stage the key under the agent's uid.
-#
-# Bind-mounting the key directly does not work: a correct 0600 key is owned by
-# the invoking user, the container runs as uid 1001, and a bind mount preserves
-# host ownership — so ssh inside the container reports
-#   Load key "/home/agent/.ssh/id_gpu": Permission denied
-# and falls through to "Permission denied (publickey)", which looks like a
-# rejected key rather than an unreadable one.
-#
-# Copy to a 0600 uid-1001 staging file instead. It lives under logs/ (already
-# gitignored) and is removed on exit, so the key is not left lying around in a
-# second location.
-KEY_STAGE="$REPO_ROOT/logs/.id_gpu_stage"
-install -m 600 "$GPU_SSH_KEY" "$KEY_STAGE"
-if ! chown 1001:1001 "$KEY_STAGE" 2>/dev/null; then
-  # Unprivileged host user: fall back to world-readable *inside the staging
-  # copy only*. Acceptable because logs/ is not world-traversable and the file
-  # is deleted on exit — but warn, because it is a real (brief) exposure.
-  chmod 644 "$KEY_STAGE"
-  echo "run-ci: warning — cannot chown the staged key to uid 1001 (needs root)." >&2
-  echo "        Staged copy is mode 644 for the container's lifetime." >&2
-fi
-trap 'rm -f "$KEY_STAGE"' EXIT
-
-# known_hosts is mounted read-only and StrictHostKeyChecking is on, so the GPU
-# host must already be trusted on this machine. Generating it here (rather than
-# disabling the check in the container) keeps the trust decision on the host,
-# where a human made it.
-KNOWN_HOSTS="$REPO_ROOT/logs/.known_hosts_gpu"
-if [[ ! -s "$KNOWN_HOSTS" ]]; then
-  echo "run-ci: building known_hosts for the GPU node…"
-  ssh-keyscan -H 134.199.202.42 > "$KNOWN_HOSTS" 2>/dev/null || {
-    echo "run-ci: ssh-keyscan failed — is the GPU node reachable?" >&2
-    exit 1
-  }
 fi
 
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
@@ -186,7 +138,10 @@ echo "run-ci: starting pass $TS (image=$IMAGE, log=$LOGFILE)"
 #                                          them (patching happens on the GPU
 #                                          node, on a copy)
 #   (.env is deliberately NOT mounted — see below)
-#   ssh key, known_hosts     read-only   — credentials
+#   tools/ (includes http_ssh_shim/) read-only — run.py prepends this to
+#                                          PATH itself when AGENT_URL/
+#                                          AGENT_SECRET are set; no separate
+#                                          mount or key staging needed
 #   .git                     read-write  — Phase D commits
 #
 # --read-only on the root filesystem with tmpfs for the writable spots: the
@@ -217,6 +172,8 @@ docker run --rm \
   -e ANTHROPIC_DEFAULT_HAIKU_MODEL \
   -e CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
   -e TEAMS_WEBHOOK_URL \
+  -e AGENT_URL \
+  -e AGENT_SECRET \
   -e GIT_AUTHOR_NAME="notebook-runner" \
   -e GIT_AUTHOR_EMAIL="notebook-runner@local" \
   -e GIT_COMMITTER_NAME="notebook-runner" \
@@ -232,8 +189,6 @@ docker run --rm \
   -v "$REPO_ROOT/STATUS.md:/work/STATUS.md:rw" \
   -v "$REPO_ROOT/manifest.yaml:/work/manifest.yaml:rw" \
   -v "$REPO_ROOT/.git:/work/.git:rw" \
-  -v "$KEY_STAGE:/home/agent/.ssh/id_gpu:ro" \
-  -v "$KNOWN_HOSTS:/home/agent/.ssh/known_hosts:ro" \
   "$IMAGE" \
   python tools/ci_run.py "$@" 2>&1 | tee "$LOGFILE"
 

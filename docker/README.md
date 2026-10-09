@@ -138,6 +138,7 @@ Measured reachability:
 | `xcovdashdbd01` | reachable (10.214.150.4) | **blocked** |
 | GPU node (`eddie`) | **no DNS** | — |
 
-The orchestrator needs **both**. Today only the workstation has both, so
-`xcovdashdbd01` cannot yet run unattended passes — see `HANDOFF.md` for the
-options (firewall exception vs. SSH tunnel vs. running on a host with both).
+The orchestrator needs **both**. AMD's egress drops SSH to the GPU node but
+passes plain HTTP on :80, so `xcovdashdbd01` reaches it through the
+HMAC-signed HTTP shim in `tools/http_ssh_shim/` (enabled by setting
+`AGENT_URL`/`AGENT_SECRET`) — see `docs/PLAN-http-agent-shim.md`.

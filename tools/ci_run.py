@@ -21,6 +21,7 @@ Usage:
   python3 tools/ci_run.py --category inference  # one category only
   python3 tools/ci_run.py --no-commit           # update files, don't commit
   python3 tools/ci_run.py --skip-gap            # only attack current failures
+  python3 tools/ci_run.py --verify-only         # diagnose only, never auto-fix
   python3 tools/ci_run.py --dry-run             # print the plan, run nothing
 
 Scheduling:
@@ -112,8 +113,9 @@ def stream(cmd: list[str], tee: Tee) -> int:
     return proc.returncode
 
 
-def run_batch(paths: list[Path], base_dir: Path, tee: Tee, dry_run: bool) -> None:
-    cmd = [sys.executable, str(RUN_PY), "--dir", str(base_dir), "--mode", "full",
+def run_batch(paths: list[Path], base_dir: Path, tee: Tee, dry_run: bool,
+              mode: str = "full") -> None:
+    cmd = [sys.executable, str(RUN_PY), "--dir", str(base_dir), "--mode", mode,
            *[str(p) for p in paths]]
     if dry_run:
         tee.line(f"[dry-run] would run: {' '.join(cmd)}")
@@ -178,6 +180,9 @@ def main() -> int:
                    choices=["inference", "fine_tune", "pretrain", "gpu_dev_optimize"])
     p.add_argument("--skip-gap", action="store_true",
                    help="Skip Phase A (freshness); only re-attempt current failures.")
+    p.add_argument("--verify-only", action="store_true",
+                   help="Run --mode verify instead of --mode full: diagnose only, "
+                        "never auto-fix. Intended for unattended/scheduled passes.")
     p.add_argument("--no-commit", action="store_true",
                    help="Update STATUS.md/results but do not git commit.")
     p.add_argument("--push", action="store_true",
@@ -194,6 +199,8 @@ def main() -> int:
     if not base_dir.exists():
         print(f"Error: notebook dir not found: {base_dir}", file=sys.stderr)
         return 2
+
+    batch_mode = "verify" if args.verify_only else "full"
 
     ts = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%S")
     LOGS_DIR.mkdir(exist_ok=True)
@@ -216,7 +223,7 @@ def main() -> int:
             for p in gap_paths:
                 tee.line(f"    {p.name}")
             if gap_paths:
-                run_batch(gap_paths, base_dir, tee, args.dry_run)
+                run_batch(gap_paths, base_dir, tee, args.dry_run, mode=batch_mode)
 
         # ── Phase B — Failures (deduped against Phase A) ────────────────────
         failing_paths = selector_paths("--failing", base_dir, args.category)
@@ -226,7 +233,7 @@ def main() -> int:
         for p in failing_paths:
             tee.line(f"    {p.name}")
         if failing_paths:
-            run_batch(failing_paths, base_dir, tee, args.dry_run)
+            run_batch(failing_paths, base_dir, tee, args.dry_run, mode=batch_mode)
 
         # ── Phase C — Dashboard ─────────────────────────────────────────────
         tee.line("\n── Phase C — Regenerating STATUS.md ──")
