@@ -9,6 +9,8 @@ Usage:
   python3 tools/report_teams.py                 # post (needs TEAMS_WEBHOOK_URL)
   python3 tools/report_teams.py --dry-run       # write the card to logs/, post nothing
   python3 tools/report_teams.py --always-post   # post even when nothing changed
+  python3 tools/report_teams.py --run-id ID     # card for one run, from results/runs.db
+                                                # (what `run.py --notify` calls)
 
 Design notes:
 
@@ -45,6 +47,7 @@ from pathlib import Path
 # Reuse status.py's aggregation rather than reimplementing it — a second copy
 # of "what counts as failing" would drift from the dashboard it summarizes.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import results_db  # noqa: E402
 import status as status_mod  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -203,18 +206,7 @@ def build_card(summary: dict, buckets: dict, delta: dict, log_name: str | None) 
         footer += " · full detail in STATUS.md"
     body.append(text_block(footer, isSubtle=True, size="Small", color=PLAIN))
 
-    return {
-        "type": "message",
-        "attachments": [{
-            "contentType": "application/vnd.microsoft.card.adaptive",
-            "content": {
-                "type": "AdaptiveCard",
-                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                "version": "1.4",
-                "body": body,
-            },
-        }],
-    }
+    return wrap_card(body)
 
 
 def _name_list(names: list[str], limit: int) -> str:
@@ -241,6 +233,103 @@ def _detail_blocks(entries: list[dict], color: str, limit: int = 15) -> list[dic
             f"_+{len(entries) - limit} more — see STATUS.md_",
             isSubtle=True, size="Small"))
     return blocks
+
+
+def wrap_card(body: list[dict]) -> dict:
+    return {
+        "type": "message",
+        "attachments": [{
+            "contentType": "application/vnd.microsoft.card.adaptive",
+            "content": {
+                "type": "AdaptiveCard",
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "version": "1.4",
+                "body": body,
+            },
+        }],
+    }
+
+
+def build_run_card(run: dict, rows: list[dict], manifest: dict) -> dict:
+    """Card for one run.py invocation, read from the results DB.
+
+    Unlike build_card() (the whole-dashboard view ci_run.py posts), this
+    reports only the notebooks this run touched — an ad-hoc `run.py --notify`
+    on two notebooks should say what happened to those two, not restate the
+    other forty.
+    """
+    expected = {Path(k).name: (v or {}).get("expected_result")
+                for k, v in (manifest.get("notebooks") or {}).items()}
+
+    passing, failing, infra, skipped = [], [], [], []
+    for r in rows:
+        name = r["notebook"]
+        if r["phase"] == "skip":
+            skipped.append(name)
+            continue
+        status = r["status"]
+        if status == "pass" or (status == "partial"
+                                and expected.get(Path(name).name) == "partial"):
+            passing.append(name)
+            continue
+        entry = {"name": name, "why": _run_row_why(r)}
+        issues = r["issues"]
+        if issues and all(i["fixability"] == "infra_blocked" for i in issues):
+            infra.append(entry)
+        else:
+            failing.append(entry)
+
+    tested = len(passing) + len(failing) + len(infra)
+    if failing:
+        color, headline = BAD, f"{len(failing)} failing"
+    elif infra:
+        color, headline = WARN, f"{len(infra)} infra-blocked"
+    elif not tested:
+        color, headline = WARN, "nothing tested"
+    else:
+        color, headline = GOOD, "all passing"
+
+    body = [
+        text_block(f"Notebook regression run `{run['run_id']}`",
+                   weight="Bolder", size="Medium"),
+        text_block(f"**{len(passing)}/{tested} passing** — {headline}",
+                   color=color, size="Medium", weight="Bolder"),
+    ]
+    facts = [{"title": "Mode", "value": run.get("mode") or "?"}]
+    if run.get("total_cost_usd"):
+        facts.append({"title": "Cost", "value": f"${run['total_cost_usd']:.2f}"})
+    if skipped:
+        facts.append({"title": "Skipped", "value": _name_list(skipped, limit=5)})
+    if passing and (failing or infra):
+        facts.append({"title": "Passing", "value": _name_list(passing, limit=10)})
+    body.append({"type": "FactSet", "facts": facts})
+
+    if failing:
+        body.append(text_block("Failing — content bugs for authors",
+                               weight="Bolder", color=BAD, spacing="Medium"))
+        body.extend(_detail_blocks(failing, BAD))
+    if infra:
+        body.append(text_block("Infra-blocked — not the notebook's fault",
+                               weight="Bolder", color=WARN, spacing="Medium"))
+        body.extend(_detail_blocks(infra, WARN))
+
+    stamp = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    body.append(text_block(f"{stamp} · results DB run_id {run['run_id']}",
+                           isSubtle=True, size="Small", color=PLAIN))
+    return wrap_card(body)
+
+
+def _run_row_why(row: dict) -> str:
+    """Top failure line for a DB row — same shape as status.py's top_failure."""
+    if row["issues"]:
+        first = row["issues"][0]
+        etype = first["error_type"] or "unknown"
+        desc = (first["description"] or "").strip().replace("\n", " ")
+        if len(desc) > 80:
+            desc = desc[:77] + "..."
+        return f"{etype}: {desc}" if desc else etype
+    # No issues means the runner itself failed (crash, no result file written).
+    return (row["message"] or "").strip()
 
 
 def post(url: str, card: dict) -> bool:
@@ -270,9 +359,25 @@ def main() -> int:
                    help="Post even when nothing changed and nothing is failing.")
     p.add_argument("--log-name", default=None,
                    help="Pass log filename, shown in the card footer.")
+    p.add_argument("--run-id", default=None,
+                   help="Post a card for this one run (from the results DB) instead "
+                        "of the whole-dashboard summary. Always posts: asking for a "
+                        "specific run's card is itself the request to hear about it.")
+    p.add_argument("--db", default=str(results_db.DEFAULT_DB),
+                   help="Results database for --run-id.")
     args = p.parse_args()
 
     manifest = status_mod.load_manifest()
+
+    if args.run_id:
+        conn = results_db.connect(args.db)
+        run, rows = results_db.run_results(conn, args.run_id)
+        conn.close()
+        if run is None:
+            log(f"run {args.run_id} not found in {args.db} — nothing to post")
+            return 0
+        return publish(build_run_card(run, rows, manifest), args.dry_run)
+
     results = status_mod.load_results(Path(args.results_dir))
     rows = status_mod.build_notebook_rows(manifest, results)
     summary = status_mod.compute_summary(rows)
@@ -304,9 +409,11 @@ def main() -> int:
         log("nothing failing and nothing changed — skipping post (--always-post to override)")
         return 0
 
-    card = build_card(summary, buckets, delta, args.log_name)
+    return publish(build_card(summary, buckets, delta, args.log_name), args.dry_run)
 
-    if args.dry_run:
+
+def publish(card: dict, dry_run: bool) -> int:
+    if dry_run:
         PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%S")
         out = PREVIEW_DIR / f"card_{stamp}.json"

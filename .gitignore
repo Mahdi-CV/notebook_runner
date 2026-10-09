@@ -6,6 +6,8 @@
 
 # Run artifacts
 results/*.json
+results/*.db
+results/*.db-*
 fixes/
 logs/
 

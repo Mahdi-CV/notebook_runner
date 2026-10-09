@@ -34,9 +34,11 @@ import argparse
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -48,6 +50,9 @@ HERE        = Path(__file__).parent
 TOOLS_DIR   = (HERE / "tools").resolve()
 RESULTS_DIR = (HERE / "results").resolve()
 FIXES_DIR   = (HERE / "fixes").resolve()   # genuine-fix notebooks retrieved by the fixer (for PRs)
+
+sys.path.insert(0, str(TOOLS_DIR))
+import results_db  # noqa: E402
 
 # HTTP transport shim — see docs/PLAN-http-agent-shim.md.
 #
@@ -759,7 +764,10 @@ def _find_latest_result(notebook_path: Path) -> dict | None:
     if result_path is None:
         return None
     with open(result_path) as f:
-        return json.load(f)
+        result = json.load(f)
+    # Carried along so results_db can link the row to its JSON file.
+    result["result_path"] = str(result_path)
+    return result
 
 
 def _find_latest_result_path(notebook_path: Path) -> Path | None:
@@ -776,6 +784,33 @@ def _has_auto_fixable_issues(result_path: Path) -> bool:
     return any(
         iss.get("fixability") == "auto_fixable"
         for iss in data.get("issues", [])
+    )
+
+
+# ── Results database ──────────────────────────────────────────────────────────
+
+def _db_call(conn, fn, *args):
+    """Run a results_db write, never letting a DB problem fail the pass.
+
+    The agent's JSON result is already on disk; `tools/results_db.py import`
+    can backfill anything missed here.
+    """
+    if conn is None:
+        return None
+    try:
+        return fn(conn, *args)
+    except sqlite3.Error as exc:
+        print(f"warning: results DB write failed ({exc}) — JSON result is unaffected",
+              file=sys.stderr)
+        return None
+
+
+def _notify_teams(run_id: str, db_path: str) -> None:
+    """Post this run's summary card. Never fatal — same as ci_run.py Phase E."""
+    subprocess.run(
+        [sys.executable, str(TOOLS_DIR / "report_teams.py"),
+         "--run-id", run_id, "--db", db_path],
+        check=False,
     )
 
 
@@ -809,6 +844,16 @@ def parse_args():
                         "full=verify then fix (default)")
     p.add_argument("--verification-result", default=None,
                    help="Path to verification result JSON (required for --mode fix)")
+    p.add_argument("--db", default=str(results_db.DEFAULT_DB),
+                   help="SQLite results database. Every run is recorded here "
+                        "(default: results/runs.db).")
+    p.add_argument("--run-id", default=None,
+                   help="Group this invocation's results under an existing run id "
+                        "(ci_run.py uses this so its batches form one run). "
+                        "Default: a fresh UTC timestamp.")
+    p.add_argument("--notify", action="store_true",
+                   help="After the run, post a summary of it to Teams "
+                        "(needs TEAMS_WEBHOOK_URL; skipped with a note if unset).")
     return p.parse_args()
 
 
@@ -889,7 +934,18 @@ def main():
     print(f"\nNotebook regression agent  [Claude Code]")
     print(f"  Notebooks : {len(notebooks)}")
     print(f"  Mode      : {mode_label}")
-    print(f"  Results   : {RESULTS_DIR}\n")
+    print(f"  Results   : {RESULTS_DIR}")
+
+    run_id = args.run_id or datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%S")
+    try:
+        db = results_db.connect(args.db)
+    except sqlite3.Error as exc:
+        print(f"warning: could not open results DB {args.db} ({exc}) — "
+              f"continuing with JSON results only", file=sys.stderr)
+        db = None
+    _db_call(db, results_db.start_run, run_id, mode_label,
+             args.host or os.getenv("GPU_HOST"), sys.argv[1:])
+    print(f"  Run ID    : {run_id}  (db: {args.db})\n")
 
     results = []
     skipped = []
@@ -906,6 +962,9 @@ def main():
             reason = entry.get("skip_reason", "no reason given")
             print(f"  SKIP — {reason}\n")
             skipped.append({"notebook": str(nb), "reason": reason})
+            rel_key = str(nb.relative_to(base_dir)) if base_dir else nb.name
+            _db_call(db, results_db.record_result, run_id, rel_key, str(nb), "skip",
+                     {"status": "skip", "message": reason})
             continue
 
         host = cfg["host"]
@@ -940,6 +999,9 @@ def main():
             except Exception as exc:
                 result = {"status": "fail", "message": f"Runner crashed: {exc}"}
 
+            _db_call(db, results_db.record_result, run_id, cfg["rel_key"], str(nb),
+                     "verify", result)
+
             verify_cost  = result.get("cost_usd") or 0.0
             verify_turns = result.get("num_turns") or 0
 
@@ -969,6 +1031,10 @@ def main():
                         verification_result_path = vr_path,
                         rel_key         = cfg["rel_key"],
                     )
+                    # Recorded before cost accumulation: each DB row carries
+                    # its own phase's cost, so SUM(cost_usd) never double-counts.
+                    _db_call(db, results_db.record_result, run_id, cfg["rel_key"],
+                             str(nb), "fix", fix_result)
                     # Accumulate costs from both agents
                     fix_cost  = fix_result.get("cost_usd") or 0.0
                     fix_turns = fix_result.get("num_turns") or 0
@@ -981,10 +1047,15 @@ def main():
                     print(f"  {f_icon} FIX: {f_status.upper()}", flush=True)
                 except Exception as exc:
                     print(f"  ✗ Fixer crashed: {exc}", flush=True)
+                    _db_call(db, results_db.record_result, run_id, cfg["rel_key"],
+                             str(nb), "fix",
+                             {"status": "fail", "message": f"Fixer crashed: {exc}"})
             elif args.mode == "fix":
                 print(f"  ✗ No verification result found for {nb.name}", flush=True)
                 result = {"status": "fail",
                           "message": "No verification result available for fixer"}
+                _db_call(db, results_db.record_result, run_id, cfg["rel_key"],
+                         str(nb), "fix", result)
 
         if result is None:
             result = {"status": "fail", "message": "No result produced"}
@@ -1028,6 +1099,15 @@ def main():
             print(f"  ✗ {Path(r['notebook']).name}")
             if r.get("message"):
                 print(f"    {r['message']}")
+
+    _db_call(db, results_db.finish_run, run_id)
+    if db is not None:
+        db.close()
+        if args.notify:
+            _notify_teams(run_id, args.db)
+    elif args.notify:
+        print("[teams] skipped — the card is built from the results DB, which "
+              "could not be opened", file=sys.stderr)
 
     sys.exit(0 if not failed else 1)
 

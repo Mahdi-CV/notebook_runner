@@ -114,9 +114,10 @@ def stream(cmd: list[str], tee: Tee) -> int:
 
 
 def run_batch(paths: list[Path], base_dir: Path, tee: Tee, dry_run: bool,
-              mode: str = "full") -> None:
+              run_id: str, mode: str = "full") -> None:
+    # --run-id groups Phase A and Phase B under one run in results/runs.db.
     cmd = [sys.executable, str(RUN_PY), "--dir", str(base_dir), "--mode", mode,
-           *[str(p) for p in paths]]
+           "--run-id", run_id, *[str(p) for p in paths]]
     if dry_run:
         tee.line(f"[dry-run] would run: {' '.join(cmd)}")
         return
@@ -223,7 +224,7 @@ def main() -> int:
             for p in gap_paths:
                 tee.line(f"    {p.name}")
             if gap_paths:
-                run_batch(gap_paths, base_dir, tee, args.dry_run, mode=batch_mode)
+                run_batch(gap_paths, base_dir, tee, args.dry_run, ts, mode=batch_mode)
 
         # ── Phase B — Failures (deduped against Phase A) ────────────────────
         failing_paths = selector_paths("--failing", base_dir, args.category)
@@ -233,7 +234,7 @@ def main() -> int:
         for p in failing_paths:
             tee.line(f"    {p.name}")
         if failing_paths:
-            run_batch(failing_paths, base_dir, tee, args.dry_run, mode=batch_mode)
+            run_batch(failing_paths, base_dir, tee, args.dry_run, ts, mode=batch_mode)
 
         # ── Phase C — Dashboard ─────────────────────────────────────────────
         tee.line("\n── Phase C — Regenerating STATUS.md ──")

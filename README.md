@@ -275,6 +275,25 @@ back to the verification result it acted on:
 }
 ```
 
+### Results database
+
+`results/*.json` is a latest-wins cache that feeds `STATUS.md`. Every `run.py`
+invocation also appends to `results/runs.db` (SQLite, gitignored): one `runs`
+row per invocation, one `results` row per notebook per phase (`verify` / `fix` /
+`skip`, with cost and turns), and one `issues` row per diagnosed issue. Runner
+failures that never produced a JSON file (crashes, agent wrote no result) are
+recorded too. `ci_run.py` passes `--run-id` so both of its batches form one run.
+
+```bash
+python3 run.py nb.ipynb --notify              # also post this run's card to Teams
+python3 tools/results_db.py import            # backfill existing results/*.json (idempotent)
+sqlite3 results/runs.db 'SELECT notebook, status, recorded_at FROM latest_results'
+```
+
+`--notify` needs `TEAMS_WEBHOOK_URL`; without it the run still records and
+just skips the post. A DB write failure is logged as a warning and never fails
+the run.
+
 **Status values:**
 
 | Status | Meaning |
@@ -386,6 +405,7 @@ notebook-runner-agent/
     ├── resolve_docker_image.py  # Queries Docker Hub for the versioned tag matching AMD hardware
     ├── preflight_patch.py       # Applies exactly the 4 allowed pre-flight patches, deterministically
     ├── write_result.py          # Writes structured JSON result to results/
+    ├── results_db.py            # SQLite run history (results/runs.db); backfill via `import`
     ├── status.py                # Aggregates latest result per notebook → STATUS.md dashboard
     ├── report_github.py         # Files issues / PRs / closes them from results
     ├── ci_run.py                # CI orchestrator: gap → failures → dashboard → commit
