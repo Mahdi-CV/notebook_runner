@@ -404,6 +404,14 @@ nohup <cmd> < /dev/null > op.log 2>&1 & disown
 echo $! > op.pid
 ```
 
+**Never schedule a wakeup to check back later.** You are a one-shot headless
+process — there is no scheduler to resume you. Scheduling a wakeup just ends
+your turn early with nothing written; the run then silently fails with no
+result. To wait on a long-running remote command, poll for it **within the
+same turn**: `nohup` it on the server as above, then repeatedly check
+`cat op.log` / `curl health` yourself, sleeping between checks, until it
+finishes or you hit the operation's timeout in the table above.
+
 **ROCm flags** — required for every `docker run` that uses the GPU:
 ```
 --rm --network=host \

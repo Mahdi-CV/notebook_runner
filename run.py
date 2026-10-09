@@ -582,6 +582,11 @@ write_result (call this when done):
         return result or {"status": "unknown", "message": "Interactive session ended"}
 
     # 5. Headless mode: fully autonomous
+    #
+    # ScheduleWakeup/CronCreate etc. have no effect on a one-shot `claude -p`
+    # process — there is no scheduler to resume it, so the run just ends its
+    # turn early and silently produces no result. Deny them so the agent is
+    # forced to use the documented background+poll pattern (CLAUDE.md) instead.
     print(f"\n  Starting Claude Code agent (headless)…", flush=True)
     proc = subprocess.Popen(
         [
@@ -592,6 +597,7 @@ write_result (call this when done):
             "--verbose",
             "--max-turns", "200",
             "--dangerously-skip-permissions",
+            "--disallowedTools", "ScheduleWakeup,CronCreate,CronList,CronDelete",
         ],
         stdout=subprocess.PIPE,
         stderr=sys.stderr,   # show claude errors live instead of swallowing them
@@ -707,6 +713,11 @@ write_result (call this when done):
     system_prompt = fixer_playbook + "\n\n---\n\n" + runtime_ctx
 
     # 5. Spawn headless fixer agent
+    #
+    # ScheduleWakeup/CronCreate etc. have no effect on a one-shot `claude -p`
+    # process — there is no scheduler to resume it, so the run just ends its
+    # turn early and silently produces no result. Deny them so the agent is
+    # forced to use the documented background+poll pattern (CLAUDE.md) instead.
     print(f"\n  Starting fixer agent (headless)…", flush=True)
     proc = subprocess.Popen(
         [
@@ -717,6 +728,7 @@ write_result (call this when done):
             "--verbose",
             "--max-turns", "200",
             "--dangerously-skip-permissions",
+            "--disallowedTools", "ScheduleWakeup,CronCreate,CronList,CronDelete",
         ],
         stdout=subprocess.PIPE,
         stderr=sys.stderr,
