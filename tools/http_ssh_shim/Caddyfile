@@ -2,9 +2,7 @@
 #
 # /agent/* -> the HMAC-authenticated exec/upload server (agent_server.py),
 #             which is the SSH replacement for this pipeline.
-# everything else -> whatever was already being served on :8888 (e.g. a
-#             Jupyter session from prior work) — unchanged from before this
-#             pipeline touched the node.
+# everything else -> the existing service on :8888
 :80 {
 	handle /agent/* {
 		reverse_proxy 127.0.0.1:8899

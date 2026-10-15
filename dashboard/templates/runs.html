@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Runs{% endblock %}
+{% block content %}
+<h1>Runs</h1>
+<p class="sub">Each row is one invocation of the runner (a daily pass or an ad-hoc run). Results imported from older result files aren't tied to a run and appear only on their notebook's page.</p>
+<table>
+  <thead><tr><th>Run</th><th>Started</th><th>Finished</th><th>Mode</th><th>Runner / host</th><th>Pass</th><th>Fail</th><th>Skipped</th><th>Cost</th></tr></thead>
+  <tbody>
+  {% for r in runs %}
+    <tr>
+      <td class="mono"><a href="/run/{{ r.run_id }}">{{ r.run_id }}</a></td>
+      <td>{{ r.started_at | ts }}<br><span class="dim">{{ r.started_at | age }}</span></td>
+      <td>{% if r.finished_at %}{{ r.finished_at | ts }}{% else %}<span class="badge warn" title="no finish time recorded: still running, or interrupted">unfinished</span>{% endif %}</td>
+      <td>{{ r.mode or "—" }}</td>
+      <td class="mono">{{ r.host or "—" }}</td>
+      <td>{{ r.passed if r.passed is not none else "—" }}</td>
+      <td>{{ r.failed if r.failed is not none else "—" }}</td>
+      <td>{{ r.skipped if r.skipped is not none else "—" }}</td>
+      <td>{{ r.total_cost_usd | cost }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="9" class="dim">No runs recorded yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

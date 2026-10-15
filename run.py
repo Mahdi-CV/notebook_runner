@@ -55,28 +55,21 @@ RESULTS_DIR = (HERE / "results").resolve()
 FIXES_DIR   = (HERE / "fixes").resolve()   # genuine-fix notebooks retrieved by the fixer (for PRs)
 
 sys.path.insert(0, str(TOOLS_DIR))
+import k8s_pod  # noqa: E402
 import results_db  # noqa: E402
 
-# HTTP transport shim — see docs/PLAN-http-agent-shim.md.
-#
-# AMD's egress silently drops SSH (and refuses TLS outright) to the GPU
-# node's IP range, but plain HTTP on :80 passes cleanly. Rather than teach
-# every SSH_CMD-building call site (run.py itself, tools/env_check.py, and
-# — critically — the Claude Code agent's own autonomous Bash-tool usage per
-# CLAUDE.md) a new protocol, tools/http_ssh_shim/{ssh,scp} are drop-in
-# replacements that speak the same argv shape but translate to HMAC-signed
-# HTTP calls. Prepending that directory to PATH here means every
-# subprocess this script spawns — including the `claude` CLI, whose own
-# child processes inherit this same environment — resolves `ssh`/`scp` to
-# the shim instead of the real binaries, with zero changes to CLAUDE.md,
-# CLAUDE_FIX.md, or any SSH_CMD-building code below.
-#
-# Only activated when AGENT_URL/AGENT_SECRET are configured, so a host
-# where real SSH to the GPU node actually works (e.g. a future non-AMD-
-# network deployment) is unaffected and keeps using genuine ssh/scp.
+# With AGENT_URL/AGENT_SECRET set, route every ssh/scp this process spawns —
+# including the agent's own Bash calls — through the HMAC-signed HTTP shim, for
+# GPU nodes reachable only over plain HTTP.
 if os.getenv("AGENT_URL") and os.getenv("AGENT_SECRET"):
     _shim_dir = str((HERE / "tools" / "http_ssh_shim").resolve())
     os.environ["PATH"] = _shim_dir + os.pathsep + os.environ.get("PATH", "")
+
+# k8s runner credential from .env. Exported as KUBECONFIG so kubectl in this
+# process and in the agent's own Bash calls (tools/k8s_pod.py) uses it; inside
+# the CI container docker/run-ci.sh sets KUBECONFIG to the staged copy instead.
+if os.getenv("NBR_KUBECONFIG") and not os.getenv("KUBECONFIG"):
+    os.environ["KUBECONFIG"] = os.path.expanduser(os.environ["NBR_KUBECONFIG"])
 
 # Remote workspace base for per-notebook run dirs. Defaults to /home/amd for the
 # tw* servers (where amd is the login user); override with WORKSPACE_BASE on nodes
@@ -92,7 +85,8 @@ def load_manifest(path: Path) -> dict:
         return yaml.safe_load(f) or {}
 
 
-def resolve_notebook_config(nb_path, base_dir, manifest, cli_host, cli_user):
+def resolve_notebook_config(nb_path, base_dir, manifest, cli_host, cli_user,
+                            cli_server=None):
     if base_dir:
         try:
             rel_key = str(nb_path.relative_to(base_dir))
@@ -112,14 +106,16 @@ def resolve_notebook_config(nb_path, base_dir, manifest, cli_host, cli_user):
     user = cli_user or os.getenv("GPU_USER")
 
     server_hardware = None
-    server_name = entry.get("server")
+    server = {}
+    server_name = cli_server or entry.get("server")
     if server_name and server_name in servers:
-        srv = servers[server_name]
-        host = srv.get("host", host)
-        user = srv.get("user", user)
-        server_hardware = srv.get("hardware")
+        server = servers[server_name]
+        host = server.get("host", host)
+        user = server.get("user", user)
+        server_hardware = server.get("hardware")
 
     return {"host": host, "user": user,
+            "server_name": server_name, "server": server,
             "server_hardware": server_hardware, "manifest_entry": entry,
             "rel_key": rel_key}
 
@@ -384,7 +380,7 @@ def handle_stream(proc, notebook_name: str, agent_label: str = "") -> dict:
             if poll_active:
                 print()
                 poll_active = False
-            meta["cost_usd"]  = event.get("cost_usd", 0.0)
+            meta["cost_usd"]  = event.get("total_cost_usd", event.get("cost_usd", 0.0))
             meta["num_turns"] = event.get("num_turns", 0)
             if event.get("subtype") == "error_max_turns":
                 print(f"\n  ✗ Hit max turns limit", flush=True)
@@ -403,6 +399,7 @@ def run_env_check(
     hf_token: str | None,
     manifest_path: Path,
     skip: bool = False,
+    server: dict | None = None,
 ) -> dict | None:
     """Run tools/env_check.py for this notebook.
 
@@ -419,15 +416,21 @@ def run_env_check(
         sys.executable, str(TOOLS_DIR / "env_check.py"),
         "--notebook",       rel_key,
         "--notebook-local", str(notebook_path),
-        "--ssh-cmd",        (f"ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "
-                             f"-o ForwardX11=no {user}@{host}"),
         "--manifest",       str(manifest_path),
         "--results-dir",    str(RESULTS_DIR),
         "--write-result",
     ]
+    if _is_k8s(server):
+        # No host to probe: GPU fit is checked statically, disk is the pod's
+        # sized /workspace volume.
+        cmd += ["--gpus-per-node", str(server.get("gpus_per_node", 8))]
+    else:
+        cmd += ["--ssh-cmd", (f"ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "
+                              f"-o ForwardX11=no {user}@{host}")]
     if hf_token:
         cmd += ["--hf-token", hf_token]
 
+    started = time.time()
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=sys.stderr, text=True)
         for line in proc.stdout:
@@ -444,7 +447,7 @@ def run_env_check(
         return None
     elif rc == 1:
         print("  » env_check blocked the run — using env_check result as outcome", flush=True)
-        result = _find_latest_result(notebook_path)
+        result = _find_latest_result(notebook_path, since=started)
         if result is not None:
             return result
         return {"status": "fail",
@@ -456,13 +459,64 @@ def run_env_check(
         return None
 
 
+# ── Kubernetes runner ─────────────────────────────────────────────────────────
+
+def _is_k8s(server: dict | None) -> bool:
+    return bool(server) and server.get("type") == "k8s"
+
+
+def k8s_runtime(server_name: str, server: dict, manifest_path: Path,
+                notebook_path: Path, gpus: int, phase: str,
+                run_id: str) -> tuple[str, str]:
+    """Return (pod name, runtime-context block) for one agent run in a pod.
+
+    The agent provisions the pod itself (it picks the image after reading the
+    notebook); run.py only names it and deletes it afterwards.
+    """
+    pod  = k8s_pod.pod_name(notebook_path.stem, phase, run_id)
+    tool = (f"python3 {TOOLS_DIR}/k8s_pod.py --server {server_name} "
+            f"--manifest {manifest_path}")
+    up_cmd = (f"{tool} up --pod {pod} --gpus {gpus} "
+              f"--push {notebook_path} --push {TOOLS_DIR / 'preflight_patch.py'}")
+    block = f"""RUNNER          = k8s  (server {server_name}: follow CLAUDE.md "Runner: Kubernetes pod" — there is no SSH host)
+POD_CMD         = {tool} exec --pod {pod}
+K8S_UP_CMD      = {up_cmd}
+NOTEBOOK_REMOTE = {k8s_pod.WORKSPACE}/{notebook_path.name}  (K8S_UP_CMD copies it in once the pod is READY)
+WORKSPACE       = {k8s_pod.WORKSPACE}  (use this wherever the playbook says <WORKSPACE_BASE>/tutorial_agent_runs/<stem>)
+SCHEDULE_TIMEOUT = {server.get('schedule_timeout_min', 45)} min (K8S_UP_CMD reports UNSCHEDULABLE after this)
+
+Provision the pod once you have resolved the image (repeat until it prints READY):
+  Bash: {up_cmd} --image <image:tag>
+
+Use POD_CMD like this (HF_TOKEN is already set in the pod environment):
+  Bash: {tool} exec --pod {pod} '<your command here>'
+"""
+    if phase == "fix":
+        block += f"""
+POD_PULL_CMD    = {tool} pull --pod {pod}
+Retrieve the genuine-fix notebook (CLAUDE_FIX.md Step 4c) with:
+  Bash: {tool} pull --pod {pod} {k8s_pod.WORKSPACE}/{notebook_path.stem}_fixed.ipynb {FIXES_DIR}/{notebook_path.stem}.ipynb
+"""
+    return pod, block
+
+
+def k8s_down(server_name: str, server: dict, pod: str) -> None:
+    """Delete the agent's pod. Called from a finally, so never raises."""
+    try:
+        k8s_pod.down(k8s_pod.Kubectl(server), pod)
+    except Exception as exc:  # noqa: BLE001 — cleanup must not mask the result
+        print(f"warning: could not delete pod {pod} on {server_name} ({exc}); "
+              f"activeDeadlineSeconds will stop it", file=sys.stderr)
+
+
 # ── Core runner ───────────────────────────────────────────────────────────────
 
 def run_notebook(notebook_path: Path, host: str, user: str,
                  hf_token: str | None, manifest_entry: dict,
                  server_hardware: str | None, interactive: bool,
                  rel_key: str = "", manifest_path: Path | None = None,
-                 skip_env_check: bool = False) -> dict:
+                 skip_env_check: bool = False, server_name: str | None = None,
+                 server: dict | None = None, run_id: str = "") -> dict:
 
     # 0. Environment check — fail fast on unwinnable cases
     env_blocked = run_env_check(
@@ -473,23 +527,26 @@ def run_notebook(notebook_path: Path, host: str, user: str,
         hf_token      = hf_token,
         manifest_path = manifest_path or HERE / "manifest.yaml",
         skip          = skip_env_check,
+        server        = server,
     )
     if env_blocked is not None:
         return env_blocked
 
-    # 1. Copy notebook to remote server (infrastructure — not the agent's job)
-    try:
-        remote_path = scp_notebook(notebook_path, host, user)
-    except RuntimeError as e:
-        return {"status": "fail", "message": str(e), "cost_usd": None}
+    # 1. Transport: copy the notebook to the SSH host, or name the pod the
+    #    agent will provision (infrastructure — not the agent's job)
+    pod = None
+    if _is_k8s(server):
+        pod, transport_ctx = k8s_runtime(
+            server_name, server, manifest_path or HERE / "manifest.yaml", notebook_path,
+            manifest_entry.get("gpus_required") or 1, "verify", run_id)
+    else:
+        try:
+            remote_path = scp_notebook(notebook_path, host, user)
+        except RuntimeError as e:
+            return {"status": "fail", "message": str(e), "cost_usd": None}
+        transport_ctx = _ssh_runtime(host, user, hf_token, remote_path)
 
     # 2. Build the task prompt (same information as original context.py)
-    ssh_flags  = "-o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ForwardX11=no"
-    ssh_target = f"{user}@{host}"
-    ssh_cmd    = f"ssh {ssh_flags} {ssh_target}"
-    hf_export  = f"export HF_TOKEN='{hf_token}';" if hf_token else ""
-    ssh_hf_cmd = f"ssh {ssh_flags} {ssh_target} '{hf_export}"
-
     prompt_lines = [
         f"Run the regression test for this notebook: {notebook_path}",
         "",
@@ -519,20 +576,11 @@ def run_notebook(notebook_path: Path, host: str, user: str,
     # 3. Runtime context injected into system prompt — replaces SYSTEM_TEMPLATE.format()
     runtime_ctx = f"""## Runtime Context for this Run
 
-SSH_CMD     = {ssh_cmd}
-SSH_HF_CMD  = ssh {ssh_flags} {ssh_target} (prefix commands that need HF_TOKEN with: export HF_TOKEN='{hf_token}';)
-GPU_HARDWARE   = {server_hardware or 'unknown'}
+{transport_ctx}
+GPU_HARDWARE    = {server_hardware or 'unknown'}
 NOTEBOOK_LOCAL  = {notebook_path}
-NOTEBOOK_REMOTE = {remote_path}  (already on the server — do NOT copy again)
-WORKSPACE_BASE  = {WORKSPACE_BASE}  (per-notebook run dir is {WORKSPACE_BASE}/tutorial_agent_runs/<stem>)
 TOOLS_DIR       = {TOOLS_DIR}
 RESULTS_DIR     = {RESULTS_DIR}
-
-Use SSH_CMD like this:
-  Bash: {ssh_cmd} '<your command here>'
-
-For commands that need HF_TOKEN:
-  Bash: {ssh_cmd} 'export HF_TOKEN='{hf_token}'; <your command here>'
 
 resolve_docker_image:
   Bash: python3 {TOOLS_DIR}/resolve_docker_image.py <repo> {server_hardware or 'mi300x'}
@@ -547,25 +595,52 @@ write_result (call this when done):
     --results-dir "{RESULTS_DIR}"
 """
 
+    try:
+        return _run_verify_agent(notebook_path, prompt, runtime_ctx, interactive)
+    finally:
+        if pod:
+            k8s_down(server_name, server, pod)
+
+
+def _ssh_runtime(host: str, user: str, hf_token: str | None, remote_path: str) -> str:
+    """Runtime-context lines for the SSH runner."""
+    ssh_flags  = "-o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ForwardX11=no"
+    ssh_target = f"{user}@{host}"
+    ssh_cmd    = f"ssh {ssh_flags} {ssh_target}"
+    return f"""SSH_CMD     = {ssh_cmd}
+SSH_HF_CMD  = ssh {ssh_flags} {ssh_target} (prefix commands that need HF_TOKEN with: export HF_TOKEN='{hf_token}';)
+NOTEBOOK_REMOTE = {remote_path}  (already on the server — do NOT copy again)
+WORKSPACE_BASE  = {WORKSPACE_BASE}  (per-notebook run dir is {WORKSPACE_BASE}/tutorial_agent_runs/<stem>)
+
+Use SSH_CMD like this:
+  Bash: {ssh_cmd} '<your command here>'
+
+For commands that need HF_TOKEN:
+  Bash: {ssh_cmd} 'export HF_TOKEN='{hf_token}'; <your command here>'
+"""
+
+
+def _run_verify_agent(notebook_path: Path, prompt: str, runtime_ctx: str,
+                      interactive: bool) -> dict:
     # 4. Interactive mode: drop -p flag, let user converse with claude normally
     if interactive:
         print(f"\n  Opening interactive Claude session for {notebook_path.name}")
         print(f"  Runtime context is in the system prompt. Type your instructions.\n")
+        started = time.time()
         subprocess.run(
             ["claude", "--append-system-prompt", runtime_ctx],
             cwd=str(HERE)
         )
         # In interactive mode, find the result file manually after session ends
-        result = _find_latest_result(notebook_path)
+        result = _find_latest_result(notebook_path, since=started)
         return result or {"status": "unknown", "message": "Interactive session ended"}
 
     # 5. Headless mode: fully autonomous
     #
-    # ScheduleWakeup/CronCreate etc. have no effect on a one-shot `claude -p`
-    # process — there is no scheduler to resume it, so the run just ends its
-    # turn early and silently produces no result. Deny them so the agent is
-    # forced to use the documented background+poll pattern (CLAUDE.md) instead.
+    # A one-shot `claude -p` has no scheduler to resume it, so deny the
+    # wakeup/cron tools and make the agent poll in-turn (CLAUDE.md).
     print(f"\n  Starting Claude Code agent (headless)…", flush=True)
+    started = time.time()
     proc = subprocess.Popen(
         [
             "claude",
@@ -586,7 +661,7 @@ write_result (call this when done):
     meta = handle_stream(proc, notebook_path.name, agent_label="VERIFY")
 
     # 6. Read back the result JSON written by write_result.py
-    result = _find_latest_result(notebook_path)
+    result = _find_latest_result(notebook_path, since=started)
     if result:
         result["cost_usd"]  = meta.get("cost_usd")
         result["num_turns"] = meta.get("num_turns")
@@ -604,7 +679,9 @@ def run_fixer(notebook_path: Path, host: str, user: str,
               hf_token: str | None, manifest_entry: dict,
               server_hardware: str | None,
               verification_result_path: Path,
-              rel_key: str = "") -> dict:
+              rel_key: str = "", server_name: str | None = None,
+              server: dict | None = None, run_id: str = "",
+              manifest_path: Path | None = None) -> dict:
     """Run the fixer agent on a notebook using a prior verification result."""
 
     FIXES_DIR.mkdir(parents=True, exist_ok=True)
@@ -615,11 +692,19 @@ def run_fixer(notebook_path: Path, host: str, user: str,
         result = _find_latest_result(notebook_path)
         return result or {"status": "fail", "message": "No auto_fixable issues"}
 
-    # 1. Copy notebook to remote server (verification cleaned up)
-    try:
-        remote_path = scp_notebook(notebook_path, host, user)
-    except RuntimeError as e:
-        return {"status": "fail", "message": str(e), "cost_usd": None}
+    # 1. Transport: copy to the SSH host (verification cleaned up), or name the
+    #    fixer's own pod (the verify pod is already gone)
+    pod = None
+    if _is_k8s(server):
+        pod, transport_ctx = k8s_runtime(
+            server_name, server, manifest_path or HERE / "manifest.yaml", notebook_path,
+            manifest_entry.get("gpus_required") or 1, "fix", run_id)
+    else:
+        try:
+            remote_path = scp_notebook(notebook_path, host, user)
+        except RuntimeError as e:
+            return {"status": "fail", "message": str(e), "cost_usd": None}
+        transport_ctx = _ssh_runtime(host, user, hf_token, remote_path)
 
     # 2. Build the fixer prompt
     prompt_lines = [
@@ -645,28 +730,15 @@ def run_fixer(notebook_path: Path, host: str, user: str,
     prompt = "\n".join(prompt_lines)
 
     # 3. Build runtime context (same as verification + VERIFICATION_RESULT)
-    ssh_flags  = "-o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ForwardX11=no"
-    ssh_target = f"{user}@{host}"
-    ssh_cmd    = f"ssh {ssh_flags} {ssh_target}"
-
     runtime_ctx = f"""## Runtime Context for this Fix Run
 
-SSH_CMD     = {ssh_cmd}
-SSH_HF_CMD  = ssh {ssh_flags} {ssh_target} (prefix commands that need HF_TOKEN with: export HF_TOKEN='{hf_token}';)
-GPU_HARDWARE   = {server_hardware or 'unknown'}
+{transport_ctx}
+GPU_HARDWARE    = {server_hardware or 'unknown'}
 NOTEBOOK_LOCAL  = {notebook_path}
-NOTEBOOK_REMOTE = {remote_path}  (already on the server — do NOT copy again)
-WORKSPACE_BASE  = {WORKSPACE_BASE}  (per-notebook run dir is {WORKSPACE_BASE}/tutorial_agent_runs/<stem>)
 TOOLS_DIR       = {TOOLS_DIR}
 RESULTS_DIR     = {RESULTS_DIR}
-FIXES_DIR       = {FIXES_DIR}  (retrieve <nb>_fixed.ipynb here as <stem>.ipynb — see CLAUDE_FIX.md Step 4d)
+FIXES_DIR       = {FIXES_DIR}  (retrieve <nb>_fixed.ipynb here as <stem>.ipynb — see CLAUDE_FIX.md Step 4c)
 VERIFICATION_RESULT = {verification_result_path}
-
-Use SSH_CMD like this:
-  Bash: {ssh_cmd} '<your command here>'
-
-For commands that need HF_TOKEN:
-  Bash: {ssh_cmd} 'export HF_TOKEN='{hf_token}'; <your command here>'
 
 resolve_docker_image:
   Bash: python3 {TOOLS_DIR}/resolve_docker_image.py <repo> {server_hardware or 'mi300x'}
@@ -690,13 +762,20 @@ write_result (call this when done):
 
     system_prompt = fixer_playbook + "\n\n---\n\n" + runtime_ctx
 
+    try:
+        return _run_fix_agent(notebook_path, prompt, system_prompt)
+    finally:
+        if pod:
+            k8s_down(server_name, server, pod)
+
+
+def _run_fix_agent(notebook_path: Path, prompt: str, system_prompt: str) -> dict:
     # 5. Spawn headless fixer agent
     #
-    # ScheduleWakeup/CronCreate etc. have no effect on a one-shot `claude -p`
-    # process — there is no scheduler to resume it, so the run just ends its
-    # turn early and silently produces no result. Deny them so the agent is
-    # forced to use the documented background+poll pattern (CLAUDE.md) instead.
+    # A one-shot `claude -p` has no scheduler to resume it, so deny the
+    # wakeup/cron tools and make the agent poll in-turn (CLAUDE.md).
     print(f"\n  Starting fixer agent (headless)…", flush=True)
+    started = time.time()
     proc = subprocess.Popen(
         [
             "claude",
@@ -717,7 +796,7 @@ write_result (call this when done):
     meta = handle_stream(proc, notebook_path.name, agent_label="FIX")
 
     # 6. Read back the result JSON
-    result = _find_latest_result(notebook_path)
+    result = _find_latest_result(notebook_path, since=started)
     if result:
         result["cost_usd"]  = meta.get("cost_usd")
         result["num_turns"] = meta.get("num_turns")
@@ -731,9 +810,16 @@ write_result (call this when done):
     }
 
 
-def _find_latest_result(notebook_path: Path) -> dict | None:
-    """Find the most recent result JSON written by write_result.py for this notebook."""
+def _find_latest_result(notebook_path: Path, since: float | None = None) -> dict | None:
+    """Find the most recent result JSON written by write_result.py for this notebook.
+
+    Pass `since` (a time.time() taken before the agent started) to ignore results
+    from earlier runs — otherwise an agent that exits without writing anything
+    silently inherits the previous run's verdict.
+    """
     result_path = _find_latest_result_path(notebook_path)
+    if result_path is not None and since is not None and result_path.stat().st_mtime < since:
+        return None
     if result_path is None:
         return None
     with open(result_path) as f:
@@ -793,6 +879,10 @@ def parse_args():
     p = argparse.ArgumentParser(description="Notebook regression agent — Claude Code edition")
     p.add_argument("notebook", nargs="*")
     p.add_argument("--host",        default=None)
+    p.add_argument("--server",      default=None,
+                   help="manifest servers: entry to run every notebook on, overriding "
+                        "each notebook's own server (e.g. workshop-k8s for the "
+                        "Kubernetes pod runner).")
     p.add_argument("--user",        default=None)
     p.add_argument("--dir",         help="Run all notebooks under this directory")
     p.add_argument("--manifest",    default=str(HERE / "manifest.yaml"))
@@ -844,6 +934,10 @@ def main():
         sys.exit(2)
     if (args.gap or args.failing) and base_dir is None:
         print("Error: --gap/--failing requires --dir to resolve manifest-relative paths to local files",
+              file=sys.stderr)
+        sys.exit(2)
+    if args.server and args.server not in (manifest.get("servers") or {}):
+        print(f"Error: --server {args.server} is not a servers: entry in {args.manifest}",
               file=sys.stderr)
         sys.exit(2)
 
@@ -917,18 +1011,20 @@ def main():
               f"continuing with JSON results only", file=sys.stderr)
         db = None
     _db_call(db, results_db.start_run, run_id, mode_label,
-             args.host or os.getenv("GPU_HOST"), sys.argv[1:])
+             args.server or args.host or os.getenv("GPU_HOST"), sys.argv[1:])
     print(f"  Run ID    : {run_id}  (db: {args.db})\n")
 
     results = []
     skipped = []
+    gc_done: set[str] = set()
 
     for nb in notebooks:
         print(f"{'='*60}")
         print(f"Testing: {nb.name}")
         print(f"{'='*60}")
 
-        cfg = resolve_notebook_config(nb, base_dir, manifest, args.host, args.user)
+        cfg = resolve_notebook_config(nb, base_dir, manifest, args.host, args.user,
+                                      args.server)
         if cfg is None:
             entry  = (manifest.get("notebooks", {})
                       .get(str(nb.relative_to(base_dir)) if base_dir else nb.name, {}))
@@ -937,17 +1033,28 @@ def main():
             skipped.append({"notebook": str(nb), "reason": reason})
             rel_key = str(nb.relative_to(base_dir)) if base_dir else nb.name
             _db_call(db, results_db.record_result, run_id, rel_key, str(nb), "skip",
-                     {"status": "skip", "message": reason})
+                     {"status": "skip", "message": reason}, args.server)
             continue
 
         host = cfg["host"]
         user = cfg["user"]
-        if not host or not user:
-            print("Error: no host/user. Set GPU_HOST/GPU_USER in .env or pass --host/--user",
-                  file=sys.stderr)
-            sys.exit(1)
-
-        print(f"  GPU server : {user}@{host}")
+        server_name, server = cfg["server_name"], cfg["server"]
+        if _is_k8s(server):
+            print(f"  GPU server : k8s {server_name} "
+                  f"({server.get('context')}/{server.get('namespace')})")
+            if server_name not in gc_done:
+                # Clear pods a killed earlier run left behind before adding more.
+                try:
+                    k8s_pod.gc(k8s_pod.Kubectl(server))
+                except Exception as exc:  # noqa: BLE001 — hygiene, not a precondition
+                    print(f"warning: k8s gc failed ({exc})", file=sys.stderr)
+                gc_done.add(server_name)
+        else:
+            if not host or not user:
+                print("Error: no host/user. Set GPU_HOST/GPU_USER in .env or pass --host/--user",
+                      file=sys.stderr)
+                sys.exit(1)
+            print(f"  GPU server : {user}@{host}")
 
         result = None
         verify_cost = 0.0
@@ -968,12 +1075,15 @@ def main():
                     rel_key         = cfg["rel_key"],
                     manifest_path   = Path(args.manifest),
                     skip_env_check  = args.skip_env_check,
+                    server_name     = server_name,
+                    server          = server,
+                    run_id          = run_id,
                 )
             except Exception as exc:
                 result = {"status": "fail", "message": f"Runner crashed: {exc}"}
 
             _db_call(db, results_db.record_result, run_id, cfg["rel_key"], str(nb),
-                     "verify", result)
+                     "verify", result, server_name)
 
             verify_cost  = result.get("cost_usd") or 0.0
             verify_turns = result.get("num_turns") or 0
@@ -1003,11 +1113,15 @@ def main():
                         server_hardware = cfg["server_hardware"],
                         verification_result_path = vr_path,
                         rel_key         = cfg["rel_key"],
+                        server_name     = server_name,
+                        server          = server,
+                        run_id          = run_id,
+                        manifest_path   = Path(args.manifest),
                     )
                     # Recorded before cost accumulation: each DB row carries
                     # its own phase's cost, so SUM(cost_usd) never double-counts.
                     _db_call(db, results_db.record_result, run_id, cfg["rel_key"],
-                             str(nb), "fix", fix_result)
+                             str(nb), "fix", fix_result, server_name)
                     # Accumulate costs from both agents
                     fix_cost  = fix_result.get("cost_usd") or 0.0
                     fix_turns = fix_result.get("num_turns") or 0
@@ -1022,13 +1136,14 @@ def main():
                     print(f"  ✗ Fixer crashed: {exc}", flush=True)
                     _db_call(db, results_db.record_result, run_id, cfg["rel_key"],
                              str(nb), "fix",
-                             {"status": "fail", "message": f"Fixer crashed: {exc}"})
+                             {"status": "fail", "message": f"Fixer crashed: {exc}"},
+                             server_name)
             elif args.mode == "fix":
                 print(f"  ✗ No verification result found for {nb.name}", flush=True)
                 result = {"status": "fail",
                           "message": "No verification result available for fixer"}
                 _db_call(db, results_db.record_result, run_id, cfg["rel_key"],
-                         str(nb), "fix", result)
+                         str(nb), "fix", result, server_name)
 
         if result is None:
             result = {"status": "fail", "message": "No result produced"}

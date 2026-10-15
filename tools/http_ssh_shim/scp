@@ -2,7 +2,7 @@
 """
 Drop-in `scp` replacement, paired with the `ssh` shim in this directory.
 Translates file transfers into HMAC-signed HTTP calls against the agent
-server on the GPU node (see agent_server.py, ssh, docs/PLAN-http-agent-shim.md).
+server on the GPU node (see agent_server.py and ssh).
 
 Two shapes this pipeline actually uses:
 

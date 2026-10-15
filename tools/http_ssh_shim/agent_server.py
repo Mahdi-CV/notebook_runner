@@ -3,7 +3,7 @@
 Minimal HTTP agent server — runs ON the GPU node, replaces the "ssh host
 'cmd'" / "scp file host:path" operations that AMD's egress won't carry
 (SSH silently dropped after handshake, TLS refused outright for this IP
-range — see docs/PLAN-http-agent-shim.md). Stdlib only.
+range). Stdlib only.
 
 Endpoints (all require valid HMAC signing — see hmac_auth.py):
   POST /agent/exec    {"cmd": str, "timeout": int} -> {"exit_code","stdout","stderr"}
@@ -144,13 +144,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            # Explicit executable=/bin/bash — a real SSH session runs remote
-            # commands through the login shell (bash on this deployment), but
-            # subprocess.run(shell=True) always uses /bin/sh regardless of
-            # $SHELL. That gap is invisible for ordinary commands but breaks
-            # CLAUDE.md's own `nohup ... & disown` backgrounding idiom (POSIX
-            # sh has no `disown` builtin) — caught by the background/poll
-            # verification test during implementation.
+            # bash, not sh: CLAUDE.md's `nohup … & disown` idiom needs bash's disown.
             proc = subprocess.run(
                 cmd, shell=True, executable="/bin/bash",
                 capture_output=True, timeout=timeout,

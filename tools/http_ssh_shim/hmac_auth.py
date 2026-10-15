@@ -3,8 +3,8 @@ HMAC request signing shared by the client (ssh/scp shims) and the server
 (agent_server.py). Stdlib only — no new dependency for the crypto.
 
 Why HMAC instead of a bearer token: the transport is plain HTTP (AMD's
-egress silently drops SSH and refuses TLS to this IP range — see
-docs/PLAN-http-agent-shim.md — so this link carries no confidentiality).
+egress silently drops SSH and refuses TLS to this IP range, so this
+link carries no confidentiality).
 A bearer token sent in the clear is interceptable and, once captured,
 replayable forever. HMAC signing means the shared secret itself never
 travels on the wire — only a per-request signature bound to that exact
@@ -30,20 +30,10 @@ HEADER_TIMESTAMP = "X-Agent-Timestamp"
 HEADER_NONCE = "X-Agent-Nonce"
 HEADER_SIGNATURE = "X-Agent-Signature"
 
-# CONVENTION (load-bearing — every caller must follow this exactly):
-# AGENT_SECRET is a human-readable string (e.g. from `secrets.token_hex(32)`,
-# which is itself just a hex STRING, not raw bytes). Every caller derives the
-# HMAC key with a plain `.encode()` (UTF-8) on that string — never
-# `bytes.fromhex(...)`. Decoding it as hex would silently produce a
-# different, unrelated key: sign_request()/verify_request() would still run
-# without error, but every signature would mismatch. This exact mismatch
-# was hit and diagnosed during implementation — recomputing by hand with
-# both conventions showed the client and server derived two different
-# 100%-plausible-looking keys from the same secret string.
+# Key = AGENT_SECRET.encode() (UTF-8 of the literal string), never
+# bytes.fromhex(); otherwise every signature mismatches.
 
-# How far a request's timestamp may drift from the server's clock before
-# it's rejected. Measured drift across the three hosts involved is ~5s;
-# 60s leaves ample headroom without opening a large replay window.
+# 60s tolerates normal clock skew without a large replay window.
 MAX_SKEW_SECONDS = 60
 
 
@@ -53,12 +43,7 @@ def _to_sign(method: str, path: str, timestamp: str, nonce: str, body: bytes) ->
 
 
 def _secret_bytes(secret: str | bytes) -> bytes:
-    """Normalize the shared secret to bytes the one way both sides must
-    agree on: plain UTF-8 encode of the literal string, never hex-decode.
-    Accepting `str | bytes` here (rather than requiring callers to encode
-    it themselves) removes the exact ambiguity that caused every signature
-    to mismatch during implementation — there is now only one place this
-    conversion can happen."""
+    """Single place the secret is converted to bytes."""
     return secret.encode() if isinstance(secret, str) else secret
 
 
@@ -81,7 +66,7 @@ class ReplayCache:
 
     No persistence — a server restart just reopens a MAX_SKEW_SECONDS replay
     window until the cache repopulates, an acceptable trade-off for a
-    single-operator CI tool (see plan). Prune on every call so the dict
+    single-operator CI tool. Prune on every call so the dict
     never grows unbounded.
     """
 

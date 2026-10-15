@@ -1,9 +1,9 @@
 # Containerized CI for the notebook regression agent
 
 The image runs the **orchestrator**, not the notebooks. Inside it: Python,
-`git`, `ssh`, and the Claude Code CLI. `run.py` spawns the CLI, the CLI SSHes to
-the GPU node, and all ROCm/papermill work happens there in AMD's own images.
-This container never needs a GPU, `/dev/kfd`, or ROCm.
+`git`, `kubectl`, and the Claude Code CLI. `run.py` spawns the CLI, the CLI
+drives the GPU node, and all ROCm/papermill work happens there in AMD's own
+images. This container never needs a GPU, `/dev/kfd`, or ROCm.
 
 ## Build
 
@@ -14,20 +14,21 @@ docker build -f docker/Dockerfile -t notebook-runner:latest .
 ## Run
 
 ```bash
-docker/run-ci.sh                 # full 4-phase pass, commit + push
+docker/run-ci.sh                 # full pass, commit + push
 docker/run-ci.sh --dry-run       # print the plan, run nothing
 docker/run-ci.sh --category inference --no-commit
+docker/notebook-runner-cron.sh   # the daily unattended pass (verify-only, no commit)
 ```
 
 Arguments pass through to `tools/ci_run.py`.
 
 ---
 
-## Claude credentials — what the CLI actually needs
+## Claude credentials
 
 **On the AMD network the agent does not use a first-party Anthropic API key.**
-It authenticates through the AMD enterprise gateway, which is configured
-entirely by environment variables:
+It authenticates through the AMD enterprise gateway, configured entirely by
+environment variables:
 
 | Variable | Role |
 |---|---|
@@ -38,21 +39,16 @@ entirely by environment variables:
 
 These live in `.env` (gitignored, `chmod 600`). `run-ci.sh` sources it and
 forwards each var with a bare `-e NAME`, so nothing is baked into the image.
-There is no `claude auth login` and no `~/.claude/.credentials.json` — an
-interactive OAuth login is the wrong tool for a headless CI box.
 
-> **Quote every value in `.env`.** `run-ci.sh` `source`s the file so the CLI
-> inherits the vars, and bash is less forgiving than `python-dotenv`: an
-> unquoted `ANTHROPIC_CUSTOM_HEADERS=Ocp-Apim-Subscription-Key: <key>` parses
-> as a command plus argument and dies with `<key>: command not found`, while
-> `Claude-Sonnet-5[1m]` is treated as a glob. Both readers accept quotes.
+> **Quote every value in `.env`.** `run-ci.sh` `source`s the file, and bash is
+> less forgiving than `python-dotenv`: an unquoted
+> `Ocp-Apim-Subscription-Key: <key>` parses as a command, and
+> `Claude-Sonnet-5[1m]` as a glob.
 
 > **`claude auth status` is not a validity check.** It reports
-> `"loggedIn": true` whenever a key is merely *present*. With
-> `ANTHROPIC_API_KEY=dummy` and no gateway URL it still says logged-in, then
-> every real request returns 401. Trust the smoke test below, not `auth status`.
+> `"loggedIn": true` whenever a key is merely *present*. Use the smoke test.
 
-### Smoke test (the only check that proves credentials work)
+### Smoke test
 
 ```bash
 set -a; source .env; set +a
@@ -68,77 +64,30 @@ Expect `"result": "CONTAINER_OK"` and `"is_error": false`. A
 `"api_error_status": 401` means the gateway variables did not reach the
 container.
 
-### Alternative: a first-party key
-
-If you run this outside the AMD network with a real Anthropic key, set
-`ANTHROPIC_API_KEY=sk-ant-...` and **unset** `ANTHROPIC_BASE_URL` /
-`ANTHROPIC_CUSTOM_HEADERS`. `run-ci.sh` currently *requires* the gateway
-variables; relax that check for this case.
-
-A subscription-based `claude setup-token` long-lived token
-(`ANTHROPIC_AUTH_TOKEN`) also works, but it is tied to a human's Claude
-subscription — a poor fit for shared CI and not what this image assumes.
+Off the AMD network, a real `ANTHROPIC_API_KEY=sk-ant-...` works with the two
+gateway variables unset, but `run-ci.sh` requires them, so that check would
+need relaxing.
 
 ---
 
 ## Two hard runtime constraints
 
 **1. The agent must not run as root.** `run.py` passes
-`--dangerously-skip-permissions`, and the CLI hard-exits under uid 0:
-`"--dangerously-skip-permissions cannot be used with root/sudo privileges"`.
-The image therefore creates and runs as user `agent` (uid 1001). There is an
-`IS_SANDBOX=1` bypass; running as a normal user is the better answer.
+`--dangerously-skip-permissions`, and the CLI refuses it under uid 0, so the
+image runs as user `agent` (uid 1001).
 
 **2. Nothing the runtime needs may live under `/home/agent`.** `run-ci.sh`
 mounts a tmpfs there so the CLI has a writable HOME under a read-only rootfs,
-and that mount **shadows whatever the build put there**. This is why the
-Dockerfile relocates the CLI to `/opt/claude` and the SSH config to
-`/etc/ssh/ssh_config.d/`. Leaving the CLI in `~/.local` builds a perfectly
-healthy-looking image that dies at runtime with:
-
-```
-[FATAL tini (7)] exec claude failed: No such file or directory
-```
+and that mount **shadows whatever the build put there**. That's why the
+Dockerfile relocates the CLI to `/opt/claude`; left in `~/.local`, the image
+fails at runtime with `exec claude failed: No such file or directory`.
 
 ---
 
-## SSH key
+## Reaching the GPU node
 
-The pipeline uses a **dedicated application keypair**, not a personal key:
-`~/.ssh/id_nbrunner_ed25519` (override with `GPU_SSH_KEY` in `.env`). It is
-mounted into a container that executes model-authored shell commands, so it
-should unlock exactly one host. Revoking it means deleting one line from the
-GPU node's `authorized_keys` — not rotating a human identity.
-
-Create and install:
-
-```bash
-ssh-keygen -t ed25519 -f ~/.ssh/id_nbrunner_ed25519 -N '' -C notebook-runner-ci
-ssh-copy-id -i ~/.ssh/id_nbrunner_ed25519.pub root@134.199.202.42
-```
-
-Passphrase-less is deliberate — an unattended cron pass has no tty to unlock a
-key — which makes file custody the only protection. Keep it `0600`.
-
-> **The key is staged, not mounted directly.** A correct `0600` key is owned by
-> you; the container runs as uid 1001; bind mounts preserve host ownership. So
-> mounting the original yields
-> `Load key "/home/agent/.ssh/id_gpu": Permission denied`, which then surfaces
-> as `Permission denied (publickey)` — indistinguishable from a key the server
-> rejected. `run-ci.sh` copies it to a uid-1001 `0600` staging file under
-> `logs/` and deletes it on exit.
-
-## Network topology (read before deploying)
-
-Measured reachability:
-
-| From | Gateway (`llm-api.amd.com`) | GPU node (`134.199.202.42:22`) |
-|---|---|---|
-| Your workstation | reachable | reachable |
-| `xcovdashdbd01` | reachable (10.214.150.4) | **blocked** |
-| GPU node (`eddie`) | **no DNS** | — |
-
-The orchestrator needs **both**. AMD's egress drops SSH to the GPU node but
-passes plain HTTP on :80, so `xcovdashdbd01` reaches it through the
-HMAC-signed HTTP shim in `tools/http_ssh_shim/` (enabled by setting
-`AGENT_URL`/`AGENT_SECRET`) — see `docs/PLAN-http-agent-shim.md`.
+The orchestrator host must reach both the gateway and the GPU node. Where the
+network allows only plain HTTP to the GPU node, set `AGENT_URL`/`AGENT_SECRET`
+and `run.py` sends every `ssh`/`scp` through the HMAC-signed shim in
+`tools/http_ssh_shim/`. Alternatively, run on Kubernetes with `NBR_KUBECONFIG`
+and `--server <k8s entry>` (see `tools/k8s_pod.py`).

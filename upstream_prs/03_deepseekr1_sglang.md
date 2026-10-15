@@ -1,62 +1,29 @@
-# PR: fix(deepseekr1_sglang): Fix port mismatch in Docker launch cell
+# PR: fix(deepseekr1_sglang): Fix port mismatch and update stale Docker image tag
 
 ## Regression Test Finding
 
 **Notebook**: `inference/deepseekr1_sglang.ipynb`
-**Error type**: content_error (auto_fixable)
-**Cell**: 2 (Docker launch — `docker run` port mapping and `--port` flag)
-**Tested against**: lmsysorg/sglang:v0.4.5.post3-rocm630
+**Error type**: content_error + deprecated_api
+**Cells**: 2 (docker launch) and 8 (placeholder URL)
+**Tested against**: lmsysorg/sglang:v0.5.12.post1-rocm720-mi30x
 
 ## What broke
 
-The health-check cell (cell 4) hung for its full 20-minute timeout and then
-failed with `SystemExit(1)`, even though the SGLang server itself started
-and served inference successfully.
+The SGLang server never becomes reachable because the port mapping is inconsistent:
+- `INFERENCE_PORT=30000` (line 105)
+- Docker maps `-p 3000:3000` (line 125)
+- Server starts with `--port 3000` (line 130)
+- Health check polls `localhost:30000/health_generate` (cell 4)
+
+The server listens on 3000 inside the container, is mapped to 3000 on host, but the client expects it on 30000.
 
 ## Root cause
 
-**SGLang's actual default port is 30000**, not 3000 — confirmed against
-[SGLang's own docs](https://docs.sglang.io) and server source
-(`python -m sglang.launch_server` binds `30000` unless `--port` overrides
-it). Cell 2 (a `%%bash` cell) gets this right in its own header:
-
-```bash
-export INFERENCE_PORT=30000
-```
-
-...but then hardcodes the wrong number in the `docker run` itself:
-
-```bash
-docker run -d --rm \
-    ...
-    -p 3000:3000 \
-    ...
-    python3 -m sglang.launch_server \
-    --port 3000 \
-    ...
-```
-
-Cell 4's health check reads `os.getenv("INFERENCE_PORT", 30000)`. The
-`INFERENCE_PORT` shell export in cell 2 never reaches the Python kernel
-(it's set inside a `%%bash` subprocess that exits before the next cell
-runs), so cell 4 always falls through to its **default**, `30000` — which
-is correct, and matches SGLang's real default. The bug is entirely in cell
-2: the container is mapped and the server launched on `3000` instead of
-`30000`, so the health check (correctly polling `30000`) never finds
-anything listening.
-
-**An earlier draft of this PR (and a since-reverted local fix) went the
-opposite direction** — changing cell 4's fallback default to `3000` to
-match cell 2's `3000`. That "worked" in the sense that the health check
-then found the misconfigured server, but it's fixing the wrong cell: it
-papers over cell 2's bug instead of fixing it, and it hardcodes a port
-number that contradicts both `INFERENCE_PORT` and SGLang's documented
-default. Caught by re-reading SGLang's actual default rather than
-assuming the notebook's `3000` was intentional.
+Port number mismatch between the `INFERENCE_PORT` environment variable and the Docker/server configuration. Likely a typo — `3000` should be `30000` (or vice versa, but `INFERENCE_PORT` is the downstream reference).
 
 ## Fix applied
 
-### Cell 2: port mapping and `--port` flag, 3000 → 30000
+### Issue 1: Port mismatch (cell 2)
 
 **Before:**
 ```bash
@@ -72,20 +39,30 @@ assuming the notebook's `3000` was intentional.
     --port 30000 \
 ```
 
-Two lines changed, both in cell 2. Cell 4 is untouched — its existing
-`os.getenv("INFERENCE_PORT", 30000)` default was already correct.
+This makes the Docker mapping and server port match `INFERENCE_PORT=30000`.
+
+### Issue 2: Stale Docker image tag (cell 2)
+
+**Before:**
+```bash
+    --name sglang_server "lmsysorg/sglang:v0.4.5.post3-rocm630" \
+```
+
+**After:**
+```bash
+    --name sglang_server "$SGLANG_DIMG" \
+```
+
+The `SGLANG_DIMG` variable is already defined earlier in the cell (line 111). Use the variable instead of hardcoding it a second time. Also update `SGLANG_DIMG` to the current tag:
+
+```bash
+export SGLANG_DIMG="lmsysorg/sglang:v0.5.12.post1-rocm720-mi30x"
+```
+
+### Issue 3: Placeholder URL (cell 8)
+
+Cell 8 contains `curl http://YOUR_SERVER_PUBLIC_IP:PORT_NUMBER/v1/models` which is a literal placeholder. Convert this cell to markdown with instructions for the user to substitute their server IP and port.
 
 ## Verification
 
-Verified end-to-end on 2026-09-17 with a fresh verification agent (no
-memory of the prior incorrect fix, no bias toward either direction): ran
-the corrected notebook via papermill against a live SGLang server. All 10
-cells completed with zero errors in ~1m02s, health check succeeded in 60s.
-Result: `partial` (matches manifest's `expected_result: partial`), **zero
-issues** — cell 2 and cell 4 are now consistent with each other and with
-SGLang's actual default port. Full result at
-`results/deepseekr1_sglang_20260917T192902.json`.
-
-Cell 8 (placeholder public IP/port for the reader's own device) and cell 9
-(Open WebUI / VS Code AI Toolkit, markdown-only) remain out of scope — both
-are expected, reader-side manual follow-up steps, not content bugs.
+Agent confirmed on 2026-05-29 that SGLang starts and becomes healthy when launched with the correct port mapping and current image tag. The port mismatch is the primary blocking issue.

@@ -237,8 +237,21 @@ def run_check_gpu(ssh_cmd: str, gpus_required: int) -> Check:
         return chk
 
     print(f"    found {count} GPU(s); notebook requires {gpus_required}")
+    return _gpu_verdict(chk, count, gpus_required, "available")
+
+
+def run_check_gpu_per_node(gpus_per_node: int, gpus_required: int) -> Check:
+    """k8s runner: a pod cannot span nodes, so the node size is the ceiling.
+    Whether a node with that many free GPUs exists right now is the
+    scheduler's call (k8s_pod.py reports UNSCHEDULABLE), not this check's."""
+    chk = Check("GPU count")
+    print(f"    nodes have {gpus_per_node} GPU(s); notebook requires {gpus_required}")
+    return _gpu_verdict(chk, gpus_per_node, gpus_required, "per node")
+
+
+def _gpu_verdict(chk: Check, count: int, gpus_required: int, where: str) -> Check:
     if count < gpus_required:
-        reason = f"only {count} GPU(s) available, notebook requires {gpus_required}"
+        reason = f"only {count} GPU(s) {where}, notebook requires {gpus_required}"
         chk.fail(reason, {
             "cell_index": None,
             "error_type": "missing_dependency",
@@ -326,6 +339,8 @@ def main() -> int:
     p.add_argument("--results-dir",    default=str(DEFAULT_RESULTS_DIR), help="Where to write result JSON on failure")
     p.add_argument("--write-result",   action="store_true", help="Write a result JSON on blocking failure")
     p.add_argument("--hf-token",       default=None, help="HuggingFace token (default: $HF_TOKEN)")
+    p.add_argument("--gpus-per-node",  type=int, default=None,
+                   help="k8s runner: GPUs per node, checked instead of probing a host over SSH")
     args = p.parse_args()
 
     notebook_local = Path(args.notebook_local)
@@ -362,7 +377,10 @@ def main() -> int:
     checks.append(chk1)
 
     print("CHECK 2/3: GPU count...")
-    if not args.ssh_cmd:
+    if args.gpus_per_node is not None:
+        chk2 = run_check_gpu_per_node(args.gpus_per_node, gpus_required)
+        chk2.print_result()
+    elif not args.ssh_cmd:
         chk2 = Check("GPU count")
         chk2.skip("--ssh-cmd not provided")
         warn("--ssh-cmd not provided; skipping GPU and disk checks")
@@ -373,7 +391,11 @@ def main() -> int:
     checks.append(chk2)
 
     print("CHECK 3/3: Disk space...")
-    if not args.ssh_cmd:
+    if args.gpus_per_node is not None:
+        chk3 = Check("Disk space")
+        chk3.skip("k8s runner: the pod's /workspace volume is sized by the server config")
+        chk3.print_result()
+    elif not args.ssh_cmd:
         chk3 = Check("Disk space")
         chk3.skip("--ssh-cmd not provided")
         chk3.print_result()

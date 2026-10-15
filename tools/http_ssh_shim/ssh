@@ -4,16 +4,12 @@ Drop-in `ssh` replacement. Parses the exact argv shape this pipeline uses
 (-o flag, flag, ...)*, user@host, [remote command]) and translates it into
 an HMAC-signed HTTP call against the agent server on the GPU node, instead
 of opening a real SSH connection — which AMD's egress silently drops for
-this destination (see docs/PLAN-http-agent-shim.md).
+this destination.
 
 Every existing SSH_CMD string built by run.py, and every `ssh ...` command
 the Claude Code agent types via its own Bash tool per CLAUDE.md, keeps
 working unmodified — this file just has to be found on $PATH ahead of the
 real /usr/bin/ssh.
-
-Two forms this pipeline actually uses, both supported:
-  ssh -o ... user@host 'remote command'   -> exec, return its result
-  ssh -o ... user@host 'mkdir -p ...'      -> same, just a different cmd
 
 `-o key=value` flags are accepted and ignored — they configure a real SSH
 connection (host-key checking, timeouts) that has no meaning over HTTP.
@@ -31,11 +27,7 @@ from hmac_auth import sign_request  # noqa: E402
 
 AGENT_SECRET = os.environ.get("AGENT_SECRET", "")
 AGENT_URL = os.environ.get("AGENT_URL", "").rstrip("/")
-# Generous default — matches the SSH_TIMEOUT/-o ConnectTimeout convention
-# this pipeline uses for quick calls; individual agent commands can run far
-# longer (CLAUDE.md's nohup+poll pattern means any single /agent/exec call
-# is itself normally short — a poll, a docker command — even when the
-# thing it started runs for hours in the background).
+# Per-call timeout; long jobs use nohup+poll, so each exec is short.
 DEFAULT_EXEC_TIMEOUT = int(os.environ.get("AGENT_EXEC_TIMEOUT", "600"))
 
 
@@ -58,8 +50,7 @@ def parse_argv(argv: list[str]) -> tuple[str, str | None]:
             i += 2  # skip the flag and its value
             continue
         if arg in ("-i", "-p", "-l"):
-            # Not used by this pipeline today, but harmless to accept and
-            # skip so the shim doesn't choke if a call site adds one later.
+            # Accepted and ignored.
             i += 2
             continue
         if arg.startswith("-"):

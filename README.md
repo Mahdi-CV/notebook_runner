@@ -185,11 +185,22 @@ python3 run.py path/to/notebook.ipynb --host my-server.example.com --user amd
 
 # Interactive mode — opens a live Claude session with full runtime context pre-loaded
 python3 run.py path/to/notebook.ipynb --interactive
+
+# Run on a Kubernetes cluster instead: one GPU pod per notebook
+python3 run.py path/to/notebook.ipynb --server workshop-k8s
 ```
 
 **Modes:** `verify` (diagnosis only) | `fix` (apply fixes from prior result) | `full` (verify then fix — default)
 
 **Categories:** `inference` | `fine_tune` | `pretrain` | `gpu_dev_optimize`
+
+**Runners:** a `servers:` entry in `manifest.yaml` is either an SSH host
+(default — `docker run` on that machine) or `type: k8s`, where
+`tools/k8s_pod.py` gives each agent run its own pod built from the resolved
+image and deletes it afterwards. `--server NAME` (also on `ci_run.py`) runs
+every selected notebook on that entry. Notebooks whose cells launch Docker
+themselves can't run on k8s and are reported `infra_blocked`. One-time cluster
+setup is in the `tools/k8s_pod.py` docstring; set `NBR_KUBECONFIG` in `.env`.
 
 ### CI orchestrator
 
@@ -209,8 +220,10 @@ python3 tools/ci_run.py --dry-run             # print the plan, run nothing
 | B | Failures | Re-aggregate, then re-run notebooks still failing (deduped vs Phase A) |
 | C | Dashboard | Regenerate `STATUS.md` from fresh results |
 | D | Commit | Auto-commit `STATUS.md` + `manifest.yaml` (skip with `--no-commit`) |
+| E | Notify | Post a summary card to Teams (skip with `--no-notify`) |
 
-A weekly cron (`tools/ci_cron.sh`, `flock`-guarded) drives this unattended.
+The daily unattended pass runs it in a container via `docker/notebook-runner-cron.sh`
+(see `docker/README.md`).
 
 ### Manifest (optional)
 
@@ -301,6 +314,29 @@ the run.
 | `pass` | All cells ran cleanly, or all fixable errors were validated |
 | `fail` | Errors remain that could not be fixed |
 | `partial` | Some errors fixed, some remain (used with `expected_result: partial` in manifest) |
+
+### Dashboard
+
+A read-only web view of `results/runs.db` and `manifest.yaml` runs on the
+orchestrator host at **http://xcovdashdbd01:8080**: every notebook's latest
+status and when it was last verified, each notebook's history of runs, a page
+per result (runner, image, cost, turns, summary, every issue with its proposed
+fix), the batch runs, and a readable rendering of the manifest. It opens the
+database with a read-only URI and has no write routes.
+
+```bash
+# run it locally against this checkout
+uv run --with-requirements dashboard/requirements.txt uvicorn dashboard.app:app --port 8080
+# copy results from a run made on this machine to the dashboard host
+tools/push_results.sh
+```
+
+On the host it's the `notebook-dashboard` systemd unit
+(`dashboard/notebook-dashboard.service`, venv in `.venv-dashboard`). There,
+`results/` is a symlink to `/aig_dashboard/notebook_runner/results` on the
+snapshotted NFS share, so the history survives the host's local disk. The daily
+pass writes the host's `runs.db` directly; runs made elsewhere only appear once
+pushed.
 
 ---
 
@@ -406,10 +442,11 @@ notebook-runner-agent/
     ├── preflight_patch.py       # Applies exactly the 4 allowed pre-flight patches, deterministically
     ├── write_result.py          # Writes structured JSON result to results/
     ├── results_db.py            # SQLite run history (results/runs.db); backfill via `import`
+    ├── k8s_pod.py               # k8s runner: per-notebook GPU pod up/exec/pull/down/gc
+    ├── k8s/rbac.yaml            # One-time namespace + ServiceAccount for the k8s runner
     ├── status.py                # Aggregates latest result per notebook → STATUS.md dashboard
     ├── report_github.py         # Files issues / PRs / closes them from results
-    ├── ci_run.py                # CI orchestrator: gap → failures → dashboard → commit
-    └── ci_cron.sh               # flock-guarded weekly cron wrapper around ci_run.py
+    └── ci_run.py                # CI orchestrator: gap → failures → dashboard → commit → notify
 ```
 
 ---

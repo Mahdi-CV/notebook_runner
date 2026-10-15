@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% from "_macros.html" import status_badge, fixability_badge, nb_link %}
+{% block title %}Result {{ res.id }}{% endblock %}
+{% block content %}
+<p class="sub"><a href="/">Notebooks</a> / {{ nb_link(res.notebook) }} / result {{ res.id }}</p>
+<h1>{{ res.notebook.split('/')[-1] }} {{ status_badge(status, counts_as_pass) }}</h1>
+<p class="sub">{{ res.phase }} run · {{ res.recorded_at | ts }} ({{ res.recorded_at | age }})</p>
+
+<div class="grid2">
+  <div class="card">
+    <dl class="kv">
+      <dt>Status</dt><dd>{{ status_badge(status, counts_as_pass) }}{% if status == "partial" %} <span class="dim">{{ "counts as passing (manifest expects partial)" if counts_as_pass else "not an expected partial" }}</span>{% endif %}</dd>
+      <dt>Phase</dt><dd>{{ res.phase }}</dd>
+      <dt>Agent</dt><dd class="mono">{{ res.agent or "—" }}</dd>
+      <dt>Recorded</dt><dd>{{ res.recorded_at | ts }}</dd>
+      <dt>Batch</dt><dd class="mono">{% if res.run_id %}<a href="/run/{{ res.run_id }}">{{ res.run_id }}</a>{% else %}<span class="dim">imported from a result file</span>{% endif %}</dd>
+      <dt>Turns</dt><dd>{{ res.num_turns or "—" }}</dd>
+      <dt>Cost</dt><dd>{{ res.cost_usd | cost }}</dd>
+    </dl>
+  </div>
+  <div class="card">
+    <dl class="kv">
+      <dt>Runner (server)</dt><dd class="mono">{{ res.server or "—" }}</dd>
+      {% if server %}
+        <dt>Runner type</dt><dd>{{ "Kubernetes pod" if server.type == "k8s" else "SSH host" }}</dd>
+        {% if server.type == "k8s" %}
+          <dt>Cluster</dt><dd class="mono">{{ server.context }} / {{ server.namespace }}</dd>
+          <dt>Node selector</dt><dd class="mono">{% for k, v in (server.node_selector or {}).items() %}{{ k }}={{ v }}<br>{% endfor %}</dd>
+        {% endif %}
+        <dt>Hardware</dt><dd>{{ server.hardware or "—" }}</dd>
+      {% endif %}
+      <dt>Docker image</dt><dd class="mono">{{ res.docker_image or "—" }}</dd>
+      <dt>Result file</dt><dd class="mono dim">{{ (res.result_file or "—").split('/')[-1] }}</dd>
+    </dl>
+  </div>
+</div>
+
+{% if res.summary %}
+<h2>Summary</h2>
+<div class="card wrap">{{ res.summary }}</div>
+{% endif %}
+
+{% if res.message %}
+<h2>Runner message</h2>
+<pre>{{ res.message }}</pre>
+{% endif %}
+
+<h2>Issues ({{ res.issues | length }})</h2>
+{% if res.issues %}
+<table>
+  <thead><tr><th>Cell</th><th>Type</th><th>Fixability</th><th>What broke</th><th>Proposed fix</th></tr></thead>
+  <tbody>
+  {% for i in res.issues %}
+    <tr>
+      <td>{{ i.cell_index if i.cell_index is not none else "—" }}</td>
+      <td class="mono">{{ i.error_type or "—" }}</td>
+      <td>{{ fixability_badge(i.fixability) }}</td>
+      <td class="wrap">{{ i.description or "" }}</td>
+      <td class="wrap">{{ i.proposed_fix or "" }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="dim">No issues recorded.</p>
+{% endif %}
+
+{% if fixes %}
+<h2>Fixes applied ({{ fixes | length }})</h2>
+<table>
+  <thead><tr><th>Cell</th><th>Fix</th><th>Validated</th></tr></thead>
+  <tbody>
+  {% for f in fixes %}
+    <tr>
+      <td>{{ f.cell_index if f.cell_index is not none else "—" }}</td>
+      <td class="wrap">{{ f.description or f.fix_description or "" }}{% if f.patch %}<details><summary>patch</summary><pre>{{ f.patch }}</pre></details>{% endif %}</td>
+      <td>{% if f.validated %}<span class="badge ok">yes</span>{% else %}<span class="badge warn">no</span>{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if entry.notes %}
+<h2>Manifest notes for this notebook</h2>
+<div class="card wrap">{{ entry.notes }}</div>
+{% endif %}
+
+<h2>Raw result</h2>
+<details><summary>Show the full result payload</summary><pre>{{ payload_pretty }}</pre></details>
+{% endblock %}

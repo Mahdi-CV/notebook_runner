@@ -27,9 +27,8 @@ Design notes:
     failing. A channel that only speaks when something needs attention keeps
     being read. --always-post overrides for a heartbeat.
 
-  * The payload is a Power Automate ("Workflows") Adaptive Card, NOT the legacy
-    Office 365 connector MessageCard — Microsoft retired connectors, and the
-    two schemas are not interchangeable. Verified against the live webhook.
+  * The payload is a Workflows (Power Automate) Adaptive Card; the Office 365
+    connector MessageCard schema is not accepted.
 
   * stdlib only (urllib). Keeps uv.lock at two runtime dependencies.
 """

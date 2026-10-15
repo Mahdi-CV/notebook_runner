@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS results (
     notebook        TEXT NOT NULL,      -- manifest key, e.g. inference/foo.ipynb
     notebook_path   TEXT,
     phase           TEXT NOT NULL,      -- verify | fix | skip
+    server          TEXT,               -- manifest servers: entry (ssh host or k8s)
     agent           TEXT,
     status          TEXT NOT NULL,      -- pass | fail | partial | skip | unknown
     summary         TEXT,
@@ -83,14 +84,17 @@ CREATE INDEX IF NOT EXISTS idx_results_run      ON results(run_id);
 CREATE INDEX IF NOT EXISTS idx_issues_result    ON issues(result_id);
 
 -- Most recent non-skip result per notebook: the DB-side analogue of STATUS.md.
-CREATE VIEW IF NOT EXISTS latest_results AS
+-- Ordered by recorded_at, not id: a backfilled import gets higher ids than live
+-- rows recorded earlier. Recreated on every connect so the definition stays current.
+DROP VIEW IF EXISTS latest_results;
+CREATE VIEW latest_results AS
 SELECT r.* FROM results r
-JOIN (
-    SELECT notebook, MAX(id) AS id FROM results
-    WHERE phase != 'skip' GROUP BY notebook
-) latest ON latest.id = r.id;
+WHERE r.phase != 'skip' AND r.id = (
+    SELECT r2.id FROM results r2
+    WHERE r2.notebook = r.notebook AND r2.phase != 'skip'
+    ORDER BY r2.recorded_at DESC, r2.id DESC LIMIT 1
+);
 """
-
 
 def now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
@@ -98,6 +102,20 @@ def now_iso() -> str:
 
 def warn(msg: str) -> None:
     print(f"[results_db] warning: {msg}", file=sys.stderr)
+
+
+def normalize_ts(ts: str | None) -> str:
+    """Return a naive-UTC ISO timestamp. Agent payloads write naive UTC while
+    now_iso() carries '+00:00'; recorded_at must use one form to sort as text."""
+    if not ts:
+        return datetime.now(tz=timezone.utc).replace(tzinfo=None).isoformat()
+    try:
+        dt = datetime.fromisoformat(ts)
+    except ValueError:
+        return ts
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt.isoformat()
 
 
 def connect(db_path: Path | str = DEFAULT_DB) -> sqlite3.Connection:
@@ -151,7 +169,8 @@ def finish_run(conn: sqlite3.Connection, run_id: str) -> None:
 
 
 def record_result(conn: sqlite3.Connection, run_id: str | None, notebook: str,
-                  notebook_path: str | None, phase: str, result: dict) -> int | None:
+                  notebook_path: str | None, phase: str, result: dict,
+                  server: str | None = None) -> int | None:
     """Insert one phase outcome. `result` is run.py's result dict: the agent's
     JSON payload (if one was written) plus cost_usd/num_turns/message/result_path.
 
@@ -165,13 +184,13 @@ def record_result(conn: sqlite3.Connection, run_id: str | None, notebook: str,
         cur = conn.execute(
             """
             INSERT OR IGNORE INTO results (
-                run_id, notebook, notebook_path, phase, agent, status, summary,
-                message, docker_image, cost_usd, num_turns, result_file,
+                run_id, notebook, notebook_path, phase, server, agent, status,
+                summary, message, docker_image, cost_usd, num_turns, result_file,
                 payload_json, recorded_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                run_id, notebook, notebook_path, phase,
+                run_id, notebook, notebook_path, phase, server,
                 result.get("agent"),
                 result.get("status") or "unknown",
                 result.get("summary"),
@@ -181,7 +200,7 @@ def record_result(conn: sqlite3.Connection, run_id: str | None, notebook: str,
                 result.get("num_turns"),
                 result_file,
                 json.dumps(payload),
-                result.get("timestamp") or now_iso(),
+                normalize_ts(result.get("timestamp")),
             ),
         )
         if cur.rowcount == 0:
@@ -211,35 +230,88 @@ def run_results(conn: sqlite3.Connection, run_id: str) -> tuple[dict | None, lis
         """,
         (run_id,),
     ).fetchall()
+    return (dict(run) if run else None), _with_issues(conn, rows)
+
+
+def _with_issues(conn: sqlite3.Connection, rows) -> list[dict]:
     out = []
     for row in rows:
         d = dict(row)
         d["issues"] = [dict(i) for i in conn.execute(
             "SELECT * FROM issues WHERE result_id = ? ORDER BY id", (row["id"],))]
         out.append(d)
-    return (dict(run) if run else None), out
+    return out
 
 
-def import_json(conn: sqlite3.Connection, results_dir: Path) -> int:
-    """Backfill results/*.json written before the database existed.
+def latest_by_notebook(conn: sqlite3.Connection) -> dict[str, dict]:
+    """Latest non-skip result per notebook key, with its issues."""
+    rows = conn.execute("SELECT * FROM latest_results").fetchall()
+    return {r["notebook"]: r for r in _with_issues(conn, rows)}
+
+
+def notebook_history(conn: sqlite3.Connection, notebook: str) -> list[dict]:
+    """Every non-skip result for one notebook, newest first, with issues."""
+    rows = conn.execute(
+        "SELECT * FROM results WHERE notebook = ? AND phase != 'skip' "
+        "ORDER BY recorded_at DESC, id DESC", (notebook,)).fetchall()
+    return _with_issues(conn, rows)
+
+
+def get_result(conn: sqlite3.Connection, result_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM results WHERE id = ?", (result_id,)).fetchone()
+    return _with_issues(conn, [row])[0] if row else None
+
+
+def list_runs(conn: sqlite3.Connection, limit: int = 100) -> list[dict]:
+    return [dict(r) for r in conn.execute(
+        "SELECT * FROM runs ORDER BY started_at DESC LIMIT ?", (limit,))]
+
+
+def manifest_keys(manifest_path: Path) -> dict[str, str]:
+    """Map notebook filename -> manifest key (e.g. 'foo.ipynb' -> 'inference/foo.ipynb').
+    Filenames that appear under more than one key are left out as ambiguous."""
+    try:
+        import yaml  # pyyaml is a project dependency; only import needs it
+        notebooks = (yaml.safe_load(manifest_path.read_text()) or {}).get("notebooks") or {}
+    except (OSError, ImportError) as e:
+        warn(f"could not read manifest {manifest_path} ({e}); keeping bare filenames")
+        return {}
+    by_name: dict[str, list[str]] = {}
+    for key in notebooks:
+        by_name.setdefault(Path(key).name, []).append(key)
+    return {name: keys[0] for name, keys in by_name.items() if len(keys) == 1}
+
+
+def import_json(conn: sqlite3.Connection, results_dir: Path,
+                manifest_path: Path | None = None) -> int:
+    """Backfill results/*.json not yet in the database (e.g. from another machine).
 
     Imported rows have no run_id and no cost (cost lived only in run.py's
-    memory). The notebook key is the bare filename stem's .ipynb — the JSON
-    doesn't record the manifest-relative path, only the absolute local one.
+    memory). The JSON records only an absolute local notebook path, so the key
+    is resolved through the manifest to match what run.py writes. Files are
+    deduplicated by filename, not absolute path, so the same result imported on
+    two hosts is recorded once.
     """
+    keys = manifest_keys(manifest_path or REPO_ROOT / "manifest.yaml")
+    seen = {Path(r["result_file"]).name for r in
+            conn.execute("SELECT result_file FROM results WHERE result_file IS NOT NULL")}
     n = 0
     for path in sorted(results_dir.glob("*.json")):
+        if path.name in seen:
+            continue
         try:
             payload = json.loads(path.read_text())
         except (json.JSONDecodeError, OSError) as e:
             warn(f"could not parse {path.name}: {e}")
             continue
         nb_path = payload.get("notebook") or ""
-        notebook = Path(nb_path).name if nb_path else f"{path.stem}.ipynb"
+        name = Path(nb_path).name if nb_path else f"{path.stem.rsplit('_', 1)[0]}.ipynb"
+        notebook = keys.get(name, name)
         phase = "fix" if payload.get("agent") == "claude_code_fix" else "verify"
         if record_result(conn, None, notebook, nb_path, phase,
                          {**payload, "result_path": str(path.resolve())}):
             n += 1
+            seen.add(path.name)
     return n
 
 
@@ -249,11 +321,13 @@ def main() -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     imp = sub.add_parser("import", help="Backfill from results/*.json (idempotent).")
     imp.add_argument("--results-dir", default=str(REPO_ROOT / "results"))
+    imp.add_argument("--manifest", default=str(REPO_ROOT / "manifest.yaml"),
+                     help="Used to map result filenames to manifest notebook keys.")
     args = p.parse_args()
 
     conn = connect(args.db)
     if args.cmd == "import":
-        n = import_json(conn, Path(args.results_dir))
+        n = import_json(conn, Path(args.results_dir), Path(args.manifest))
         print(f"imported {n} new result(s) into {args.db}")
     return 0
 

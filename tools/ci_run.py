@@ -22,23 +22,13 @@ Usage:
   python3 tools/ci_run.py --no-commit           # update files, don't commit
   python3 tools/ci_run.py --skip-gap            # only attack current failures
   python3 tools/ci_run.py --verify-only         # diagnose only, never auto-fix
+  python3 tools/ci_run.py --server workshop-k8s # run every notebook on that manifest server
   python3 tools/ci_run.py --dry-run             # print the plan, run nothing
 
 Scheduling:
-  The weekly trigger runs this script via the tools/ci_cron.sh wrapper (flock so
-  passes never overlap, output tee'd to logs/). Install the schedule with
-  `crontab -e` and add:
-
-      # weekly notebook regression — Sundays 03:17 local
-      17 3 * * 0  /path/to/notebook_runner/tools/ci_cron.sh
-
-  The wrapper calls `ci_run.py --push`, so results (STATUS.md + manifest.yaml)
-  are committed and pushed to origin automatically.
-
-  WSL caveat: Linux cron only fires while WSL is running. If the machine is off
-  at the scheduled time the run is silently missed (no catch-up). For a host
-  that sleeps/reboots, drive the wrapper from Windows Task Scheduler instead:
-      wsl.exe bash -lc '/path/to/notebook_runner/tools/ci_cron.sh'
+  docker/notebook-runner-cron.sh runs this daily in the CI container via
+  docker/run-ci.sh (flock so passes never overlap, output tee'd to logs/).
+  See docker/README.md.
 
   Future: a self-hosted GitHub Actions runner (SSH to the GPU box + HF_TOKEN/
   GPU_HOST/GPU_USER secrets) — required for the PR trigger, optional here.
@@ -114,10 +104,11 @@ def stream(cmd: list[str], tee: Tee) -> int:
 
 
 def run_batch(paths: list[Path], base_dir: Path, tee: Tee, dry_run: bool,
-              run_id: str, mode: str = "full") -> None:
+              run_id: str, mode: str = "full", server: str | None = None) -> None:
     # --run-id groups Phase A and Phase B under one run in results/runs.db.
     cmd = [sys.executable, str(RUN_PY), "--dir", str(base_dir), "--mode", mode,
-           "--run-id", run_id, *[str(p) for p in paths]]
+           "--run-id", run_id, *(["--server", server] if server else []),
+           *[str(p) for p in paths]]
     if dry_run:
         tee.line(f"[dry-run] would run: {' '.join(cmd)}")
         return
@@ -184,6 +175,9 @@ def main() -> int:
     p.add_argument("--verify-only", action="store_true",
                    help="Run --mode verify instead of --mode full: diagnose only, "
                         "never auto-fix. Intended for unattended/scheduled passes.")
+    p.add_argument("--server", default=None,
+                   help="Manifest servers: entry to run every notebook on (passed to "
+                        "run.py --server), e.g. workshop-k8s.")
     p.add_argument("--no-commit", action="store_true",
                    help="Update STATUS.md/results but do not git commit.")
     p.add_argument("--push", action="store_true",
@@ -224,7 +218,8 @@ def main() -> int:
             for p in gap_paths:
                 tee.line(f"    {p.name}")
             if gap_paths:
-                run_batch(gap_paths, base_dir, tee, args.dry_run, ts, mode=batch_mode)
+                run_batch(gap_paths, base_dir, tee, args.dry_run, ts, mode=batch_mode,
+                          server=args.server)
 
         # ── Phase B — Failures (deduped against Phase A) ────────────────────
         failing_paths = selector_paths("--failing", base_dir, args.category)
@@ -234,7 +229,8 @@ def main() -> int:
         for p in failing_paths:
             tee.line(f"    {p.name}")
         if failing_paths:
-            run_batch(failing_paths, base_dir, tee, args.dry_run, ts, mode=batch_mode)
+            run_batch(failing_paths, base_dir, tee, args.dry_run, ts, mode=batch_mode,
+                      server=args.server)
 
         # ── Phase C — Dashboard ─────────────────────────────────────────────
         tee.line("\n── Phase C — Regenerating STATUS.md ──")
@@ -251,10 +247,8 @@ def main() -> int:
             git_commit(tee, ts, args.dry_run, args.push)
 
         # ── Phase E — Notify ────────────────────────────────────────────────
-        # Runs after the commit so the card's "newly failing/passing" delta is
-        # computed against the previous pass's committed STATUS.md, not this
-        # one's. Never fatal: the pass already did its work, and a Teams outage
-        # must not turn a successful regression run into a failed one.
+        # After the commit, so "newly failing/passing" compares against the
+        # previous pass's STATUS.md. Never fatal: a Teams outage must not fail a pass.
         tee.line("\n── Phase E — Notify ──")
         if args.no_notify:
             tee.line("[teams] skipped (--no-notify)")

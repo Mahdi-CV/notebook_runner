@@ -1,0 +1,13 @@
+{% macro status_badge(status, counts_as_pass=false) -%}
+{%- set cls = {"pass": "ok", "partial": ("ok-soft" if counts_as_pass else "warn"), "fail": "bad",
+               "never-tested": "muted", "skip": "muted"}.get(status, "bad") -%}
+<span class="badge {{ cls }}" title="{% if status == 'partial' %}{{ 'counts as passing (expected partial)' if counts_as_pass else 'partial — not an expected result for this notebook' }}{% endif %}">{{ status }}</span>
+{%- endmacro %}
+
+{% macro fixability_badge(f) -%}
+{%- if f -%}<span class="badge {{ {'auto_fixable': 'info', 'needs_author': 'warn', 'infra_blocked': 'muted'}.get(f, 'muted') }}">{{ f | replace('_', ' ') }}</span>{%- endif -%}
+{%- endmacro %}
+
+{% macro nb_link(key) -%}
+<a href="/notebook/{{ key }}">{{ key.split('/')[-1] }}</a>
+{%- endmacro %}

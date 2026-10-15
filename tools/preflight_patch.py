@@ -129,9 +129,18 @@ def patch_gradio_launch(src: str) -> tuple[str | None, str | None]:
 
     lines = src.splitlines()
     patched_lines = []
+    depth = 0  # open parens still pending from a skipped multi-line launch(...)
     for line in lines:
-        if _GRADIO_LAUNCH_RE.match(line) or (line.strip() and re.search(r'\.\s*launch\s*\(', line) and not line.strip().startswith('#')):
+        if depth > 0:
             patched_lines.append(f"# SKIPPED: {line}")
+            depth += line.count('(') - line.count(')')
+            continue
+        m = re.search(r'\.\s*launch\s*\(', line)
+        if m and not line.strip().startswith('#'):
+            # `pass` keeps the enclosing block valid if launch() was its last statement.
+            indent = line[:len(line) - len(line.lstrip())]
+            patched_lines.append(f"{indent}pass  # SKIPPED: {line.strip()}")
+            depth = line[m.start():].count('(') - line[m.start():].count(')')
         else:
             patched_lines.append(line)
     return '\n'.join(patched_lines), "Commented out .launch() call"

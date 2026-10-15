@@ -43,6 +43,7 @@ the system prompt appended below.
 | `RESULTS_DIR`         | Where to write the result JSON                          |
 | `FIXES_DIR`           | Local dir to retrieve the genuine-fix notebook into     |
 | `VERIFICATION_RESULT` | Local path to the verification agent's result JSON      |
+| `RUNNER`, `POD_CMD`, `K8S_UP_CMD`, `POD_PULL_CMD` | k8s runner only — see below |
 
 Everywhere this playbook shows `<WORKSPACE_BASE>/tutorial_agent_runs/<stem>`,
 substitute the literal `WORKSPACE_BASE` value from the runtime context (it
@@ -62,6 +63,10 @@ Refer to CLAUDE.md (loaded automatically from the project root) for:
 - Cleanup procedures
 
 All those patterns apply identically to the fixer agent.
+
+With `RUNNER = k8s`, CLAUDE.md's "Runner: Kubernetes pod" section applies too.
+The verification pod is gone; provision your own with `K8S_UP_CMD` before
+Step 2 and use it for every step after.
 
 ---
 
@@ -95,6 +100,28 @@ Then use `<nb>_fixed_patched.ipynb` for the validation run.
 If the verification result has no `auto_fixable` issues, write the result
 immediately with `status=fail`, carry all issues through, `fixes=[]`, and stop.
 Do not re-run the notebook.
+
+**6. Never try to get around a local permission problem.**
+If writing to `/work/results`, `/work/logs`, `/work/fixes`, `STATUS.md` or
+`manifest.yaml` fails with a permission error (`EACCES` / `PermissionError`),
+that is a host misconfiguration for a human to fix — not something to work
+around. Do NOT: search for SUID binaries, run `su` or `sudo`, probe
+capabilities, disable or bypass the sandbox, `chown`/`chmod`/recreate/rename
+the mounted directories, or write to `results/runs.db` directly (only
+`write_result.py` and `run.py` write results). Probing for elevated access on
+this host triggers security alerts.
+Retry the write ONCE. If it still fails, write the exact payload
+`write_result.py` would have produced (including a UTC `timestamp`) to
+`/work/logs/<notebook_stem>_PENDING_RESULT.json`, name the blocker in your
+final message, and stop.
+
+The same applies beyond these paths: if any of your own actions fails on
+permissions or ownership (on the GPU server, in a pod, reading a file), do not
+reach for more privilege or someone else's — no `sudo`/`su`, no other users'
+credentials or keys, no searching for credentials or reading `.env` files.
+Record it as an `other` / `infra_blocked` issue and stop. Commands a notebook's
+own cells run (for example a `sudo systemctl` cell) are notebook content: if
+they fail, record that as an issue like any other failure.
 
 ---
 
@@ -156,6 +183,14 @@ Bash: <SSH_CMD> 'pip index versions <package> 2>/dev/null | head -3'
 Bash: <SSH_HF_CMD> 'docker run --rm --entrypoint /bin/bash \
   <image> -c "pip install -q \"<package>==<candidate>\" && \
   python3 -c \"import <package>; print(\\\"ok\\\")\" || echo FAILED"'
+```
+
+With `RUNNER = k8s`, test in a throwaway venv inside your pod instead, so the
+candidate never lands in the environment the fixed notebook later runs in:
+```
+Bash: <POD_CMD> 'python3 -m venv --system-site-packages /tmp/pin && \
+  /tmp/pin/bin/pip install -q "<package>==<candidate>" && \
+  /tmp/pin/bin/python -c "import <package>; print(\"ok\")" || echo FAILED; rm -rf /tmp/pin'
 ```
 
 Only proceed with the pin if the import test passes. If it fails, try the
@@ -277,6 +312,9 @@ without re-reading the notebook:
 - `fail` — Any fix failed validation, or unfixable issues remain
 
 ### 4c. Retrieve the genuine-fix notebook (for the GitHub reporter)
+
+(With `RUNNER = k8s`, use the `POD_PULL_CMD` line from the runtime context
+instead of the scp below.)
 
 If **at least one** fix validated, copy the genuine-fix notebook back to this
 host so the reporter can diff it and propose the change to authors. Retrieve

@@ -11,11 +11,7 @@ Environment=AGENT_LISTEN_PORT=8899
 ExecStart=/usr/bin/python3 /opt/notebook-runner-agent/agent_server.py
 Restart=on-failure
 RestartSec=5
-# Defense in depth: this process only ever needs to run shell commands and
-# write files under the tutorial_agent_runs workspace, but it must be able
-# to run docker etc., so no further sandboxing (NoNewPrivileges, seccomp
-# filters) is applied here — it's deliberately equivalent in privilege to
-# an interactive SSH session for the same user, no more, no less.
+# Runs as root with no sandboxing: it must run docker, equivalent to a root SSH session.
 User=root
 
 [Install]

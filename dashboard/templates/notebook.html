@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% from "_macros.html" import status_badge %}
+{% block title %}{{ row.name }}{% endblock %}
+{% block content %}
+<p class="sub"><a href="/">Notebooks</a> / {{ row.category }}</p>
+<h1>{{ row.name }} {{ status_badge(row.status, row.counts_as_pass) }}</h1>
+<p class="sub mono">{{ key }}</p>
+
+<div class="grid2">
+  <div class="card">
+    <dl class="kv">
+      <dt>Latest result</dt><dd>{% if row.latest %}<a href="/result/{{ row.latest.id }}">{{ row.latest.recorded_at | ts }}</a> ({{ row.latest.recorded_at | age }}){% else %}never tested{% endif %}</dd>
+      <dt>Results recorded</dt><dd>{{ history | length }}</dd>
+      <dt>Expected result</dt><dd>{{ entry.expected_result or "pass" }}</dd>
+      <dt>Skipped</dt><dd>{% if entry.skip %}yes — {{ entry.skip_reason or "no reason given" }}{% else %}no{% endif %}</dd>
+    </dl>
+  </div>
+  <div class="card">
+    <dl class="kv">
+      <dt>Server</dt><dd class="mono">{{ entry.server or "—" }}</dd>
+      <dt>GPUs required</dt><dd>{{ entry.gpus_required or 1 }}</dd>
+      <dt>Hardware</dt><dd>{{ (entry.hardware_required or []) | join(", ") or "—" }}</dd>
+      <dt>Manifest notes</dt><dd class="wrap">{{ entry.notes or "—" }}</dd>
+    </dl>
+  </div>
+</div>
+
+<h2>Runs</h2>
+<table>
+  <thead><tr><th>When</th><th>Phase</th><th>Status</th><th>Runner</th><th>Image</th><th>Issues</th><th>Turns</th><th>Cost</th><th>Batch</th></tr></thead>
+  <tbody>
+  {% for h in history %}
+    <tr>
+      <td><a href="/result/{{ h.id }}">{{ h.recorded_at | ts }}</a><br><span class="dim">{{ h.recorded_at | age }}</span></td>
+      <td>{{ h.phase }}</td>
+      <td>{{ status_badge(h.status, h.status == "pass" or (h.status == "partial" and row.expected_partial)) }}</td>
+      <td class="mono">{{ h.server or "—" }}</td>
+      <td class="mono dim">{{ h.docker_image or "—" }}</td>
+      <td>{{ h.issues | length or "—" }}</td>
+      <td>{{ h.num_turns or "—" }}</td>
+      <td>{{ h.cost_usd | cost }}</td>
+      <td class="mono">{% if h.run_id %}<a href="/run/{{ h.run_id }}">{{ h.run_id }}</a>{% else %}<span class="dim" title="imported from a result file; not tied to a recorded batch">imported</span>{% endif %}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="9" class="dim">No results recorded for this notebook.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

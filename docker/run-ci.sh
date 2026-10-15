@@ -2,10 +2,8 @@
 #
 # Launch one CI pass inside the notebook-runner container.
 #
-# This is the container-native replacement for tools/ci_cron.sh. It keeps the
-# same two guarantees that wrapper had — no overlapping passes, everything
-# logged — and adds the isolation the bare-metal version could not give:
-# the agent runs as a non-root user in a throwaway filesystem.
+# Passes never overlap (flock) and everything is logged; the agent runs as a
+# non-root user in a read-only container.
 #
 # Usage:
 #   docker/run-ci.sh                    # full pass, commit + push
@@ -23,7 +21,7 @@ cd "$REPO_ROOT"
 IMAGE="${NOTEBOOK_RUNNER_IMAGE:-notebook-runner:latest}"
 TS="$(date +%Y%m%dT%H%M%S)"
 LOGFILE="$REPO_ROOT/logs/cron_${TS}.log"
-LOCKFILE="$REPO_ROOT/logs/ci_cron.lock"
+LOCKFILE="$REPO_ROOT/logs/ci_run.lock"
 
 mkdir -p "$REPO_ROOT/logs" "$REPO_ROOT/results" "$REPO_ROOT/fixes"
 
@@ -35,25 +33,55 @@ if [[ ! -f "$REPO_ROOT/.env" ]]; then
   exit 1
 fi
 
-# Claude credentials.
-#
-# On the AMD network the agent authenticates through the enterprise gateway
-# (llm-api.amd.com), NOT with a first-party Anthropic key: ANTHROPIC_BASE_URL
-# points at the gateway and ANTHROPIC_CUSTOM_HEADERS carries the APIM
-# subscription header. ANTHROPIC_API_KEY is a placeholder the gateway ignores,
-# but the CLI still requires it to be non-empty.
-#
-# These live in .env (gitignored). run.py calls load_dotenv() for its own use,
-# but the Claude CLI reads them from the *process environment*, so this wrapper
-# must export them into the container itself — sourcing .env here is what makes
-# `docker run -e ANTHROPIC_BASE_URL` below actually carry a value.
-#
-# `set -a` exports everything .env defines; the subshell-free source is
-# deliberate so the vars are visible to the docker run at the bottom.
+# Export everything in .env: the Claude CLI reads the gateway credentials from
+# its environment, so the `docker run -e` forwards below must carry values.
 set -a
 # shellcheck disable=SC1091  # path is runtime-resolved
 source "$REPO_ROOT/.env"
 set +a
+
+# A full disk kills a pass before ci_run.py can post its summary card, so check
+# the repo and Docker's storage up front and alert Teams instead.
+MIN_FREE_GB="${NBR_MIN_FREE_GB:-2}"
+low_disk=""
+for path in "$REPO_ROOT" "$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)"; do
+  [[ -e "$path" ]] || continue
+  free_gb=$(df -P -BG "$path" | awk 'NR==2 {gsub("G","",$4); print $4}')
+  if (( free_gb < MIN_FREE_GB )); then
+    low_disk+="${path} has ${free_gb}G free ($(df -P "$path" | awk 'NR==2 {print $6}') filesystem). "
+  fi
+done
+if [[ -n "$low_disk" ]]; then
+  echo "run-ci: disk space below ${MIN_FREE_GB}G — not starting pass $TS: $low_disk" >&2
+  python3 "$REPO_ROOT/tools/teams_alert.py" \
+    "Notebook regression pass skipped: disk full" \
+    "${low_disk}The pass needs at least ${MIN_FREE_GB}G free and was not started. Free space on the host, then the next scheduled pass will run normally." \
+    || true
+  exit 1
+fi
+
+# --- write-mount ownership guard ------------------------------------------
+# The container writes these paths as uid 1001. If any is owned by another uid
+# the agent cannot record its results, so don't start a pass that can't succeed.
+NBR_AGENT_UID=1001
+bad_owner=""
+for p in results fixes logs STATUS.md manifest.yaml; do
+  [[ -e "$REPO_ROOT/$p" ]] || continue
+  # -L: results/ may be a symlink (to NFS); check the directory it points to
+  owner=$(stat -L -c %u "$REPO_ROOT/$p")
+  if [[ "$owner" != "$NBR_AGENT_UID" ]]; then
+    bad_owner+="${p} is owned by uid ${owner} (must be ${NBR_AGENT_UID}). "
+  fi
+done
+if [[ -n "$bad_owner" ]]; then
+  echo "run-ci: agent cannot write its outputs — not starting pass $TS: $bad_owner" >&2
+  echo "        Fix as root: chown ${NBR_AGENT_UID}:${NBR_AGENT_UID} <path>" >&2
+  python3 "$REPO_ROOT/tools/teams_alert.py" \
+    "Notebook regression pass skipped: outputs not writable" \
+    "${bad_owner}The agent runs as uid ${NBR_AGENT_UID}, so it could not have written its results and the pass was not started. Fix as root with: chown ${NBR_AGENT_UID}:${NBR_AGENT_UID} <path>" \
+    || true
+  exit 1
+fi
 
 # Note `claude auth status` reports loggedIn:true whenever a key is merely
 # present — it does not validate it. Only a real request proves credentials
@@ -73,11 +101,6 @@ fi
 # HF_TOKEN gates every notebook that pulls a gated model (meta-llama,
 # mistralai, ...). Warn loudly rather than exit: plenty of notebooks don't need
 # it, and refusing to run at all would be worse than running a reduced set.
-#
-# The warning matters because of what an empty token actually causes. In an
-# observed run the agent, finding HF_TOKEN empty, went looking for it — reading
-# .env and dumping `env` — instead of recording "credential missing" and moving
-# on. Surfacing it here keeps that from being discovered mid-pass.
 if [[ -z "${HF_TOKEN:-}" ]]; then
   echo "run-ci: warning — HF_TOKEN is empty; gated-model notebooks will fail" >&2
   echo "        their env check and be reported as failures." >&2
@@ -88,33 +111,62 @@ fi
 gw_host="$(sed -E 's|https?://||; s|/.*||' <<<"$ANTHROPIC_BASE_URL")"
 if ! getent hosts "$gw_host" >/dev/null 2>&1; then
   echo "run-ci: cannot resolve $gw_host — this host is not on the AMD network." >&2
-  echo "        Run the orchestrator from an AMD-network host (e.g. xcovdashdbd01)." >&2
+  echo "        Run the orchestrator from a host on the AMD network." >&2
   exit 1
 fi
 
-# HTTP transport shim, not real SSH.
-#
-# AMD's egress silently drops SSH (and refuses TLS outright) to the GPU
-# node's IP range — see docs/PLAN-http-agent-shim.md. tools/http_ssh_shim/
-# replaces ssh/scp with drop-ins that speak HMAC-signed HTTP instead, and
-# run.py prepends that directory to PATH whenever AGENT_URL/AGENT_SECRET are
-# set (which .env sourcing above already exported into this shell).
-#
-# No key file, no known_hosts, no staging/chown dance the way a real SSH
-# key needed: the secret is a plain string forwarded via -e, same as every
-# other credential in this script.
+# The GPU node is reachable only over HTTP from the AMD network: run.py routes
+# ssh/scp through tools/http_ssh_shim/ when AGENT_URL/AGENT_SECRET are set.
 if [[ -z "${AGENT_URL:-}" || -z "${AGENT_SECRET:-}" ]]; then
-  echo "run-ci: AGENT_URL / AGENT_SECRET are unset." >&2
-  echo "        The GPU node is not reachable over real SSH from this network" >&2
-  echo "        (AMD's egress silently drops it) — set both in .env to use the" >&2
-  echo "        HTTP transport shim. See docker/README.md and .env.example." >&2
-  exit 1
+  if [[ -z "${NBR_KUBECONFIG:-}" ]]; then
+    echo "run-ci: AGENT_URL / AGENT_SECRET are unset." >&2
+    echo "        The GPU node is not reachable over real SSH from this network" >&2
+    echo "        (AMD's egress silently drops it) — set both in .env to use the" >&2
+    echo "        HTTP transport shim. See docker/README.md and .env.example." >&2
+    exit 1
+  fi
+  echo "run-ci: warning — AGENT_URL / AGENT_SECRET unset; only k8s servers" >&2
+  echo "        (run with --server <k8s entry>) will be reachable this pass." >&2
 fi
 
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   echo "run-ci: image $IMAGE not found. Build it with:" >&2
   echo "        docker build -f docker/Dockerfile -t $IMAGE ." >&2
   exit 1
+fi
+
+# Kubernetes runner (optional). NBR_KUBECONFIG is the namespace-scoped
+# ServiceAccount kubeconfig from `tools/k8s_pod.py kubeconfig` — never an admin
+# one: the agent can read whatever credential the container holds.
+# Staged, not bind-mounted: a 0600 file owned by the host user is unreadable
+# to the container's uid 1001.
+KUBE_ARGS=()
+if [[ -n "${NBR_KUBECONFIG:-}" ]]; then
+  if [[ ! -f "$NBR_KUBECONFIG" ]]; then
+    echo "run-ci: NBR_KUBECONFIG=$NBR_KUBECONFIG does not exist." >&2
+    exit 1
+  fi
+  KUBE_STAGE="$REPO_ROOT/logs/.kubeconfig_stage"
+  install -m 600 "$NBR_KUBECONFIG" "$KUBE_STAGE"
+  if ! chown 1001:1001 "$KUBE_STAGE" 2>/dev/null; then
+    # Unprivileged host user: world-readable inside logs/ for the pass only.
+    chmod 644 "$KUBE_STAGE"
+    echo "run-ci: warning — cannot chown the staged kubeconfig to uid 1001 (needs root)." >&2
+    echo "        Staged copy is mode 644 for the container's lifetime." >&2
+  fi
+  trap 'rm -f "$KUBE_STAGE"' EXIT
+  KUBE_ARGS=(-v "$KUBE_STAGE:/etc/notebook-runner/kubeconfig:ro"
+             -e KUBECONFIG=/etc/notebook-runner/kubeconfig)
+
+  # Prove the API answers from this host, with the image's kubectl, before a
+  # pass depends on it.
+  if ! docker run --rm "${KUBE_ARGS[@]}" --entrypoint kubectl "$IMAGE" \
+       version --request-timeout=10s >/dev/null 2>&1; then
+    echo "run-ci: the Kubernetes API in $NBR_KUBECONFIG is unreachable from this host." >&2
+    echo "        Check: docker run --rm -v ...:/etc/notebook-runner/kubeconfig:ro \\" >&2
+    echo "               -e KUBECONFIG=/etc/notebook-runner/kubeconfig --entrypoint kubectl $IMAGE version" >&2
+    exit 1
+  fi
 fi
 
 # --- no-overlap guard -----------------------------------------------------
@@ -137,25 +189,16 @@ echo "run-ci: starting pass $TS (image=$IMAGE, log=$LOGFILE)"
 #   notebooks/               read-only   — inputs; the agent must never edit
 #                                          them (patching happens on the GPU
 #                                          node, on a copy)
-#   (.env is deliberately NOT mounted — see below)
-#   tools/ (includes http_ssh_shim/) read-only — run.py prepends this to
-#                                          PATH itself when AGENT_URL/
-#                                          AGENT_SECRET are set; no separate
-#                                          mount or key staging needed
+#   kubeconfig (optional)    read-only   — staged NBR_KUBECONFIG, k8s runner
+#   tools/ (incl. http_ssh_shim/) read-only
 #   .git                     read-write  — Phase D commits
 #
 # --read-only on the root filesystem with tmpfs for the writable spots: the
 # agent runs model-authored shell commands, and this bounds what a bad one can
 # scribble on. /home/agent is a tmpfs because the CLI writes session state there.
 #
-# .env is NOT mounted, deliberately. This wrapper already sources it and passes
-# the individual variables the runtime needs via -e, so the file itself buys
-# nothing inside the container — and it holds the APIM key, the GPU host, and
-# the Teams webhook. That matters because the agent runs with
-# --dangerously-skip-permissions: in an observed run it went looking for a
-# missing HF_TOKEN by reading .env and dumping `env`. The read was refused by
-# an interactive permission rule that does not exist in the container, so the
-# only reliable control is to not mount the file.
+# .env is not mounted: the agent runs with --dangerously-skip-permissions and
+# could read every secret in it. Only the variables it needs are passed with -e.
 docker run --rm \
   --name "notebook-runner-${TS}" \
   --read-only \
@@ -172,8 +215,12 @@ docker run --rm \
   -e ANTHROPIC_DEFAULT_HAIKU_MODEL \
   -e CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
   -e TEAMS_WEBHOOK_URL \
+  -e GPU_HOST \
+  -e GPU_USER \
+  -e HF_TOKEN \
   -e AGENT_URL \
   -e AGENT_SECRET \
+  ${KUBE_ARGS[@]+"${KUBE_ARGS[@]}"} \
   -e GIT_AUTHOR_NAME="notebook-runner" \
   -e GIT_AUTHOR_EMAIL="notebook-runner@local" \
   -e GIT_COMMITTER_NAME="notebook-runner" \

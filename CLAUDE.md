@@ -40,10 +40,51 @@ appended below the playbook.
 | `WORKSPACE_BASE`  | Remote base for run dirs (`<WORKSPACE_BASE>/tutorial_agent_runs/<stem>`) |
 | `TOOLS_DIR`       | Absolute path to the shared tools/ directory            |
 | `RESULTS_DIR`     | Where to write the result JSON                          |
+| `RUNNER`          | Present only as `k8s` — see "Runner: Kubernetes pod" below |
+| `POD_CMD`         | k8s only: prefix for every command, run inside the pod  |
+| `K8S_UP_CMD`      | k8s only: provisions the pod; append `--image <image:tag>` |
 
 Everywhere this playbook shows `<WORKSPACE_BASE>/tutorial_agent_runs/<stem>`,
 substitute the literal `WORKSPACE_BASE` value from the runtime context (it
 defaults to `/home/amd` but is `/home/gh-runner` on the self-hosted CI box).
+
+---
+
+## Runner: Kubernetes pod (RUNNER=k8s)
+
+Skip this section unless the runtime context says `RUNNER = k8s`. Then there is
+no SSH host and no Docker daemon: the notebook runs inside one GPU pod built
+from the image you resolve. Everything else in this playbook (hard rules,
+patterns, analysis, fixability, write_result) still applies, with these
+substitutions:
+
+- **Commands:** use `POD_CMD '<cmd>'` wherever the playbook says `SSH_CMD` or
+  `SSH_HF_CMD`. HF_TOKEN is already in the pod environment. Paths:
+  `<WORKSPACE_BASE>/tutorial_agent_runs/<stem>` and the container's
+  `/workspace` are both just `/workspace`.
+- **Provisioning replaces `docker run`:** after resolving the image, run
+  `K8S_UP_CMD --image <image:tag>`. Repeat the identical command while it
+  prints `Waiting for pod: ...`; continue once it prints `READY` (the notebook
+  and `preflight_patch.py` are then in `/workspace`). One pod, one image —
+  call it once per notebook run.
+- **Pattern A:** after READY, write `run.sh` via `POD_CMD`, then
+  `POD_CMD 'nohup bash -l /workspace/run.sh < /dev/null > /workspace/op.log 2>&1 &'`
+  for rocm/pytorch (`bash` without `-l` for other images) and poll `op.log`.
+- **Pattern B:** provision the pod with the **server** image, start the server
+  as a background process inside it (the command and arguments the notebook's
+  `docker run` would have passed to that image), poll
+  `http://localhost:<port>/health` via `POD_CMD`, then run the client cells with
+  papermill in the same pod.
+- **Pattern C** (notebook code itself runs `docker`): do not provision a pod.
+  Record one issue — `error_type: other`, `fixability: infra_blocked`,
+  description "k8s runner cannot run nested containers; run this notebook on
+  an SSH server" — write the result with `status: fail`, and stop.
+- **Pattern D:** provision with the resolved `rocm/pytorch` image and run
+  papermill there.
+- **`FAILED:` or `UNSCHEDULABLE:` from K8S_UP_CMD** is an infrastructure
+  failure, not a content one: retry once, then record it as an `other` /
+  `infra_blocked` issue with the printed reason and `status: fail`.
+- **Cleanup:** skip the Cleanup section; the runner deletes the pod.
 
 ---
 
@@ -199,6 +240,28 @@ work around content errors.
 
 Retry Phase 1 only for infrastructure failures: Docker daemon error,
 out-of-disk, SSH drop, image pull failure.
+
+**5. Never try to get around a local permission problem.**
+If writing to `/work/results`, `/work/logs`, `/work/fixes`, `STATUS.md` or
+`manifest.yaml` fails with a permission error (`EACCES` / `PermissionError`),
+that is a host misconfiguration for a human to fix — not something to work
+around. Do NOT: search for SUID binaries, run `su` or `sudo`, probe
+capabilities, disable or bypass the sandbox, `chown`/`chmod`/recreate/rename
+the mounted directories, or write to `results/runs.db` directly (only
+`write_result.py` and `run.py` write results). Probing for elevated access on
+this host triggers security alerts.
+Retry the write ONCE. If it still fails, write the exact payload
+`write_result.py` would have produced (including a UTC `timestamp`) to
+`/work/logs/<notebook_stem>_PENDING_RESULT.json`, name the blocker in your
+final message, and stop.
+
+The same applies beyond these paths: if any of your own actions fails on
+permissions or ownership (on the GPU server, in a pod, reading a file), do not
+reach for more privilege or someone else's — no `sudo`/`su`, no other users'
+credentials or keys, no searching for credentials or reading `.env` files.
+Record it as an `other` / `infra_blocked` issue and stop. Commands a notebook's
+own cells run (for example a `sudo systemctl` cell) are notebook content: if
+they fail, record that as an issue like any other failure.
 
 ---
 
@@ -404,10 +467,12 @@ nohup <cmd> < /dev/null > op.log 2>&1 & disown
 echo $! > op.pid
 ```
 
-**Never schedule a wakeup to check back later.** You are a one-shot headless
-process — there is no scheduler to resume you. Scheduling a wakeup just ends
-your turn early with nothing written; the run then silently fails with no
-result. To wait on a long-running remote command, poll for it **within the
+**Never schedule a wakeup or wait on a background task.** You are a one-shot
+headless process — there is no scheduler to resume you and no notification
+will ever arrive. Scheduling a wakeup, or running a Bash command with
+`run_in_background` and then ending your turn to "wait for it", just ends the
+run with nothing written. Every Bash call must run in the foreground and
+return; never end a turn until `write_result.py` has been called. To wait on a long-running remote command, poll for it **within the
 same turn**: `nohup` it on the server as above, then repeatedly check
 `cat op.log` / `curl health` yourself, sleeping between checks, until it
 finishes or you hit the operation's timeout in the table above.

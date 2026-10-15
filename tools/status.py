@@ -123,6 +123,19 @@ def build_notebook_rows(manifest: dict, results: dict[str, dict]) -> list[dict]:
     return rows
 
 
+def effective_status(raw_status: str | None, expected_partial: bool) -> tuple[str, bool]:
+    """(status to display, whether it counts as passing) for a notebook's latest
+    result. Shared by STATUS.md and the web dashboard so they never disagree."""
+    if raw_status is None:
+        return "never-tested", False
+    if raw_status == "pass":
+        return "pass", True
+    if raw_status == "partial":
+        # partial counts as pass only when the manifest says so; displayed as partial regardless
+        return "partial", expected_partial
+    return raw_status, False
+
+
 def _build_row(manifest_key: str, entry: dict, result: dict | None) -> dict:
     category = category_of(manifest_key)
     if result is None:
@@ -142,16 +155,7 @@ def _build_row(manifest_key: str, entry: dict, result: dict | None) -> dict:
     payload = result["payload"]
     raw_status = payload.get("status", "unknown")
     expected_partial = entry.get("expected_result") == "partial"
-
-    if raw_status == "pass":
-        status, counts_as_pass = "pass", True
-    elif raw_status == "partial":
-        # partial counts as pass only when manifest says so; status column shows partial regardless
-        status, counts_as_pass = "partial", expected_partial
-    elif raw_status == "fail":
-        status, counts_as_pass = "fail", False
-    else:
-        status, counts_as_pass = raw_status, False
+    status, counts_as_pass = effective_status(raw_status, expected_partial)
 
     issues = payload.get("issues") or []
     top_failure = ""

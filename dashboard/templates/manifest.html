@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% from "_macros.html" import nb_link %}
+{% block title %}Manifest{% endblock %}
+{% block content %}
+<h1>Manifest</h1>
+<p class="sub">What the pipeline tests, where, and with what expectations — rendered from <span class="mono">manifest.yaml</span>.</p>
+
+<h2>Runners ({{ servers | length }})</h2>
+<table>
+  <thead><tr><th>Name</th><th>Type</th><th>Hardware</th><th>Where</th><th>Scheduling</th><th>Sizing</th></tr></thead>
+  <tbody>
+  {% for name, s in servers.items() %}
+    <tr>
+      <td class="mono">{{ name }}</td>
+      <td>{{ "Kubernetes pod" if s.type == "k8s" else "SSH host" }}</td>
+      <td>{{ s.hardware or "—" }}</td>
+      <td class="mono">{% if s.type == "k8s" %}{{ s.context }} / {{ s.namespace }}{% else %}{{ s.host or "GPU_HOST from .env" }}{% endif %}</td>
+      <td class="mono">
+        {% for k, v in (s.node_selector or {}).items() %}{{ k }}={{ v }}<br>{% endfor %}
+        {% for t in (s.tolerations or []) %}<span class="dim">tolerates</span> {{ t.key }}{% if t.value %}={{ t.value }}{% endif %}<br>{% endfor %}
+      </td>
+      <td>{% if s.type == "k8s" %}{{ s.gpus_per_node }} GPUs/node · {{ s.memory }} RAM · {{ s.workspace_size }} disk<br><span class="dim">schedule timeout {{ s.schedule_timeout_min }} min · max {{ s.max_lifetime_hours }} h</span>{% else %}—{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{% for category, items in groups.items() %}
+<h2>{{ category }} ({{ items | length }})</h2>
+<table>
+  <thead><tr><th>Notebook</th><th>Runner</th><th>GPUs</th><th>Hardware</th><th>Expected</th><th>Notes / skip reason</th></tr></thead>
+  <tbody>
+  {% for n in items %}
+    <tr>
+      <td>{{ nb_link(n.key) }}{% if n.skip %} <span class="badge muted">skipped</span>{% endif %}</td>
+      <td class="mono">{{ n.server or "—" }}</td>
+      <td>{{ n.gpus_required or 1 }}</td>
+      <td>{{ (n.hardware_required or []) | join(", ") or "—" }}</td>
+      <td>{{ n.expected_result or "pass" }}</td>
+      <td class="wrap">{% if n.skip %}<strong>Skipped:</strong> {{ n.skip_reason or "no reason given" }}{% if n.notes %}
+
+{% endif %}{% endif %}{{ n.notes or ("" if n.skip else "—") }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endfor %}
+{% endblock %}
