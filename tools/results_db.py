@@ -135,7 +135,8 @@ def finish_run(conn: sqlite3.Connection, run_id: str) -> None:
     """Recompute run totals from the results table (correct across batches).
 
     A notebook counts once, by its final phase: in --mode full a failed verify
-    followed by a passing fix is a pass.
+    followed by a passing fix is a pass. Blocked notebooks are neither passed
+    nor failed (they could not be evaluated).
     """
     with conn:
         conn.execute(
@@ -149,7 +150,7 @@ def finish_run(conn: sqlite3.Connection, run_id: str) -> None:
                 failed         = (SELECT COUNT(*) FROM results r WHERE r.id IN
                                     (SELECT MAX(id) FROM results WHERE run_id = runs.run_id
                                      AND phase != 'skip' GROUP BY notebook)
-                                  AND r.status != 'pass'),
+                                  AND r.status IN ('fail', 'partial')),
                 skipped        = (SELECT COUNT(DISTINCT notebook) FROM results
                                   WHERE run_id = runs.run_id AND phase = 'skip'),
                 total_cost_usd = (SELECT SUM(cost_usd) FROM results

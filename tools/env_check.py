@@ -300,7 +300,7 @@ def write_failure_result(
         sys.executable,
         str(WRITE_RESULT_SCRIPT),
         "--notebook", str(notebook_local),
-        "--status", "fail",
+        "--status", "blocked",
         "--summary", summary,
         "--issues", json.dumps(issues),
         "--fixes", "[]",

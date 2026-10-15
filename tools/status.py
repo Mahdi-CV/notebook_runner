@@ -113,9 +113,32 @@ def failure_line(issues: list | None, message: str | None = None, width: int = 8
     return (message or "").strip()
 
 
+def verdict_status(raw: str | None) -> str:
+    """pass / fail / blocked for a stored status (never-tested for None).
+
+    run.py sets pass/fail/blocked from the executed notebook. Older results
+    used the agent's own label: partial is a run with errors, so fail. A
+    result run.py never finalized ("unverified") could not be evaluated."""
+    if raw is None:
+        return "never-tested"
+    if raw in ("pass", "fail", "blocked"):
+        return raw
+    return "fail" if raw == "partial" else "blocked"
+
+
+def result_reason(payload: dict, width: int = 80) -> str:
+    """One line on why a result did not pass: the runner's reason when it was
+    blocked, else the agent's first issue."""
+    if verdict_status(payload.get("status")) == "blocked":
+        reason = (payload.get("verdict") or {}).get("reason") or payload.get("message")
+        if reason:
+            return reason
+    return failure_line(payload.get("issues"), payload.get("message"), width)
+
+
 def _build_row(key: str, target: str | None, result: dict | None) -> dict:
     payload = result["payload"] if result else {}
-    status = payload.get("status", "unknown") if result else "never-tested"
+    status = verdict_status(payload.get("status", "unverified") if result else None)
     return {
         "notebook": key,
         "category": category_of(key),
@@ -124,8 +147,7 @@ def _build_row(key: str, target: str | None, result: dict | None) -> dict:
         "counts_as_pass": status == "pass",
         "last_run": result["display_ts"] if result else None,
         "image_tested": payload.get("docker_image_resolved"),
-        "top_failure": failure_line(payload.get("issues"))
-        if status not in ("pass", "never-tested") else "",
+        "top_failure": result_reason(payload) if status in ("fail", "blocked") else "",
         "cost_usd": payload.get("cost_usd"),
     }
 
@@ -133,7 +155,8 @@ def _build_row(key: str, target: str | None, result: dict | None) -> dict:
 def compute_summary(rows: list[dict]) -> dict:
     total = len(rows)
     pass_count = sum(1 for r in rows if r["counts_as_pass"])
-    fail_count = sum(1 for r in rows if r["status"] not in ("pass", "never-tested"))
+    fail_count = sum(1 for r in rows if r["status"] == "fail")
+    blocked_count = sum(1 for r in rows if r["status"] == "blocked")
     never_count = sum(1 for r in rows if r["status"] == "never-tested")
 
     now = datetime.now(tz=timezone.utc)
@@ -141,6 +164,8 @@ def compute_summary(rows: list[dict]) -> dict:
     recent = [r for r in rows if r["last_run"] and r["last_run"] >= week_ago]
     recent_count = len(recent)
     recent_pass = sum(1 for r in recent if r["counts_as_pass"])
+    # Pass rate among notebooks with a verdict; blocked ones could not be evaluated.
+    evaluated = pass_count + fail_count
 
     total_cost = 0.0
     have_cost = False
@@ -159,9 +184,10 @@ def compute_summary(rows: list[dict]) -> dict:
     return {
         "total_testable": total,
         "pass": pass_count,
-        "pass_pct": pct(pass_count, total),
+        "pass_pct": pct(pass_count, evaluated),
         "fail": fail_count,
-        "fail_pct": pct(fail_count, total),
+        "fail_pct": pct(fail_count, evaluated),
+        "blocked": blocked_count,
         "never_tested": never_count,
         "never_tested_pct": pct(never_count, total),
         "recent_7d": recent_count,
@@ -193,8 +219,9 @@ def render_markdown(rows: list[dict], summary: dict, no_target: dict[str, str]) 
     lines.append("")
     total = summary["total_testable"]
     lines.append(f"- Total testable notebooks: **{total}**")
-    lines.append(f"- Pass: **{summary['pass']}** ({summary['pass_pct']:.1f}%)")
-    lines.append(f"- Fail: **{summary['fail']}** ({summary['fail_pct']:.1f}%)")
+    lines.append(f"- Pass: **{summary['pass']}** ({summary['pass_pct']:.1f}% of evaluated)")
+    lines.append(f"- Fail: **{summary['fail']}** ({summary['fail_pct']:.1f}% of evaluated)")
+    lines.append(f"- Blocked (could not be evaluated): **{summary['blocked']}**")
     lines.append(f"- Never-tested: **{summary['never_tested']}** ({summary['never_tested_pct']:.1f}%)")
     lines.append(
         f"- Results in last 7 days: **{summary['recent_7d']}** "
@@ -255,8 +282,9 @@ def render_gap(rows: list[dict]) -> str:
 
 
 def render_failing(rows: list[dict]) -> str:
-    """Print the keys of notebooks whose latest result is not a pass."""
-    failing = [r for r in rows if r["status"] not in ("pass", "never-tested")]
+    """Print the keys of notebooks whose latest result is fail or blocked:
+    both need another run."""
+    failing = [r for r in rows if r["status"] in ("fail", "blocked")]
     failing.sort(key=lambda r: r["notebook"])
     return "\n".join(r["notebook"] for r in failing) + ("\n" if failing else "")
 
@@ -289,8 +317,7 @@ def main() -> int:
     p = argparse.ArgumentParser(description="Aggregate notebook regression results.")
     p.add_argument("--gap", action="store_true", help="Print only never-tested/stale notebook paths.")
     p.add_argument("--failing", action="store_true",
-                   help="Print only currently-failing notebook paths (latest result "
-                        "is not a pass).")
+                   help="Print only notebook paths whose latest result is fail or blocked.")
     p.add_argument("--json", dest="as_json", action="store_true", help="Print machine-readable JSON.")
     p.add_argument("--write", action="store_true", help="Also write STATUS.md to repo root.")
     p.add_argument("--results-dir", default=None, help="Override results directory.")

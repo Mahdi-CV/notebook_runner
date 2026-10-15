@@ -8,8 +8,8 @@
 <div class="tiles">
   <div class="tile"><div class="n">{{ summary.passing }}/{{ summary.total }}</div><div class="l">Passing</div></div>
   <div class="tile"><div class="n">{{ summary.pass }}</div><div class="l">Pass</div></div>
-  <div class="tile"><div class="n">{{ summary.partial }}</div><div class="l">Partial</div></div>
   <div class="tile"><div class="n">{{ summary.fail }}</div><div class="l">Fail</div></div>
+  <div class="tile"><div class="n">{{ summary.blocked }}</div><div class="l">Blocked</div></div>
   <div class="tile"><div class="n">{{ summary.never }}</div><div class="l">Never tested</div></div>
   <div class="tile"><div class="n">{{ summary.stale }}</div><div class="l">Stale (&gt;7d)</div></div>
   <div class="tile"><div class="n">{{ summary.no_target }}</div><div class="l">No target</div></div>
@@ -20,7 +20,7 @@
   {% for c in categories %}<a href="/?category={{ c }}&status={{ status }}" class="{{ 'on' if category == c }}">{{ c }}</a>{% endfor %}
 </div>
 <div class="filters">
-  {% for s, label in [("", "Any status"), ("pass", "Pass"), ("partial", "Partial"), ("fail", "Fail"), ("never-tested", "Never tested")] %}
+  {% for s, label in [("", "Any status"), ("pass", "Pass"), ("fail", "Fail"), ("blocked", "Blocked"), ("never-tested", "Never tested")] %}
   <a href="/?category={{ category }}&status={{ s }}" class="{{ 'on' if status == s }}">{{ label }}</a>
   {% endfor %}
 </div>

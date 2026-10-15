@@ -24,12 +24,12 @@
     <tr>
       <td>{{ nb_link(r.notebook) }}</td>
       <td>{{ r.phase }}</td>
-      <td><a href="/result/{{ r.id }}">{{ status_badge(r.status) }}</a></td>
+      <td><a href="/result/{{ r.id }}">{{ status_badge(r.status | verdict) }}</a></td>
       <td class="mono">{{ r.server or "—" }}</td>
       <td>{{ r.recorded_at | ts }}</td>
       <td>{{ r.num_turns or "—" }}</td>
       <td>{{ r.cost_usd | cost }}</td>
-      <td class="wrap">{% if r.status != "pass" %}{{ r | why }}{% endif %}</td>
+      <td class="wrap">{% if (r.status | verdict) != "pass" %}{{ r | why }}{% endif %}</td>
     </tr>
   {% else %}
     <tr><td colspan="8" class="dim">No notebook results recorded for this run.</td></tr>

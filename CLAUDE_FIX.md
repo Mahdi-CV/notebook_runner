@@ -37,6 +37,7 @@ the system prompt appended below.
 | `SSH_HF_CMD`          | SSH prefix with HF_TOKEN pre-exported                   |
 | `GPU_HARDWARE`        | Hardware name (e.g. mi300x, rx7900xtx) for Docker image resolution |
 | `MEMORY_LIMIT`, `CONTAINER_ENV`, `PAPERMILL_PARAMS`, `IMAGE_REPO` | The notebook's declared requirements; use them as in CLAUDE.md |
+| `OUTPUT_NOTEBOOK`     | Where papermill must write the executed fixed notebook (`<nb>_fixed_out.ipynb`); the runner's verdict comes from it |
 | `NOTEBOOK_LOCAL`      | Local path to the notebook being tested                 |
 | `NOTEBOOK_REMOTE`     | Remote path — already copied, ready to use              |
 | `WORKSPACE_BASE`      | Remote base for run dirs (`<WORKSPACE_BASE>/tutorial_agent_runs/<stem>`) |
@@ -97,10 +98,8 @@ Bash: <SSH_CMD> 'python3 <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/preflight_p
 ```
 Then use `<nb>_fixed_patched.ipynb` for the validation run.
 
-**5. Zero auto_fixable issues = early exit.**
-If the verification result has no `auto_fixable` issues, write the result
-immediately with `status=fail`, carry all issues through, `fixes=[]`, and stop.
-Do not re-run the notebook.
+**5. Only `auto_fixable` issues are yours.** The runner does not start you
+for a notebook without any; carry the others through unchanged.
 
 **6. Never try to get around a local permission problem.**
 If writing to `/work/results`, `/work/logs`, `/work/fixes` or `STATUS.md`
@@ -136,21 +135,8 @@ they fail, record that as an issue like any other failure.
 
 2. Read `NOTEBOOK_LOCAL` with the Read tool. Read every cell.
 
-3. Filter issues to only those with `fixability == "auto_fixable"`. Count them.
-   If zero, write the result immediately:
-   ```
-   Bash: python3 <TOOLS_DIR>/write_result.py \
-     --notebook "<NOTEBOOK_LOCAL>" \
-     --status fail \
-     --summary "No auto-fixable issues. All N issues require author intervention." \
-     --issues '<all issues from verification, unchanged>' \
-     --fixes '[]' \
-     --agent "claude_code_fix" \
-     --verification-result "<VERIFICATION_RESULT>" \
-     --docker-image-resolved "<image:tag>" \
-     --results-dir "<RESULTS_DIR>"
-   ```
-   Then stop.
+3. Filter issues to only those with `fixability == "auto_fixable"`. The
+   runner only starts you when there is at least one.
 
 4. Note the execution pattern (A/B/C/D) from reading cell sources — you need
    this to know how to re-run the notebook.
@@ -307,10 +293,10 @@ without re-reading the notebook:
 }
 ```
 
-**Status logic:**
-- `pass` — ALL auto_fixable fixes validated AND no `needs_author`/`infra_blocked`
-  issues remain
-- `fail` — Any fix failed validation, or unfixable issues remain
+**Verdict:** you do not set one. The runner reads `OUTPUT_NOTEBOOK` (the
+executed fixed notebook) and records `pass` if every code cell ran without an
+error, `fail` if a cell raised, `blocked` if it could not be evaluated. Your
+`validated` flags and issues are the diagnosis behind it.
 
 ### 4c. Retrieve the genuine-fix notebook (for the GitHub reporter)
 
@@ -323,7 +309,7 @@ host so the reporter can diff it and propose the change to authors. Retrieve
 contains preflight scaffolding (gradio/audio/input skips) that must never be
 shown to tutorial authors; only the genuine fix belongs in a PR.
 
-Do this **before Cleanup** (cleanup deletes the remote file):
+Do this before you finish (the runner removes the run dir afterwards):
 ```
 Bash: scp -o StrictHostKeyChecking=no -o ForwardX11=no \
   <user>@<host>:<WORKSPACE_BASE>/tutorial_agent_runs/<stem>/<nb>_fixed.ipynb \
@@ -337,7 +323,6 @@ omit `--fixed-notebook` below.)
 ```
 Bash: python3 <TOOLS_DIR>/write_result.py \
   --notebook "<NOTEBOOK_LOCAL>" \
-  --status pass|fail \
   --summary "One paragraph: what was fixed, what was validated, what remains" \
   --issues '<all issues — auto_fixable + needs_author + infra_blocked>' \
   --fixes '<fixes array>' \
@@ -349,16 +334,14 @@ Bash: python3 <TOOLS_DIR>/write_result.py \
 ```
 (Omit `--fixed-notebook` if no fix validated in Step 4c.)
 
-After writing the result, print the final status line and stop.
+After writing the result, stop.
 
 ---
 
 ## Cleanup
 
-Always run after any outcome — same as CLAUDE.md:
+Same as CLAUDE.md: stop every container you started, and leave the run dir and
+`OUTPUT_NOTEBOOK` in place for the runner.
 ```
 Bash: <SSH_CMD> 'docker stop <name> 2>/dev/null || true'
-Bash: <SSH_CMD> 'docker run --rm -v <WORKSPACE_BASE>/tutorial_agent_runs/<stem>:/workspace alpine \
-  sh -c "rm -rf /workspace/*" 2>/dev/null || true'
-Bash: <SSH_CMD> 'rm -rf <WORKSPACE_BASE>/tutorial_agent_runs/<stem> 2>/dev/null || true'
 ```

@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.templating import Jinja2Templates
 
 ROOT = Path(os.environ.get("NBR_ROOT") or Path(__file__).resolve().parent.parent)
@@ -32,7 +32,7 @@ STALE_AFTER = timedelta(days=7)  # matches tools/status.py --gap
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 import results_db
 import routing
-from status import category_of, failure_line
+from status import category_of, result_reason, verdict_status
 
 app = FastAPI(title="Notebook regression dashboard", docs_url=None, redoc_url=None,
               openapi_url=None)
@@ -99,15 +99,22 @@ def fmt_cost(v) -> str:
 
 def why(result: dict | None) -> str:
     """One-line reason for a non-passing result (same as STATUS.md and Teams)."""
-    return failure_line(result.get("issues"), result.get("message"), width=110) if result else ""
+    if not result:
+        return ""
+    try:
+        payload = json.loads(result.get("payload_json") or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+    return result_reason({**result, **payload}, width=110)
 
 
-for name, fn in {"ts": fmt_ts, "age": fmt_age, "cost": fmt_cost, "why": why}.items():
+for name, fn in {"ts": fmt_ts, "age": fmt_age, "cost": fmt_cost, "why": why,
+                 "verdict": verdict_status}.items():
     templates.env.filters[name] = fn
 
 
 def notebook_row(key: str, latest: dict | None) -> dict:
-    status = latest["status"] if latest else "never-tested"
+    status = verdict_status(latest["status"] if latest else None)
     ts = parse_ts(latest["recorded_at"]) if latest else None
     stale = bool(latest) and (
         ts is None or ts < datetime.now(timezone.utc).replace(tzinfo=None) - STALE_AFTER)
@@ -145,8 +152,8 @@ def overview(request: Request, category: str = "", status: str = ""):
         "total": len(rows),
         "passing": sum(r["status"] == "pass" for r in rows),
         "pass": sum(r["status"] == "pass" for r in rows),
-        "partial": sum(r["status"] == "partial" for r in rows),
-        "fail": sum(r["status"] not in ("pass", "partial", "never-tested") for r in rows),
+        "fail": sum(r["status"] == "fail" for r in rows),
+        "blocked": sum(r["status"] == "blocked" for r in rows),
         "never": sum(r["status"] == "never-tested" for r in rows),
         "stale": sum(r["stale"] for r in rows),
         "no_target": len(no_target),
@@ -155,8 +162,7 @@ def overview(request: Request, category: str = "", status: str = ""):
     categories = sorted({r["category"] for r in rows})
     shown = [r for r in rows
              if (not category or r["category"] == category)
-             and (not status or r["status"] == status
-                  or (status == "fail" and r["status"] not in ("pass", "partial", "never-tested")))]
+             and (not status or r["status"] == status)]
     return render(request, "overview.html", rows=shown, no_target=no_target, summary=summary,
                   categories=categories, category=category, status=status)
 
@@ -186,8 +192,26 @@ def result(request: Request, result_id: int):
     targets = routing.load_config(CONFIG_PATH)["targets"]
     return render(request, "result.html", res=res, payload=payload,
                   payload_pretty=json.dumps(payload, indent=2, ensure_ascii=False),
-                  fixes=payload.get("fixes") or [], status=res["status"],
+                  fixes=payload.get("fixes") or [], status=verdict_status(res["status"]),
+                  verdict=payload.get("verdict"), executed=_executed_path(payload) is not None,
                   target=targets.get(res.get("server") or ""))
+
+
+def _executed_path(payload: dict) -> Path | None:
+    """The executed notebook a verdict came from, if it is under results/executed."""
+    name = Path(payload.get("executed_notebook") or "").name
+    path = (ROOT / "results" / "executed" / name) if name else None
+    return path if path and path.is_file() else None
+
+
+@app.get("/result/{result_id}/notebook")
+def executed_notebook(result_id: int):
+    conn = db()
+    res = results_db.get_result(conn, result_id) if conn else None
+    path = _executed_path(json.loads(res.get("payload_json") or "{}")) if res else None
+    if path is None:
+        raise HTTPException(404, f"No executed notebook for result {result_id}")
+    return FileResponse(path, media_type="application/x-ipynb+json", filename=path.name)
 
 
 @app.get("/runs", response_class=HTMLResponse)

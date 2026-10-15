@@ -301,9 +301,14 @@ the run.
 
 | Status | Meaning |
 |--------|---------|
-| `pass` | All cells ran cleanly, or all fixable errors were validated |
-| `fail` | Errors remain that could not be fixed |
-| `partial` | Some errors fixed, some remain (counts as not passing) |
+| `pass` | Every code cell of the executed notebook ran without an error |
+| `fail` | A cell raised (including a per-cell timeout) |
+| `blocked` | The notebook could not be run or evaluated: no executed notebook, nothing ran, the run stopped part-way, or the environment check stopped it |
+
+The runner decides the status from the executed notebook papermill wrote
+(`tools/verdict.py`, kept under `results/executed/`); the agent only writes the
+diagnosis. A result whose agent claimed a different status is flagged
+(`verdict.agent_disagrees`).
 
 ### Dashboard
 

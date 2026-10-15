@@ -240,12 +240,12 @@ def pr_comment_marker(pr_number: int) -> str:
     return f"<!-- {MANAGED}: pr-comment:{pr_number} -->"
 
 
-_STATUS_EMOJI = {"pass": "✅", "partial": "🟡", "fail": "❌"}
+_STATUS_EMOJI = {"pass": "✅", "blocked": "🟡", "fail": "❌"}
 
 
 def _pr_row_status(payload: dict) -> str:
-    """Human status label for the table: pass / partial / fail / (no result)."""
-    return payload.get("status") or "unknown"
+    """Human status label for the table: pass / fail / blocked."""
+    return status_mod.verdict_status(payload.get("status"))
 
 
 def _top_failure_reason(payload: dict) -> str:
@@ -284,7 +284,7 @@ def render_pr_comment(pr_number: int, rows: list[dict]) -> str:
     n_total = len(rows)
     n_pass = sum(1 for r in rows if r["payload"] and _pr_row_status(r["payload"]) == "pass")
     n_fail = sum(1 for r in rows if r["payload"] and _pr_row_status(r["payload"]) == "fail")
-    n_partial = sum(1 for r in rows if r["payload"] and _pr_row_status(r["payload"]) == "partial")
+    n_blocked = sum(1 for r in rows if r["payload"] and _pr_row_status(r["payload"]) == "blocked")
     n_missing = sum(1 for r in rows if not r["payload"])
 
     lines = [
@@ -296,8 +296,8 @@ def render_pr_comment(pr_number: int, rows: list[dict]) -> str:
          "merge gate._"),
         "",
         f"**Summary:** {n_pass}/{n_total} pass"
-        + (f", {n_partial} partial" if n_partial else "")
         + (f", {n_fail} fail" if n_fail else "")
+        + (f", {n_blocked} blocked (could not be evaluated)" if n_blocked else "")
         + (f", {n_missing} no-result" if n_missing else ""),
         "",
         "| Notebook | Result | Detail |",
@@ -521,7 +521,8 @@ def load_rows_payloads(results_dir: Path) -> list[dict]:
     out = []
     for key, (_, reason) in routing.routes().items():
         rec = results.get(Path(key).stem)
-        if reason or rec is None:
+        # Blocked runs say nothing about the notebook: no issue, no PR, no close.
+        if reason or rec is None or status_mod.verdict_status(rec["payload"].get("status")) == "blocked":
             continue
         out.append({"stem": Path(key).stem, "rel_key": key, "payload": rec["payload"]})
     return out

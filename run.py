@@ -53,12 +53,15 @@ HERE        = Path(__file__).parent
 TOOLS_DIR   = (HERE / "tools").resolve()
 RESULTS_DIR = (HERE / "results").resolve()
 FIXES_DIR   = (HERE / "fixes").resolve()   # genuine-fix notebooks retrieved by the fixer (for PRs)
+EXECUTED_DIR = RESULTS_DIR / "executed"    # executed notebooks each verdict is computed from
 SHIM_DIR    = (TOOLS_DIR / "http_ssh_shim").resolve()
 
 sys.path.insert(0, str(TOOLS_DIR))
 import k8s_pod
 import results_db
 import routing
+import verdict
+from write_result import write_result
 
 # k8s runner credential from .env. Exported as KUBECONFIG so kubectl in this
 # process and in the agent's own Bash calls (tools/k8s_pod.py) uses it; inside
@@ -132,7 +135,7 @@ def collect_status_notebooks(selector: str, base_dir: Path,
     each line against base_dir.
 
     --gap:     never-tested or stale >7d
-    --failing: latest result is a hard fail (or a partial that does not count as pass)
+    --failing: latest result is fail or blocked
     """
     proc = subprocess.run(
         [sys.executable, str(TOOLS_DIR / "status.py"), selector],
@@ -406,9 +409,8 @@ def run_env_check(notebook_path: Path, rel_key: str, target: dict,
         result = _find_latest_result(notebook_path, since=started)
         if result is not None:
             return result
-        return {"status": "fail",
-                "message": "env_check blocked the run but no result file was written",
-                "cost_usd": None, "num_turns": 0}
+        return blocked(notebook_path, "verify",
+                       "env_check blocked the run but no result file was written")
     else:
         print(f"warning: env_check itself errored (exit {rc}) — proceeding with agent run",
               file=sys.stderr)
@@ -473,8 +475,87 @@ def _transport(notebook_path: Path, phase: str, target_name: str, target: dict,
     notebook to the SSH target, or name the pod the agent will provision.
     Raises RuntimeError if the copy fails."""
     if _is_k8s(target):
-        return k8s_runtime(target_name, target, notebook_path, req, phase, run_id)
-    return None, _ssh_runtime(target, hf_token, scp_notebook(notebook_path, target))
+        pod, block = k8s_runtime(target_name, target, notebook_path, req, phase, run_id)
+    else:
+        pod, block = None, _ssh_runtime(target, hf_token, scp_notebook(notebook_path, target))
+    name = _output_name(notebook_path, phase)
+    where = (f"{k8s_pod.WORKSPACE}/{name}" if pod else
+             f"{_run_dir(target, notebook_path)}/{name}  (inside the container: /workspace/{name})")
+    return pod, block + f"""
+OUTPUT_NOTEBOOK = {where}
+  papermill must write the executed notebook here. Do not delete it or the run
+  dir: run.py collects it, decides pass/fail/blocked from it, and cleans up.
+"""
+
+
+def _output_name(notebook_path: Path, phase: str) -> str:
+    return f"{notebook_path.stem}_{'fixed_out' if phase == 'fix' else 'out'}.ipynb"
+
+
+def _run_dir(target: dict, notebook_path: Path) -> str:
+    return f"{_workspace_base(target)}/tutorial_agent_runs/{notebook_path.stem}"
+
+
+def collect_output(notebook_path: Path, phase: str, target: dict,
+                   pod: str | None) -> Path | None:
+    """Copy the executed notebook back, then remove the SSH run dir (a pod is
+    deleted by the caller). Returns the local copy, or None if there is none."""
+    name  = _output_name(notebook_path, phase)
+    local = EXECUTED_DIR / (f"{notebook_path.stem}_{phase}_"
+                            f"{datetime.now(tz=timezone.utc).strftime('%Y%m%dT%H%M%S')}.ipynb")
+    EXECUTED_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        if pod:
+            k8s_pod.Kubectl(target).run("cp", f"{pod}:{k8s_pod.WORKSPACE}/{name}", str(local),
+                                        "-c", "main", check=False, timeout=300)
+        else:
+            dest, run_dir = f"{target['user']}@{target['host']}", _run_dir(target, notebook_path)
+            env = target_env(target)
+            subprocess.run(["scp", "-o", "StrictHostKeyChecking=no", f"{dest}:{run_dir}/{name}",
+                            str(local)], capture_output=True, timeout=300, check=False, env=env)
+            # Container-written files are root-owned: remove them from a container too.
+            cleanup = (f"docker run --rm -v {run_dir}:/workspace alpine sh -c "
+                       f"'rm -rf /workspace/* /workspace/.[!.]*' 2>/dev/null; rm -rf {run_dir}")
+            subprocess.run(["ssh", "-o", "StrictHostKeyChecking=no", dest, cleanup],
+                           capture_output=True, timeout=120, check=False, env=env)
+    except (OSError, subprocess.TimeoutExpired, RuntimeError) as exc:
+        print(f"warning: could not collect {name} ({exc})", file=sys.stderr)
+    return local if local.is_file() and local.stat().st_size else None
+
+
+def finalize(notebook_path: Path, phase: str, agent_result: dict,
+             executed: Path | None) -> dict:
+    """Set the verdict on this attempt's result JSON, writing one if the agent
+    did not. The agent's own status, if it gave one, is kept as agent_status."""
+    v = verdict.verdict(executed)
+    path = agent_result.get("result_path")
+    if path:
+        payload = json.loads(Path(path).read_text())
+    else:
+        path = str(write_result(
+            str(notebook_path), None,
+            agent_result.get("message") or "The agent wrote no diagnosis.",
+            results_dir=str(RESULTS_DIR),
+            agent="claude_code_fix" if phase == "fix" else "claude_code_verify"))
+        payload = json.loads(Path(path).read_text())
+    claimed = payload.get("status")
+    if claimed not in (None, "unverified"):
+        payload["agent_status"] = claimed
+    payload["status"] = v["status"]
+    payload["verdict"] = {**v, "agent_disagrees": claimed not in (None, "unverified", v["status"])}
+    if v["status"] != "pass":
+        payload["message"] = v["reason"]
+    if executed:
+        payload["executed_notebook"] = str(executed)
+    Path(path).write_text(json.dumps(payload, indent=2))
+    print(f"  » verdict: {v['status'].upper()} — {v['reason']}", flush=True)
+    return {**payload, "result_path": path, "cost_usd": agent_result.get("cost_usd"),
+            "num_turns": agent_result.get("num_turns")}
+
+
+def blocked(notebook_path: Path, phase: str, reason: str) -> dict:
+    """Record an attempt that never got to run the notebook."""
+    return finalize(notebook_path, phase, {"message": reason}, None) | {"message": reason}
 
 
 def _requirements_ctx(target: dict, req: routing.Requirements) -> str:
@@ -508,7 +589,7 @@ def run_notebook(notebook_path: Path, rel_key: str, target_name: str, target: di
         pod, transport_ctx = _transport(notebook_path, "verify", target_name, target, req,
                                         hf_token, run_id)
     except RuntimeError as e:
-        return {"status": "fail", "message": str(e), "cost_usd": None}
+        return blocked(notebook_path, "verify", str(e))
 
     prompt = "\n".join([
         f"Run the regression test for this notebook: {notebook_path}",
@@ -532,7 +613,6 @@ resolve_docker_image:
 write_result (call this when done):
   Bash: python3 {TOOLS_DIR}/write_result.py \\
     --notebook "{notebook_path}" \\
-    --status pass|fail \\
     --summary "..." \\
     --issues '[...]' \\
     --fixes  '[...]' \\
@@ -547,12 +627,15 @@ write_result (call this when done):
             started = time.time()
             subprocess.run(["claude", "--append-system-prompt", runtime_ctx],
                            cwd=str(HERE), check=False, env=target_env(target))
-            result = _find_latest_result(notebook_path, since=started)
-            return result or {"status": "unknown", "message": "Interactive session ended"}
-        return _run_agent("VERIFY", notebook_path, prompt, runtime_ctx, target)
+            result = (_find_latest_result(notebook_path, since=started)
+                      or {"message": "Interactive session ended without a result"})
+        else:
+            result = _run_agent("VERIFY", notebook_path, prompt, runtime_ctx, target)
+        executed = collect_output(notebook_path, "verify", target, pod)
     finally:
         if pod:
             k8s_down(target_name, target, pod)
+    return finalize(notebook_path, "verify", result, executed)
 
 
 def _ssh_runtime(target: dict, hf_token: str | None, remote_path: str) -> str:
@@ -603,7 +686,6 @@ def _run_agent(label: str, notebook_path: Path, prompt: str, system_prompt: str,
     meta = handle_stream(proc, notebook_path.name, agent_label=label)
 
     result = _find_latest_result(notebook_path, since=started) or {
-        "status": "fail",
         "message": f"{label.capitalize()} agent finished but did not write a result file",
     }
     result["cost_usd"]  = meta.get("cost_usd")
@@ -622,14 +704,14 @@ def run_fixer(notebook_path: Path, target_name: str, target: dict,
     if not _has_auto_fixable_issues(verification_result_path):
         print("  No auto_fixable issues — skipping fixer agent", flush=True)
         result = _find_latest_result(notebook_path)
-        return result or {"status": "fail", "message": "No auto_fixable issues"}
+        return result or blocked(notebook_path, "fix", "No verification result to fix from")
 
-    # The verify run cleaned up after itself, so copy again / use a fresh pod.
+    # The verify run's dir or pod is gone, so copy again / use a fresh pod.
     try:
         pod, transport_ctx = _transport(notebook_path, "fix", target_name, target, req,
                                         os.getenv("HF_TOKEN"), run_id)
     except RuntimeError as e:
-        return {"status": "fail", "message": str(e), "cost_usd": None}
+        return blocked(notebook_path, "fix", str(e))
 
     prompt = "\n".join([
         f"Fix the issues identified by the verification agent for: {notebook_path}",
@@ -658,7 +740,6 @@ resolve_docker_image:
 write_result (call this when done):
   Bash: python3 {TOOLS_DIR}/write_result.py \\
     --notebook "{notebook_path}" \\
-    --status pass|fail \\
     --summary "..." \\
     --issues '<all issues>' \\
     --fixes  '<fixes array>' \\
@@ -669,10 +750,12 @@ write_result (call this when done):
     system_prompt = (HERE / "CLAUDE_FIX.md").read_text() + "\n\n---\n\n" + runtime_ctx
 
     try:
-        return _run_agent("FIX", notebook_path, prompt, system_prompt, target)
+        result = _run_agent("FIX", notebook_path, prompt, system_prompt, target)
+        executed = collect_output(notebook_path, "fix", target, pod)
     finally:
         if pod:
             k8s_down(target_name, target, pod)
+    return finalize(notebook_path, "fix", result, executed)
 
 
 def _find_latest_result(notebook_path: Path, since: float | None = None) -> dict | None:
@@ -905,7 +988,7 @@ def main():
                                       interactive=args.interactive,
                                       skip_env_check=args.skip_env_check, run_id=run_id)
             except Exception as exc:  # noqa: BLE001 — record the crash, keep the batch going
-                result = {"status": "fail", "message": f"Runner crashed: {exc}"}
+                result = blocked(nb, "verify", f"Runner crashed: {exc}")
 
             _db_call(db, results_db.record_result, run_id, rel_key, str(nb),
                      "verify", result, target_name)
@@ -946,19 +1029,16 @@ def main():
                     print(f"  {f_icon} FIX: {f_status.upper()}", flush=True)
                 except Exception as exc:  # noqa: BLE001 — record the crash, keep the batch going
                     print(f"  ✗ Fixer crashed: {exc}", flush=True)
-                    _db_call(db, results_db.record_result, run_id, rel_key,
-                             str(nb), "fix",
-                             {"status": "fail", "message": f"Fixer crashed: {exc}"},
-                             target_name)
+                    _db_call(db, results_db.record_result, run_id, rel_key, str(nb), "fix",
+                             blocked(nb, "fix", f"Fixer crashed: {exc}"), target_name)
             elif args.mode == "fix":
                 print(f"  ✗ No verification result found for {nb.name}", flush=True)
-                result = {"status": "fail",
-                          "message": "No verification result available for fixer"}
+                result = blocked(nb, "fix", "No verification result available for fixer")
                 _db_call(db, results_db.record_result, run_id, rel_key,
                          str(nb), "fix", result, target_name)
 
         if result is None:
-            result = {"status": "fail", "message": "No result produced"}
+            result = blocked(nb, args.mode, "No result produced")
 
         results.append({"notebook": str(nb), **result})
         status = result.get("status", "fail")
@@ -971,7 +1051,8 @@ def main():
 
     # ── Summary ───────────────────────────────────────────────────────────────
     passed = [r for r in results if r.get("status") == "pass"]
-    failed = [r for r in results if r.get("status") != "pass"]
+    failed = [r for r in results if r.get("status") == "fail"]
+    blocked_runs = [r for r in results if r.get("status") not in ("pass", "fail")]
     total_cost = sum(r.get("cost_usd") or 0 for r in results)
 
     print(f"\n{'='*60}")
@@ -979,14 +1060,16 @@ def main():
     print(f"{'='*60}")
     print(f"  Passed  : {len(passed)}/{len(results)}")
     print(f"  Failed  : {len(failed)}/{len(results)}")
+    if blocked_runs:
+        print(f"  Blocked : {len(blocked_runs)}/{len(results)}")
     if skipped:
         print(f"  No target : {len(skipped)}")
     if total_cost:
         print(f"  Total cost : ${total_cost:.4f}")
-    if failed:
-        print("\nFailed:")
-        for r in failed:
-            print(f"  ✗ {Path(r['notebook']).name}")
+    if failed or blocked_runs:
+        print("\nNot passing:")
+        for r in failed + blocked_runs:
+            print(f"  ✗ {Path(r['notebook']).name} ({r.get('status')})")
             if r.get("message"):
                 print(f"    {r['message']}")
 
@@ -999,7 +1082,7 @@ def main():
         print("[teams] skipped — the card is built from the results DB, which "
               "could not be opened", file=sys.stderr)
 
-    sys.exit(0 if not failed else 1)
+    sys.exit(0 if not (failed or blocked_runs) else 1)
 
 
 if __name__ == "__main__":

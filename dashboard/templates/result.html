@@ -10,6 +10,13 @@
   <div class="card">
     <dl class="kv">
       <dt>Status</dt><dd>{{ status_badge(status) }}</dd>
+      {% if verdict %}
+      <dt>Verdict</dt><dd>{{ verdict.reason }}{% if verdict.agent_disagrees %}<br><span class="badge warn">agent said {{ payload.agent_status }}</span>{% endif %}</dd>
+      <dt>Cells</dt><dd>{{ verdict.cells.executed }} ran · {{ verdict.cells.failed }} failed · {{ verdict.cells.skipped }} skipped · {{ verdict.cells.not_run }} not run</dd>
+      {% else %}
+      <dt>Verdict</dt><dd class="dim">set by the agent (recorded before verdicts were computed from the executed notebook)</dd>
+      {% endif %}
+      <dt>Executed notebook</dt><dd>{% if executed %}<a href="/result/{{ res.id }}/notebook">download</a>{% else %}<span class="dim">—</span>{% endif %}</dd>
       <dt>Phase</dt><dd>{{ res.phase }}</dd>
       <dt>Agent</dt><dd class="mono">{{ res.agent or "—" }}</dd>
       <dt>Recorded</dt><dd>{{ res.recorded_at | ts }}</dd>

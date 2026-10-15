@@ -35,7 +35,7 @@
     <tr>
       <td><a href="/result/{{ h.id }}">{{ h.recorded_at | ts }}</a><br><span class="dim">{{ h.recorded_at | age }}</span></td>
       <td>{{ h.phase }}</td>
-      <td>{{ status_badge(h.status) }}</td>
+      <td>{{ status_badge(h.status | verdict) }}</td>
       <td class="mono">{{ h.server or "—" }}</td>
       <td class="mono dim">{{ h.docker_image or "—" }}</td>
       <td>{{ h.issues | length or "—" }}</td>

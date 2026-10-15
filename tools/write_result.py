@@ -1,10 +1,13 @@
 """
 Write a structured notebook regression result JSON to results/.
 
+The agent writes its diagnosis here; run.py then sets the verdict (pass / fail /
+blocked, from the executed notebook — tools/verdict.py). A result run.py never
+finalized has status "unverified".
+
 Usage:
   python3 write_result.py \\
     --notebook path/to/notebook.ipynb \\
-    --status pass|fail|partial \\
     --summary "One paragraph summary" \\
     [--issues '[{"cell_index":3,"error_type":"version_incompatibility",...}]'] \\
     [--fixes  '[{"cell_index":3,"fix_description":"...","patch":"...","validated":true}]'] \\
@@ -23,7 +26,7 @@ from pathlib import Path
 
 def write_result(
     notebook_path: str,
-    status: str,
+    status: str | None,
     summary: str,
     issues: list | None = None,
     fixes: list | None = None,
@@ -36,7 +39,7 @@ def write_result(
     """
     Write result JSON and return the path it was written to.
 
-    status:                "pass" | "fail" | "partial"
+    status:                "pass" | "fail" | "blocked", or None until run.py sets the verdict
     issues:                list of {cell_index, error_type, description, proposed_fix}
     fixes:                 list of {cell_index, fix_description, patch, validated}
     docker_image_resolved: exact image:tag used at run time (omitted from JSON when None)
@@ -57,7 +60,7 @@ def write_result(
 
     payload = {
         "notebook": notebook_path,
-        "status": status,
+        "status": status or "unverified",
         "summary": summary,
         "issues": issues or [],
         "fixes": fixes or [],
@@ -80,7 +83,8 @@ def write_result(
 def main():
     p = argparse.ArgumentParser(description="Write notebook regression result JSON")
     p.add_argument("--notebook",    required=True, help="Path to the notebook that was tested")
-    p.add_argument("--status",      required=True, choices=["pass", "fail", "partial"])
+    p.add_argument("--status",      default=None, choices=["pass", "fail", "blocked"],
+                   help="Normally omitted: run.py decides the verdict from the executed notebook.")
     p.add_argument("--summary",     required=True, help="One paragraph summary of what happened")
     p.add_argument("--issues",                default="[]",  help="JSON array of issue objects")
     p.add_argument("--fixes",                 default="[]",  help="JSON array of fix objects")

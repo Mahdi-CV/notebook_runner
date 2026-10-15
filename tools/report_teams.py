@@ -20,8 +20,9 @@ Design notes:
     untested there is no post (--always-post overrides), so the channel only
     speaks when something needs attention.
 
-  * Infra-blocked failures are listed apart from content failures: a wedged GPU
-    node is not tutorial rot, and authors should not chase it.
+  * Blocked runs (could not be evaluated) and failures the diagnosis blames on
+    infrastructure are listed apart from content failures: a wedged GPU node is
+    not tutorial rot, and authors should not chase it.
 """
 
 import argparse
@@ -33,7 +34,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import results_db
 import routing
-from status import failure_line
+from status import result_reason, verdict_status
 from teams_alert import post, text_block, wrap_card
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -68,17 +69,21 @@ def _detail_blocks(title: str, entries: list[dict], color: str, limit: int = 15)
 def build_card(conn, run: dict, rows: list[dict], log_name: str | None) -> tuple[dict, bool]:
     """Return (card, quiet). Reports the notebooks this run touched, their
     change since the previous result, and the dashboard-wide totals."""
-    passing, failing, infra, skipped = [], [], [], []
+    passing, failing, infra, blocked, skipped = [], [], [], [], []
     for r in rows:
-        name = r["notebook"]
+        name, status = r["notebook"], verdict_status(r["status"])
         if r["phase"] == "skip":
             skipped.append(name)
-        elif r["status"] == "pass":
+        elif status == "pass":
             passing.append(name)
         else:
-            entry = {"name": name, "why": failure_line(r["issues"], r["message"])}
-            # Infra-blocked only if every issue is; one content bug is the author's to fix.
-            if r["issues"] and all(i["fixability"] == "infra_blocked" for i in r["issues"]):
+            payload = json.loads(r.get("payload_json") or "{}")
+            entry = {"name": name, "why": result_reason(payload)}
+            if status == "blocked":
+                blocked.append(entry)
+            # A cell failed, but the diagnosis blames only infrastructure: still a
+            # fail (the verdict is mechanical), listed apart so authors aren't chased.
+            elif r["issues"] and all(i["fixability"] == "infra_blocked" for i in r["issues"]):
                 infra.append(entry)
             else:
                 failing.append(entry)
@@ -96,8 +101,9 @@ def build_card(conn, run: dict, rows: list[dict], log_name: str | None) -> tuple
     tested = len(passing) + len(failing) + len(infra)
     if failing:
         color, headline = BAD, f"{len(failing)} failing"
-    elif infra:
-        color, headline = WARN, f"{len(infra)} infra-blocked"
+    elif infra or blocked:
+        color, headline = WARN, (f"{len(infra)} likely infrastructure" if infra
+                                 else f"{len(blocked)} blocked")
     elif not tested:
         color, headline = WARN, "nothing tested"
     else:
@@ -111,6 +117,8 @@ def build_card(conn, run: dict, rows: list[dict], log_name: str | None) -> tuple
         facts.append(("Newly failing", _names(newly_failing, 15)))
     if newly_passing:
         facts.append(("Newly passing", _names(newly_passing, 5)))
+    if blocked:
+        facts.append(("Blocked", str(len(blocked))))
     if skipped:
         facts.append(("No target", _names(skipped, 5)))
     if passing and (failing or infra):
@@ -125,13 +133,15 @@ def build_card(conn, run: dict, rows: list[dict], log_name: str | None) -> tuple
     if failing:
         body += _detail_blocks("Failing — content bugs for authors", failing, BAD)
     if infra:
-        body += _detail_blocks("Infra-blocked — not the notebook's fault", infra, WARN)
+        body += _detail_blocks("Failing, likely infrastructure — check the node first", infra, WARN)
+    if blocked:
+        body += _detail_blocks("Blocked — could not be evaluated", blocked, WARN)
     footer = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     if log_name:
         footer += f" · log: {log_name}"
     body.append(text_block(footer, isSubtle=True, size="Small", color=PLAIN))
 
-    quiet = not (failing or infra or newly_failing or newly_passing or never)
+    quiet = not (failing or infra or blocked or newly_failing or newly_passing or never)
     return wrap_card(body), quiet
 
 

@@ -39,6 +39,7 @@ appended below the playbook.
 | `CONTAINER_ENV`   | `-e K=V` flags the notebook declares; add them to `docker run` (`(none)` if empty) |
 | `PAPERMILL_PARAMS`| `-p NAME VALUE` flags the notebook declares for CI; append them to the papermill command (`(none)` if empty) |
 | `IMAGE_REPO`      | Present only when the notebook declares its Docker repo; resolve the tag for that repo |
+| `OUTPUT_NOTEBOOK` | Where papermill must write the executed notebook (host path, and its `/workspace/...` path inside the container) |
 | `NOTEBOOK_LOCAL`  | Local path to the notebook being tested                 |
 | `NOTEBOOK_REMOTE` | Remote path — already copied, ready to use              |
 | `WORKSPACE_BASE`  | Remote base for run dirs (`<WORKSPACE_BASE>/tutorial_agent_runs/<stem>`) |
@@ -82,12 +83,14 @@ substitutions:
 - **Pattern C** (notebook code itself runs `docker`): do not provision a pod.
   Record one issue — `error_type: other`, `fixability: infra_blocked`,
   description "k8s runner cannot run nested containers; run this notebook on
-  an SSH server" — write the result with `status: fail`, and stop.
+  an SSH server" — write the result, and stop (the runner records it as
+  `blocked`). Routing normally keeps such notebooks off k8s targets.
 - **Pattern D:** provision with the resolved `rocm/pytorch` image and run
   papermill there.
 - **`FAILED:` or `UNSCHEDULABLE:` from K8S_UP_CMD** is an infrastructure
   failure, not a content one: retry once, then record it as an `other` /
-  `infra_blocked` issue with the printed reason and `status: fail`.
+  `infra_blocked` issue with the printed reason; the runner records the
+  run as `blocked`.
 - **Cleanup:** skip the Cleanup section; the runner deletes the pod.
 
 ---
@@ -159,12 +162,20 @@ Repos: `rocm/pytorch` | `vllm/vllm-openai-rocm` | `lmsysorg/sglang`
 
 ## How to Write the Result
 
+**You do not decide pass or fail.** The runner reads the executed notebook at
+`OUTPUT_NOTEBOOK` after you finish and decides the verdict itself: `pass` if
+every code cell ran without an error, `fail` if a cell raised, `blocked` if the
+notebook could not be run or evaluated (no executed notebook, nothing ran, the
+run stopped part-way). Your job is the diagnosis: what happened, which cells
+broke, why, and what the author should change. If you could not run the
+notebook at all (image pull failed, server never came up, pod unschedulable),
+say exactly why in the summary and record it as an issue.
+
 Call this after all phases complete, before finishing:
 
 ```
 Bash: python3 <TOOLS_DIR>/write_result.py \
   --notebook "<NOTEBOOK_LOCAL>" \
-  --status pass|fail \
   --summary "One paragraph: what ran, what broke" \
   --issues '<json array with fixability field>' \
   --fixes  '[]' \
@@ -182,8 +193,8 @@ tag — that is where the GPU work runs. For Pattern D (host Python, no Docker),
 omit the flag entirely. The value comes from the `resolve_docker_image.py`
 output you already captured in Step 1.
 
-After writing the result, print the final status line and stop. There is no
-`task_complete` signal — finishing naturally ends the run.
+After writing the result, stop. There is no `task_complete` signal —
+finishing naturally ends the run.
 
 ---
 
@@ -380,8 +391,13 @@ Run the `%%bash` cell content directly on host, then poll health as Pattern B.
 ### Pattern D — Host Python
 
 ```
-Bash: <SSH_CMD> 'python3 -m papermill <nb>.ipynb <nb>_out.ipynb --kernel python3 --execution-timeout 600'
+Bash: <SSH_CMD> 'cd <WORKSPACE_BASE>/tutorial_agent_runs/<stem> && python3 -m papermill <nb>_patched.ipynb <OUTPUT_NOTEBOOK> --kernel python3 --execution-timeout 600 <PAPERMILL_PARAMS>'
 ```
+
+Whatever the pattern, papermill's output goes to `OUTPUT_NOTEBOOK` (in
+Pattern A that is `/workspace/<nb>_out.ipynb` inside the container). The
+verdict is computed from that file, so a run that writes it elsewhere is
+reported as `blocked`.
 
 ### After the run — collect errors
 
@@ -397,8 +413,8 @@ for i, cell in enumerate(nb["cells"]):
 PYEOF'
 ```
 
-**If no errors: skip Phase 2.** Call `write_result.py` with
-`status=pass`, `issues=[]`, `fixes=[]` and finish. Do not invent analysis.
+**If no errors: skip Phase 2.** Call `write_result.py` with `issues=[]`,
+`fixes=[]` and finish. Do not invent analysis.
 
 ---
 
@@ -496,22 +512,18 @@ plus `<CONTAINER_ENV>` wherever the notebook's own code runs.
 
 ## Cleanup
 
-Always run after any outcome:
+Always run after any outcome — stop every container you started:
 ```
 Bash: <SSH_CMD> 'docker stop <name> 2>/dev/null || true'
-Bash: <SSH_CMD> 'docker run --rm -v <WORKSPACE_BASE>/tutorial_agent_runs/<stem>:/workspace alpine \
-  sh -c "rm -rf /workspace/*" 2>/dev/null || true'
-Bash: <SSH_CMD> 'rm -rf <WORKSPACE_BASE>/tutorial_agent_runs/<stem> 2>/dev/null || true'
 ```
+Do **not** delete `<WORKSPACE_BASE>/tutorial_agent_runs/<stem>` or
+`OUTPUT_NOTEBOOK`: the runner collects the executed notebook from it and
+removes the directory afterwards.
 
 ---
 
-## Result Status Values
-
-- `pass` — Phase 1 completed with no errors
-- `fail` — Errors were found (issues array is non-empty)
+## Result
 
 The verification agent does NOT attempt fixes — that is the fixer agent's job.
-Always pass `--fixes '[]'` and `--agent "claude_code_verify"`.
-
-Write the result with `write_result.py`, print the final status, then stop.
+Always pass `--fixes '[]'` and `--agent "claude_code_verify"`. Write the
+diagnosis with `write_result.py`, then stop; the runner sets the verdict.

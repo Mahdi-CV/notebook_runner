@@ -1,5 +1,5 @@
 {% macro status_badge(status) -%}
-{%- set cls = {"pass": "ok", "partial": "warn", "fail": "bad",
+{%- set cls = {"pass": "ok", "blocked": "warn", "fail": "bad",
                "never-tested": "muted", "skip": "muted"}.get(status, "bad") -%}
 <span class="badge {{ cls }}">{{ status }}</span>
 {%- endmacro %}
