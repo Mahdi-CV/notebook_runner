@@ -9,7 +9,7 @@ One command that runs an automated regression pass and updates the dashboard:
                         in --mode full. Deduped against Phase A so nothing that
                         already ran this pass runs twice.
   Phase C — Dashboard : regenerate STATUS.md from the fresh results.
-  Phase D — Commit    : auto-commit STATUS.md + manifest.yaml (results/ is a
+  Phase D — Commit    : auto-commit STATUS.md (results/ is a
                         gitignored local cache) (skip with --no-commit).
   Phase E — Notify    : post this pass's card to Teams (skip with --no-notify;
                         also skipped when TEAMS_WEBHOOK_URL is unset).
@@ -135,9 +135,10 @@ def git_push(tee: Tee, dry_run: bool) -> None:
 
 def git_commit(tee: Tee, ts: str, dry_run: bool, push: bool) -> None:
     # results/*.json is gitignored (local cache that feeds STATUS.md). The
-    # committed record is the dashboard + manifest; detailed evidence for authors
-    # lives in upstream_prs/ and GitHub issues/PRs, not raw JSON in git history.
-    paths = ["STATUS.md", "manifest.yaml"]
+    # committed record is the dashboard; detailed evidence for authors lives in
+    # upstream_prs/ and GitHub issues/PRs, not raw JSON in git history.
+    # manifest.yaml is hand-maintained and committed by whoever edits it.
+    paths = ["STATUS.md"]
     if dry_run:
         tee.line(f"[dry-run] would: git add {' '.join(paths)} && git commit")
         if push:

@@ -219,7 +219,7 @@ python3 tools/ci_run.py --dry-run             # print the plan, run nothing
 | A | Freshness | Run the gap set (never-tested + stale >7d) in `--mode full` |
 | B | Failures | Re-aggregate, then re-run notebooks still failing (deduped vs Phase A) |
 | C | Dashboard | Regenerate `STATUS.md` from fresh results |
-| D | Commit | Auto-commit `STATUS.md` + `manifest.yaml` (skip with `--no-commit`) |
+| D | Commit | Auto-commit `STATUS.md` (skip with `--no-commit`) |
 | E | Notify | Post a summary card to Teams (skip with `--no-notify`) |
 
 The daily unattended pass runs it in a container via `docker/notebook-runner-cron.sh`

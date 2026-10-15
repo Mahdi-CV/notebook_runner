@@ -242,8 +242,8 @@ Retry Phase 1 only for infrastructure failures: Docker daemon error,
 out-of-disk, SSH drop, image pull failure.
 
 **5. Never try to get around a local permission problem.**
-If writing to `/work/results`, `/work/logs`, `/work/fixes`, `STATUS.md` or
-`manifest.yaml` fails with a permission error (`EACCES` / `PermissionError`),
+If writing to `/work/results`, `/work/logs`, `/work/fixes` or `STATUS.md`
+fails with a permission error (`EACCES` / `PermissionError`),
 that is a host misconfiguration for a human to fix — not something to work
 around. Do NOT: search for SUID binaries, run `su` or `sudo`, probe
 capabilities, disable or bypass the sandbox, `chown`/`chmod`/recreate/rename

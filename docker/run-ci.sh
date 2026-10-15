@@ -65,7 +65,7 @@ fi
 # the agent cannot record its results, so don't start a pass that can't succeed.
 NBR_AGENT_UID=1001
 bad_owner=""
-for p in results fixes logs STATUS.md manifest.yaml; do
+for p in results fixes logs STATUS.md; do
   [[ -e "$REPO_ROOT/$p" ]] || continue
   # -L: results/ may be a symlink (to NFS); check the directory it points to
   owner=$(stat -L -c %u "$REPO_ROOT/$p")
@@ -184,7 +184,8 @@ echo "run-ci: starting pass $TS (image=$IMAGE)"
 # --- run ------------------------------------------------------------------
 # Mounts, and why each one:
 #   results/, fixes/, logs/  read-write  — the pass's actual output
-#   STATUS.md, manifest.yaml read-write  — Phase C rewrites STATUS.md
+#   STATUS.md                read-write  — Phase C rewrites it
+#   manifest.yaml            read-only   — hand-maintained config
 #   notebooks/               read-only   — inputs; the agent must never edit
 #                                          them (patching happens on the GPU
 #                                          node, on a copy)
@@ -228,7 +229,7 @@ docker run --rm \
   -v "$REPO_ROOT/fixes:/work/fixes:rw" \
   -v "$REPO_ROOT/logs:/work/logs:rw" \
   -v "$REPO_ROOT/STATUS.md:/work/STATUS.md:rw" \
-  -v "$REPO_ROOT/manifest.yaml:/work/manifest.yaml:rw" \
+  -v "$REPO_ROOT/manifest.yaml:/work/manifest.yaml:ro" \
   "$IMAGE" \
   python tools/ci_run.py --no-commit "$@" && rc=0 || rc=$?
 
