@@ -35,7 +35,8 @@ the system prompt appended below.
 |-----------------------|---------------------------------------------------------|
 | `SSH_CMD`             | Exact SSH prefix for every server command                |
 | `SSH_HF_CMD`          | SSH prefix with HF_TOKEN pre-exported                   |
-| `GPU_HARDWARE`        | Hardware name (e.g. mi300x) for Docker image resolution |
+| `GPU_HARDWARE`        | Hardware name (e.g. mi300x, rx7900xtx) for Docker image resolution |
+| `MEMORY_LIMIT`, `CONTAINER_ENV`, `PAPERMILL_PARAMS`, `IMAGE_REPO` | The notebook's declared requirements; use them as in CLAUDE.md |
 | `NOTEBOOK_LOCAL`      | Local path to the notebook being tested                 |
 | `NOTEBOOK_REMOTE`     | Remote path — already copied, ready to use              |
 | `WORKSPACE_BASE`      | Remote base for run dirs (`<WORKSPACE_BASE>/tutorial_agent_runs/<stem>`) |
@@ -239,8 +240,8 @@ Bash: <SSH_CMD> 'python3 /workspace/preflight_patch.py \
   --output /workspace/<nb>_fixed_patched.ipynb'
 ```
 
-This applies exactly the 4 allowed patches (notebook_login, input, gradio,
-audio) deterministically. Use `<nb>_fixed_patched.ipynb` for the run.
+This applies exactly the 5 allowed patches (notebook_login, input, gradio,
+audio, `ci-skip` cells) deterministically. Use `<nb>_fixed_patched.ipynb` for the run.
 
 ### 3c. Write the run script
 
@@ -251,7 +252,7 @@ set -e
 pip install -q papermill ipykernel
 python -m ipykernel install --sys-prefix
 python -m papermill /workspace/<nb>_fixed_patched.ipynb /workspace/<nb>_fixed_out.ipynb \
-  --kernel python3 --execution-timeout 3000
+  --kernel python3 --execution-timeout 3000 <PAPERMILL_PARAMS>
 SCRIPT
 chmod +x <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh'
 ```
@@ -308,7 +309,7 @@ without re-reading the notebook:
 
 **Status logic:**
 - `pass` — ALL auto_fixable fixes validated AND no `needs_author`/`infra_blocked`
-  issues remain (or the manifest sets `expected_result: partial`)
+  issues remain
 - `fail` — Any fix failed validation, or unfixable issues remain
 
 ### 4c. Retrieve the genuine-fix notebook (for the GitHub reporter)

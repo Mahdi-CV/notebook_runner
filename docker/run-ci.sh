@@ -115,18 +115,28 @@ if ! getent hosts "$gw_host" >/dev/null 2>&1; then
   exit 1
 fi
 
-# The GPU node is reachable only over HTTP from the AMD network: run.py routes
-# ssh/scp through tools/http_ssh_shim/ when AGENT_URL/AGENT_SECRET are set.
-if [[ -z "${AGENT_URL:-}" || -z "${AGENT_SECRET:-}" ]]; then
-  if [[ -z "${NBR_KUBECONFIG:-}" ]]; then
-    echo "run-ci: AGENT_URL / AGENT_SECRET are unset." >&2
-    echo "        The GPU node is not reachable over real SSH from this network" >&2
-    echo "        (AMD's egress silently drops it) — set both in .env to use the" >&2
-    echo "        HTTP transport shim. See docker/README.md and .env.example." >&2
-    exit 1
-  fi
-  echo "run-ci: warning — AGENT_URL / AGENT_SECRET unset; only k8s servers" >&2
-  echo "        (run with --server <k8s entry>) will be reachable this pass." >&2
+# Where notebooks may run: this deployment's targets (see runner.example.yaml).
+if [[ ! -f "$REPO_ROOT/runner.yaml" ]]; then
+  echo "run-ci: missing runner.yaml (copy runner.example.yaml and describe your targets)" >&2
+  exit 1
+fi
+# Targets with an agent_url are reached through tools/http_ssh_shim/, signed with AGENT_SECRET.
+if grep -q '^[^#]*agent_url:' "$REPO_ROOT/runner.yaml" && [[ -z "${AGENT_SECRET:-}" ]]; then
+  echo "run-ci: runner.yaml has agent_url targets but AGENT_SECRET is unset in .env." >&2
+  exit 1
+fi
+
+# The notebooks under test are the upstream repository's tip, checked out
+# under checkouts/ and exposed as notebooks/. A real notebooks/ directory
+# (a hand-copied tree) would shadow it, so refuse rather than test stale copies.
+NB_REPO="${NBR_NOTEBOOKS_REPO:-https://github.com/ROCm/gpuaidev.git}"
+NB_REF="${NBR_NOTEBOOKS_REF:-main}"
+NB_SUBDIR="${NBR_NOTEBOOKS_SUBDIR:-docs/notebooks}"
+CHECKOUT="$REPO_ROOT/checkouts/notebooks"
+if [[ -e "$REPO_ROOT/notebooks" && ! -L "$REPO_ROOT/notebooks" ]]; then
+  echo "run-ci: notebooks/ is a directory; move it aside so it can point at the" >&2
+  echo "        upstream checkout ($NB_REPO, $NB_SUBDIR)." >&2
+  exit 1
 fi
 
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
@@ -179,16 +189,28 @@ if ! flock -n 9; then
   exit 0
 fi
 
-echo "run-ci: starting pass $TS (image=$IMAGE)"
+# Under the lock: a running pass must never see its notebooks change.
+if [[ -d "$CHECKOUT/.git" ]]; then
+  if ! { git -C "$CHECKOUT" fetch -q --depth 1 origin "$NB_REF" \
+         && git -C "$CHECKOUT" reset -q --hard FETCH_HEAD; }; then
+    echo "run-ci: warning — could not update $NB_REPO@$NB_REF; testing the last checkout" >&2
+  fi
+elif ! git clone -q --depth 1 --branch "$NB_REF" "$NB_REPO" "$CHECKOUT"; then
+  echo "run-ci: could not clone $NB_REPO@$NB_REF — not starting pass $TS" >&2
+  exit 1
+fi
+ln -sfn "checkouts/notebooks/$NB_SUBDIR" "$REPO_ROOT/notebooks"
+
+echo "run-ci: starting pass $TS (image=$IMAGE, notebooks=$NB_REPO@$(git -C "$CHECKOUT" rev-parse --short HEAD))"
 
 # --- run ------------------------------------------------------------------
 # Mounts, and why each one:
 #   results/, fixes/, logs/  read-write  — the pass's actual output
 #   STATUS.md                read-write  — Phase C rewrites it
-#   manifest.yaml            read-only   — hand-maintained config
-#   notebooks/               read-only   — inputs; the agent must never edit
-#                                          them (patching happens on the GPU
-#                                          node, on a copy)
+#   runner.yaml              read-only   — the targets notebooks may run on
+#   notebooks/               read-only   — the upstream checkout; the agent must
+#                                          never edit it (patching happens on
+#                                          the GPU node, on a copy)
 #   kubeconfig (optional)    read-only   — staged NBR_KUBECONFIG, k8s runner
 #   tools/ (incl. http_ssh_shim/) read-only
 #
@@ -214,22 +236,19 @@ docker run --rm \
   -e ANTHROPIC_DEFAULT_HAIKU_MODEL \
   -e CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
   -e TEAMS_WEBHOOK_URL \
-  -e GPU_HOST \
-  -e GPU_USER \
   -e HF_TOKEN \
-  -e AGENT_URL \
   -e AGENT_SECRET \
   ${KUBE_ARGS[@]+"${KUBE_ARGS[@]}"} \
   -v "$REPO_ROOT/run.py:/work/run.py:ro" \
   -v "$REPO_ROOT/tools:/work/tools:ro" \
   -v "$REPO_ROOT/CLAUDE.md:/work/CLAUDE.md:ro" \
   -v "$REPO_ROOT/CLAUDE_FIX.md:/work/CLAUDE_FIX.md:ro" \
-  -v "$REPO_ROOT/notebooks:/work/notebooks:ro" \
+  -v "$CHECKOUT/$NB_SUBDIR:/work/notebooks:ro" \
   -v "$REPO_ROOT/results:/work/results:rw" \
   -v "$REPO_ROOT/fixes:/work/fixes:rw" \
   -v "$REPO_ROOT/logs:/work/logs:rw" \
   -v "$REPO_ROOT/STATUS.md:/work/STATUS.md:rw" \
-  -v "$REPO_ROOT/manifest.yaml:/work/manifest.yaml:ro" \
+  -v "$REPO_ROOT/runner.yaml:/work/runner.yaml:ro" \
   "$IMAGE" \
   python tools/ci_run.py --no-commit "$@" && rc=0 || rc=$?
 

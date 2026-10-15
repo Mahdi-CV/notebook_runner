@@ -23,5 +23,9 @@ venv/
 .idea/
 *.swp
 
-# Local copy of upstream tutorial notebooks
-notebooks/
+# Upstream notebooks under test (docker/run-ci.sh links notebooks -> checkouts/)
+/notebooks
+/checkouts/
+
+# This deployment's targets (see runner.example.yaml)
+/runner.yaml

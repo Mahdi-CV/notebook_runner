@@ -8,12 +8,13 @@ thing that talks to kubectl; run.py and the agent call it through the command
 strings run.py puts in the runtime context (K8S_UP_CMD, POD_CMD, POD_PULL_CMD).
 
 Usage:
-  k8s_pod.py --server NAME up   --pod P --gpus N [--push FILE ...] --image IMG
-  k8s_pod.py --server NAME exec --pod P '<shell command>'
-  k8s_pod.py --server NAME pull --pod P /workspace/x.ipynb local/x.ipynb
-  k8s_pod.py --server NAME down --pod P
-  k8s_pod.py --server NAME gc
-  k8s_pod.py --server NAME up ... --dry-run     # print the pod spec, touch nothing
+  k8s_pod.py --target NAME up   --pod P --gpus N [--memory-gb G] [--env K=V ...]
+                                [--push FILE ...] --image IMG
+  k8s_pod.py --target NAME exec --pod P '<shell command>'
+  k8s_pod.py --target NAME pull --pod P /workspace/x.ipynb local/x.ipynb
+  k8s_pod.py --target NAME down --pod P
+  k8s_pod.py --target NAME gc
+  k8s_pod.py --target NAME up ... --dry-run     # print the pod spec, touch nothing
 
 `up` is idempotent and returns within UP_WAIT_SECONDS so it fits under the
 agent's 10-minute Bash cap. Its last line is one of:
@@ -22,14 +23,14 @@ agent's 10-minute Bash cap. Its last line is one of:
   FAILED: <reason>           exit 2  image pull or container start failed
   UNSCHEDULABLE: <reason>    exit 4  Pending past schedule_timeout_min
 
-The server entry in manifest.yaml (`type: k8s`) supplies context, namespace,
-node selector, tolerations and sizing; see the workshop-k8s entry.
+The target in runner.yaml (`type: k8s`) supplies context, namespace, node
+selector, tolerations, GPU resource name and sizing; see runner.example.yaml.
 
 One-time cluster setup (cluster admin):
   kubectl --context workshop apply -f tools/k8s/rbac.yaml
   # namespace-scoped kubeconfig for the CI host — never an admin kubeconfig,
   # since the agent can read whatever credential the runner holds:
-  python3 tools/k8s_pod.py --server workshop-k8s kubeconfig > ~/.kube/notebook-runner
+  python3 tools/k8s_pod.py --target <k8s target> kubeconfig > ~/.kube/notebook-runner
   chmod 600 ~/.kube/notebook-runner
   # then set NBR_KUBECONFIG=~/.kube/notebook-runner in .env (docker/run-ci.sh
   # stages it) or export KUBECONFIG for workstation runs.
@@ -50,8 +51,8 @@ from pathlib import Path
 
 import yaml
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_MANIFEST = REPO_ROOT / "manifest.yaml"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import routing
 
 APP_LABEL = "app.kubernetes.io/name"
 APP_NAME = "notebook-runner"
@@ -111,15 +112,13 @@ class Kubectl:
         raise AssertionError("unreachable")
 
 
-def load_server(manifest: Path, name: str) -> dict:
-    with open(manifest) as f:
-        servers = (yaml.safe_load(f) or {}).get("servers") or {}
-    server = servers.get(name)
-    if not server:
-        raise SystemExit(f"error: server '{name}' not found in {manifest}")
-    if server.get("type") != "k8s":
-        raise SystemExit(f"error: server '{name}' is not type: k8s")
-    return server
+def load_target(name: str) -> dict:
+    target = routing.load_config()["targets"].get(name)
+    if not target:
+        raise SystemExit(f"error: target '{name}' not found in {routing.CONFIG_PATH}")
+    if target.get("type") != "k8s":
+        raise SystemExit(f"error: target '{name}' is not type: k8s")
+    return target
 
 
 def pod_name(stem: str, phase: str, run_id: str) -> str:
@@ -130,8 +129,10 @@ def pod_name(stem: str, phase: str, run_id: str) -> str:
     return re.sub(r"[^a-z0-9-]", "-", f"nbr-{stem}{suffix}")
 
 
-def pod_spec(server: dict, pod: str, image: str, gpus: int) -> dict:
-    memory = server.get("memory", "64Gi")
+def pod_spec(server: dict, pod: str, image: str, gpus: int, memory_gb: int = 64,
+             env: dict[str, str] | None = None) -> dict:
+    memory = f"{memory_gb}Gi"
+    gpu = server.get("gpu_resource", "amd.com/gpu")
     run_id = pod.rsplit("-", 1)[-1]
     return {
         "apiVersion": "v1",
@@ -156,12 +157,13 @@ def pod_spec(server: dict, pod: str, image: str, gpus: int) -> dict:
                 # server); the agent drives everything through exec.
                 "command": ["sleep", "infinity"],
                 "workingDir": WORKSPACE,
-                "env": [{"name": "HF_HOME", "value": f"{WORKSPACE}/hf"}],
+                "env": [{"name": "HF_HOME", "value": f"{WORKSPACE}/hf"},
+                        *({"name": k, "value": v} for k, v in (env or {}).items())],
                 # optional: gated-model notebooks fail their own way without it.
                 "envFrom": [{"secretRef": {"name": HF_SECRET, "optional": True}}],
                 "resources": {
-                    "requests": {"amd.com/gpu": str(gpus), "memory": memory},
-                    "limits": {"amd.com/gpu": str(gpus), "memory": memory},
+                    "requests": {gpu: str(gpus), "memory": memory},
+                    "limits": {gpu: str(gpus), "memory": memory},
                 },
                 "volumeMounts": [
                     {"name": "workspace", "mountPath": WORKSPACE},
@@ -205,7 +207,8 @@ def cmd_up(kc: Kubectl, server: dict, args) -> int:
     if not args.image:
         print("FAILED: --image is required", flush=True)
         return EXIT_FAILED
-    spec = pod_spec(server, args.pod, args.image, args.gpus)
+    env = dict(e.split("=", 1) for e in args.env or [])
+    spec = pod_spec(server, args.pod, args.image, args.gpus, args.memory_gb, env)
     if args.dry_run:
         print(yaml.safe_dump(spec, sort_keys=False))
         return EXIT_READY
@@ -325,13 +328,14 @@ def cmd_kubeconfig(kc: Kubectl, server: dict) -> int:
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Per-notebook GPU pods for the k8s runner.")
-    p.add_argument("--server", required=True, help="manifest servers: entry (type: k8s)")
-    p.add_argument("--manifest", default=str(DEFAULT_MANIFEST))
+    p.add_argument("--target", required=True, help="runner.yaml target (type: k8s)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     p_up = sub.add_parser("up")
     p_up.add_argument("--pod", required=True)
     p_up.add_argument("--gpus", type=int, default=1)
+    p_up.add_argument("--memory-gb", type=int, default=64)
+    p_up.add_argument("--env", action="append", help="K=V to set in the container")
     p_up.add_argument("--push", action="append", help="local file to copy into /workspace")
     p_up.add_argument("--image")
     p_up.add_argument("--dry-run", action="store_true")
@@ -352,7 +356,7 @@ def main() -> int:
     sub.add_parser("kubeconfig")
 
     args = p.parse_args()
-    server = load_server(Path(args.manifest), args.server)
+    server = load_target(args.target)
     kc = Kubectl(server)
 
     try:

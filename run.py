@@ -37,6 +37,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -44,7 +45,6 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-import yaml
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -53,18 +53,12 @@ HERE        = Path(__file__).parent
 TOOLS_DIR   = (HERE / "tools").resolve()
 RESULTS_DIR = (HERE / "results").resolve()
 FIXES_DIR   = (HERE / "fixes").resolve()   # genuine-fix notebooks retrieved by the fixer (for PRs)
+SHIM_DIR    = (TOOLS_DIR / "http_ssh_shim").resolve()
 
 sys.path.insert(0, str(TOOLS_DIR))
 import k8s_pod
 import results_db
-from status import effective_status
-
-# With AGENT_URL/AGENT_SECRET set, route every ssh/scp this process spawns —
-# including the agent's own Bash calls — through the HMAC-signed HTTP shim, for
-# GPU nodes reachable only over plain HTTP.
-if os.getenv("AGENT_URL") and os.getenv("AGENT_SECRET"):
-    _shim_dir = str((HERE / "tools" / "http_ssh_shim").resolve())
-    os.environ["PATH"] = _shim_dir + os.pathsep + os.environ.get("PATH", "")
+import routing
 
 # k8s runner credential from .env. Exported as KUBECONFIG so kubectl in this
 # process and in the agent's own Bash calls (tools/k8s_pod.py) uses it; inside
@@ -72,83 +66,49 @@ if os.getenv("AGENT_URL") and os.getenv("AGENT_SECRET"):
 if os.getenv("NBR_KUBECONFIG") and not os.getenv("KUBECONFIG"):
     os.environ["KUBECONFIG"] = os.path.expanduser(os.environ["NBR_KUBECONFIG"])
 
-# Remote workspace base for per-notebook run dirs. Defaults to /home/amd for the
-# tw* servers (where amd is the login user); override with WORKSPACE_BASE on nodes
-# that use a different home (e.g. /home/gh-runner on the self-hosted CI box).
-WORKSPACE_BASE = os.getenv("WORKSPACE_BASE", "/home/amd").rstrip("/")
+# ── Routing ───────────────────────────────────────────────────────────────────
 
-# ── Manifest ──────────────────────────────────────────────────────────────────
-
-def load_manifest(path: Path) -> dict:
-    if not path.exists():
-        return {}
-    with open(path) as f:
-        return yaml.safe_load(f) or {}
-
-
-def resolve_notebook_config(nb_path, base_dir, manifest, cli_host, cli_user,
-                            cli_server=None):
+def _rel_key(nb: Path, base_dir: Path | None) -> str:
+    """The notebook's path under the notebook root: its key in results and routes."""
     if base_dir:
         try:
-            rel_key = str(nb_path.relative_to(base_dir))
+            return str(nb.relative_to(base_dir))
         except ValueError:
-            rel_key = nb_path.name
-    else:
-        rel_key = nb_path.name
-
-    servers   = manifest.get("servers", {})
-    notebooks = manifest.get("notebooks", {})
-    entry     = notebooks.get(rel_key) or notebooks.get(nb_path.name) or {}
-
-    if entry.get("skip"):
-        return None
-
-    host = cli_host or os.getenv("GPU_HOST")
-    user = cli_user or os.getenv("GPU_USER")
-
-    server_hardware = None
-    server = {}
-    server_name = cli_server or entry.get("server")
-    if server_name and server_name in servers:
-        server = servers[server_name]
-        host = server.get("host", host)
-        user = server.get("user", user)
-        server_hardware = server.get("hardware")
-
-    return {"host": host, "user": user,
-            "server_name": server_name, "server": server,
-            "server_hardware": server_hardware, "manifest_entry": entry,
-            "rel_key": rel_key}
+            pass
+    return nb.name
 
 
-def filter_by_max_gpus(notebooks, base_dir, manifest, max_gpus):
-    """Split notebooks into (kept, dropped) by manifest gpus_required <= max_gpus.
+def target_env(target: dict) -> dict:
+    """Environment for every subprocess that talks to `target`. A target with
+    an agent_url is reached through the HMAC-signed HTTP shim: its ssh/scp come
+    first on PATH, for run.py and for the agent's own Bash calls alike."""
+    env = dict(os.environ)
+    env.pop("AGENT_URL", None)
+    if target.get("agent_url"):
+        env["AGENT_URL"] = target["agent_url"]
+        env["PATH"] = f"{SHIM_DIR}{os.pathsep}{env.get('PATH', '')}"
+    return env
 
-    dropped is a list of (path, gpus_required) so the caller can report exactly
-    what was skipped — never silently truncate the run. Notebooks absent from the
-    manifest (or with no gpus_required) default to 1, i.e. runnable on any node.
-    """
-    if max_gpus is None:
-        return list(notebooks), []
-    nbs = manifest.get("notebooks", {})
-    kept, dropped = [], []
-    for nb in notebooks:
-        if base_dir:
-            try:
-                rel_key = str(nb.resolve().relative_to(Path(base_dir).resolve()))
-            except ValueError:
-                rel_key = nb.name
-        else:
-            rel_key = nb.name
-        entry = nbs.get(rel_key) or nbs.get(nb.name) or {}
-        req = entry.get("gpus_required", 1)
-        if req is None:
-            req = 1
-        if req > max_gpus:
-            dropped.append((nb, req))
-        else:
-            kept.append(nb)
-    return kept, dropped
+
+def order_by_dependencies(notebooks: list[Path], base_dir: Path | None) -> list[Path]:
+    """Run each notebook after the ones in this batch it declares in
+    metadata.ci.depends_on; otherwise keep the given order."""
+    by_key = {_rel_key(nb, base_dir): nb for nb in notebooks}
+    ordered: list[Path] = []
+    seen: set[str] = set()
+
+    def visit(key: str) -> None:
+        if key in seen or key not in by_key:
+            return
+        seen.add(key)
+        req = routing.resolve(by_key[key], {})[0]
+        for dep in req.depends_on if req else []:
+            visit(dep)
+        ordered.append(by_key[key])
+
+    for key in by_key:
+        visit(key)
+    return ordered
 
 
 def collect_notebooks(directory, category):
@@ -161,10 +121,8 @@ def collect_notebooks(directory, category):
     if not notebooks:
         print(f"No notebooks found in {base}", file=sys.stderr)
         sys.exit(1)
-    # Return resolved absolute paths so nb.relative_to(base_dir.resolve()) works
-    # downstream — matches the positional/gap/failing selectors, which already
-    # resolve. Without this, manifest lookups (skip/expected_result/server/gpus)
-    # silently miss on --dir runs because rel_key falls back to the bare name.
+    # Resolved absolute paths, like the other selectors, so nb.relative_to(base_dir)
+    # gives the notebook's key; otherwise it falls back to the bare filename.
     return [p.resolve() for p in notebooks]
 
 
@@ -206,32 +164,28 @@ def collect_status_notebooks(selector: str, base_dir: Path,
     return result
 
 
-# ── Notebook transfer (same as original agent) ────────────────────────────────
+# ── Notebook transfer ─────────────────────────────────────────────────────────
 
-def scp_notebook(local_path: Path, host: str, user: str) -> str:
-    """Copy notebook and preflight_patch.py to remote server. Returns remote path."""
-    stem       = local_path.stem
-    # Fixed workspace base (WORKSPACE_BASE, not /home/{user}) so it matches the
-    # literal <base>/tutorial_agent_runs/<stem> paths the agent uses from the
-    # runtime context, regardless of the SSH user. Defaults to /home/amd for the
-    # tw* servers; the self-hosted CI box sets WORKSPACE_BASE=/home/gh-runner.
-    remote_dir = f"{WORKSPACE_BASE}/tutorial_agent_runs/{stem}"
+def scp_notebook(local_path: Path, target: dict) -> str:
+    """Copy notebook and preflight_patch.py to an SSH target. Returns remote path."""
+    remote_dir = f"{_workspace_base(target)}/tutorial_agent_runs/{local_path.stem}"
     remote_path = f"{remote_dir}/{local_path.name}"
-    target     = f"{user}@{host}"
+    dest       = f"{target['user']}@{target['host']}"
     preflight  = TOOLS_DIR / "preflight_patch.py"
+    env        = target_env(target)
 
-    print(f"  Copying {local_path.name} → {target}:{remote_dir}/", flush=True)
+    print(f"  Copying {local_path.name} → {dest}:{remote_dir}/", flush=True)
     for attempt in range(1, 4):
         try:
             subprocess.run(
                 ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=15",
-                 "-o", "ForwardX11=no", target, f"mkdir -p {remote_dir}"],
-                check=True, capture_output=True, timeout=60,
+                 "-o", "ForwardX11=no", dest, f"mkdir -p {remote_dir}"],
+                check=True, capture_output=True, timeout=60, env=env,
             )
             subprocess.run(
                 ["scp", "-o", "StrictHostKeyChecking=no", "-o", "ForwardX11=no",
-                 str(local_path), str(preflight), f"{target}:{remote_dir}/"],
-                check=True, capture_output=True, timeout=60,
+                 str(local_path), str(preflight), f"{dest}:{remote_dir}/"],
+                check=True, capture_output=True, timeout=60, env=env,
             )
             return remote_path
         except Exception as exc:
@@ -240,6 +194,11 @@ def scp_notebook(local_path: Path, host: str, user: str) -> str:
                 time.sleep(15)
             else:
                 raise RuntimeError(f"Failed to copy notebook after 3 attempts: {exc}") from exc
+
+
+def _workspace_base(target: dict) -> str:
+    """Remote base for per-notebook run dirs on an SSH target."""
+    return str(target.get("workspace_base", "/home/amd")).rstrip("/")
 
 
 # ── stream-json pretty printer ────────────────────────────────────────────────
@@ -392,16 +351,9 @@ def handle_stream(proc, notebook_name: str, agent_label: str = "") -> dict:
 
 # ── Environment check ─────────────────────────────────────────────────────────
 
-def run_env_check(
-    notebook_path: Path,
-    rel_key: str,
-    host: str,
-    user: str,
-    hf_token: str | None,
-    manifest_path: Path,
-    skip: bool = False,
-    server: dict | None = None,
-) -> dict | None:
+def run_env_check(notebook_path: Path, rel_key: str, target: dict,
+                  req: routing.Requirements, hf_token: str | None,
+                  skip: bool = False) -> dict | None:
     """Run tools/env_check.py for this notebook.
 
     Returns None if env_check passed (or was skipped, or itself errored —
@@ -417,23 +369,26 @@ def run_env_check(
         sys.executable, str(TOOLS_DIR / "env_check.py"),
         "--notebook",       rel_key,
         "--notebook-local", str(notebook_path),
-        "--manifest",       str(manifest_path),
+        "--gpus",           str(req.gpus),
+        "--disk-gb",        str(req.disk_gb),
         "--results-dir",    str(RESULTS_DIR),
         "--write-result",
     ]
-    if _is_k8s(server):
+    if _is_k8s(target):
         # No host to probe: GPU fit is checked statically, disk is the pod's
         # sized /workspace volume.
-        cmd += ["--gpus-per-node", str(server.get("gpus_per_node", 8))]
+        cmd += ["--gpus-per-node", str(target.get("gpus", 1))]
     else:
         cmd += ["--ssh-cmd", (f"ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "
-                              f"-o ForwardX11=no {user}@{host}")]
+                              f"-o ForwardX11=no {target['user']}@{target['host']}"),
+                "--workspace-base", _workspace_base(target)]
     if hf_token:
         cmd += ["--hf-token", hf_token]
 
     started = time.time()
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=sys.stderr, text=True)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=sys.stderr, text=True,
+                                env=target_env(target))
         for line in proc.stdout:
             print(line, end="", flush=True)
         proc.wait(timeout=120)
@@ -462,34 +417,33 @@ def run_env_check(
 
 # ── Kubernetes runner ─────────────────────────────────────────────────────────
 
-def _is_k8s(server: dict | None) -> bool:
-    return bool(server) and server.get("type") == "k8s"
+def _is_k8s(target: dict | None) -> bool:
+    return bool(target) and target.get("type") == "k8s"
 
 
-def k8s_runtime(server_name: str, server: dict, manifest_path: Path,
-                notebook_path: Path, gpus: int, phase: str,
-                run_id: str) -> tuple[str, str]:
+def k8s_runtime(target_name: str, target: dict, notebook_path: Path,
+                req: routing.Requirements, phase: str, run_id: str) -> tuple[str, str]:
     """Return (pod name, runtime-context block) for one agent run in a pod.
 
     The agent provisions the pod itself (it picks the image after reading the
     notebook); run.py only names it and deletes it afterwards.
     """
     pod  = k8s_pod.pod_name(notebook_path.stem, phase, run_id)
-    tool = (f"python3 {TOOLS_DIR}/k8s_pod.py --server {server_name} "
-            f"--manifest {manifest_path}")
-    up_cmd = (f"{tool} up --pod {pod} --gpus {gpus} "
-              f"--push {notebook_path} --push {TOOLS_DIR / 'preflight_patch.py'}")
-    block = f"""RUNNER          = k8s  (server {server_name}: follow CLAUDE.md "Runner: Kubernetes pod" — there is no SSH host)
+    tool = f"python3 {TOOLS_DIR}/k8s_pod.py --target {target_name}"
+    up_cmd = (f"{tool} up --pod {pod} --gpus {req.gpus} --memory-gb {req.memory_gb} "
+              + "".join(f"--env {shlex.quote(f'{k}={v}')} " for k, v in req.env.items())
+              + f"--push {notebook_path} --push {TOOLS_DIR / 'preflight_patch.py'}")
+    block = f"""RUNNER          = k8s  (target {target_name}: follow CLAUDE.md "Runner: Kubernetes pod" — there is no SSH host)
 POD_CMD         = {tool} exec --pod {pod}
 K8S_UP_CMD      = {up_cmd}
 NOTEBOOK_REMOTE = {k8s_pod.WORKSPACE}/{notebook_path.name}  (K8S_UP_CMD copies it in once the pod is READY)
 WORKSPACE       = {k8s_pod.WORKSPACE}  (use this wherever the playbook says <WORKSPACE_BASE>/tutorial_agent_runs/<stem>)
-SCHEDULE_TIMEOUT = {server.get('schedule_timeout_min', 45)} min (K8S_UP_CMD reports UNSCHEDULABLE after this)
+SCHEDULE_TIMEOUT = {target.get('schedule_timeout_min', 45)} min (K8S_UP_CMD reports UNSCHEDULABLE after this)
 
 Provision the pod once you have resolved the image (repeat until it prints READY):
   Bash: {up_cmd} --image <image:tag>
 
-Use POD_CMD like this (HF_TOKEN is already set in the pod environment):
+Use POD_CMD like this (HF_TOKEN and CONTAINER_ENV are already set in the pod environment):
   Bash: {tool} exec --pod {pod} '<your command here>'
 """
     if phase == "fix":
@@ -501,72 +455,58 @@ Retrieve the genuine-fix notebook (CLAUDE_FIX.md Step 4c) with:
     return pod, block
 
 
-def k8s_down(server_name: str, server: dict, pod: str) -> None:
+def k8s_down(target_name: str, target: dict, pod: str) -> None:
     """Delete the agent's pod. Called from a finally, so never raises."""
     try:
-        k8s_pod.down(k8s_pod.Kubectl(server), pod)
+        k8s_pod.down(k8s_pod.Kubectl(target), pod)
     except Exception as exc:  # noqa: BLE001 — cleanup must not mask the result
-        print(f"warning: could not delete pod {pod} on {server_name} ({exc}); "
+        print(f"warning: could not delete pod {pod} on {target_name} ({exc}); "
               f"activeDeadlineSeconds will stop it", file=sys.stderr)
 
 
 # ── Core runner ───────────────────────────────────────────────────────────────
 
-def _transport(notebook_path: Path, phase: str, host: str, user: str,
-               hf_token: str | None, manifest_entry: dict, server_name: str | None,
-               server: dict | None, run_id: str,
-               manifest_path: Path | None) -> tuple[str | None, str]:
+def _transport(notebook_path: Path, phase: str, target_name: str, target: dict,
+               req: routing.Requirements, hf_token: str | None,
+               run_id: str) -> tuple[str | None, str]:
     """Return (pod or None, runtime-context block) for one agent run: copy the
-    notebook to the SSH host, or name the pod the agent will provision.
+    notebook to the SSH target, or name the pod the agent will provision.
     Raises RuntimeError if the copy fails."""
-    if _is_k8s(server):
-        return k8s_runtime(server_name, server, manifest_path or HERE / "manifest.yaml",
-                           notebook_path, manifest_entry.get("gpus_required") or 1,
-                           phase, run_id)
-    return None, _ssh_runtime(host, user, hf_token, scp_notebook(notebook_path, host, user))
+    if _is_k8s(target):
+        return k8s_runtime(target_name, target, notebook_path, req, phase, run_id)
+    return None, _ssh_runtime(target, hf_token, scp_notebook(notebook_path, target))
 
 
-def _manifest_prompt_lines(manifest_entry: dict) -> list[str]:
-    if not manifest_entry:
-        return []
-    lines = ["", "## Manifest overrides"]
-    docker_overrides = manifest_entry.get("docker_overrides")
-    if docker_overrides:
-        lines.append("Docker image overrides (regex → replacement):")
-        lines += [f"  - `{pat}` → `{rep}`" for pat, rep in docker_overrides.items()]
-    if manifest_entry.get("expected_result") == "partial":
-        lines.append("expected_result=partial: a 'partial' outcome counts as passing. "
-                     "Do not retry indefinitely if only a secondary check fails.")
-    if manifest_entry.get("notes"):
-        lines.append(f"Known issues / notes: {manifest_entry['notes'].strip()}")
-    return lines
+def _requirements_ctx(target: dict, req: routing.Requirements) -> str:
+    """Runtime-context lines for what the notebook declares in metadata.ci."""
+    params = " ".join(f"-p {k} {shlex.quote(str(v))}" for k, v in req.parameters.items())
+    env = " ".join(f"-e {shlex.quote(f'{k}={v}')}" for k, v in req.env.items())
+    lines = [
+        f"GPU_HARDWARE    = {target.get('hardware', 'unknown')}",
+        f"MEMORY_LIMIT    = {req.memory_gb}g  (use for docker run --memory)",
+        f"CONTAINER_ENV   = {env or '(none)'}  (add to docker run)",
+        f"PAPERMILL_PARAMS = {params or '(none)'}  (append to the papermill command)",
+    ]
+    if req.image:
+        lines.append(f"IMAGE_REPO      = {req.image}  (the notebook declares this repo; "
+                     f"resolve its tag with resolve_docker_image.py)")
+    return "\n".join(lines)
 
 
-def run_notebook(notebook_path: Path, host: str, user: str,
-                 hf_token: str | None, manifest_entry: dict,
-                 server_hardware: str | None, interactive: bool,
-                 rel_key: str = "", manifest_path: Path | None = None,
-                 skip_env_check: bool = False, server_name: str | None = None,
-                 server: dict | None = None, run_id: str = "") -> dict:
+def run_notebook(notebook_path: Path, rel_key: str, target_name: str, target: dict,
+                 req: routing.Requirements, interactive: bool = False,
+                 skip_env_check: bool = False, run_id: str = "") -> dict:
+    hf_token = os.getenv("HF_TOKEN")
 
     # 0. Environment check — fail fast on unwinnable cases
-    env_blocked = run_env_check(
-        notebook_path = notebook_path,
-        rel_key       = rel_key,
-        host          = host,
-        user          = user,
-        hf_token      = hf_token,
-        manifest_path = manifest_path or HERE / "manifest.yaml",
-        skip          = skip_env_check,
-        server        = server,
-    )
+    env_blocked = run_env_check(notebook_path, rel_key, target, req, hf_token,
+                                skip=skip_env_check)
     if env_blocked is not None:
         return env_blocked
 
     try:
-        pod, transport_ctx = _transport(notebook_path, "verify", host, user, hf_token,
-                                        manifest_entry, server_name, server, run_id,
-                                        manifest_path)
+        pod, transport_ctx = _transport(notebook_path, "verify", target_name, target, req,
+                                        hf_token, run_id)
     except RuntimeError as e:
         return {"status": "fail", "message": str(e), "cost_usd": None}
 
@@ -576,24 +516,23 @@ def run_notebook(notebook_path: Path, host: str, user: str,
         ("Follow the playbook in CLAUDE.md exactly. Start by reading the notebook "
          "with the Read tool, then proceed through all phases. When done, call "
          "write_result.py then finish. Do not retry content failures — report them accurately."),
-        *_manifest_prompt_lines(manifest_entry),
     ])
 
     runtime_ctx = f"""## Runtime Context for this Run
 
 {transport_ctx}
-GPU_HARDWARE    = {server_hardware or 'unknown'}
+{_requirements_ctx(target, req)}
 NOTEBOOK_LOCAL  = {notebook_path}
 TOOLS_DIR       = {TOOLS_DIR}
 RESULTS_DIR     = {RESULTS_DIR}
 
 resolve_docker_image:
-  Bash: python3 {TOOLS_DIR}/resolve_docker_image.py <repo> {server_hardware or 'mi300x'}
+  Bash: python3 {TOOLS_DIR}/resolve_docker_image.py <repo> {target.get('hardware', 'mi300x')}
 
 write_result (call this when done):
   Bash: python3 {TOOLS_DIR}/write_result.py \\
     --notebook "{notebook_path}" \\
-    --status pass|fail|partial \\
+    --status pass|fail \\
     --summary "..." \\
     --issues '[...]' \\
     --fixes  '[...]' \\
@@ -607,24 +546,25 @@ write_result (call this when done):
             print("  Runtime context is in the system prompt. Type your instructions.\n")
             started = time.time()
             subprocess.run(["claude", "--append-system-prompt", runtime_ctx],
-                           cwd=str(HERE), check=False)
+                           cwd=str(HERE), check=False, env=target_env(target))
             result = _find_latest_result(notebook_path, since=started)
             return result or {"status": "unknown", "message": "Interactive session ended"}
-        return _run_agent("VERIFY", notebook_path, prompt, runtime_ctx)
+        return _run_agent("VERIFY", notebook_path, prompt, runtime_ctx, target)
     finally:
         if pod:
-            k8s_down(server_name, server, pod)
+            k8s_down(target_name, target, pod)
 
 
-def _ssh_runtime(host: str, user: str, hf_token: str | None, remote_path: str) -> str:
-    """Runtime-context lines for the SSH runner."""
+def _ssh_runtime(target: dict, hf_token: str | None, remote_path: str) -> str:
+    """Runtime-context lines for an SSH target."""
     ssh_flags  = "-o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ForwardX11=no"
-    ssh_target = f"{user}@{host}"
+    ssh_target = f"{target['user']}@{target['host']}"
     ssh_cmd    = f"ssh {ssh_flags} {ssh_target}"
+    base       = _workspace_base(target)
     return f"""SSH_CMD     = {ssh_cmd}
 SSH_HF_CMD  = ssh {ssh_flags} {ssh_target} (prefix commands that need HF_TOKEN with: export HF_TOKEN='{hf_token}';)
 NOTEBOOK_REMOTE = {remote_path}  (already on the server — do NOT copy again)
-WORKSPACE_BASE  = {WORKSPACE_BASE}  (per-notebook run dir is {WORKSPACE_BASE}/tutorial_agent_runs/<stem>)
+WORKSPACE_BASE  = {base}  (per-notebook run dir is {base}/tutorial_agent_runs/<stem>)
 
 Use SSH_CMD like this:
   Bash: {ssh_cmd} '<your command here>'
@@ -634,7 +574,8 @@ For commands that need HF_TOKEN:
 """
 
 
-def _run_agent(label: str, notebook_path: Path, prompt: str, system_prompt: str) -> dict:
+def _run_agent(label: str, notebook_path: Path, prompt: str, system_prompt: str,
+               target: dict) -> dict:
     """Run one headless agent and return the result JSON it wrote, plus cost.
 
     A one-shot `claude -p` has no scheduler to resume it, so deny the
@@ -657,6 +598,7 @@ def _run_agent(label: str, notebook_path: Path, prompt: str, system_prompt: str)
         stderr=sys.stderr,   # show claude errors live instead of swallowing them
         text=True,
         cwd=str(HERE),
+        env=target_env(target),
     )
     meta = handle_stream(proc, notebook_path.name, agent_label=label)
 
@@ -669,13 +611,9 @@ def _run_agent(label: str, notebook_path: Path, prompt: str, system_prompt: str)
     return result
 
 
-def run_fixer(notebook_path: Path, host: str, user: str,
-              hf_token: str | None, manifest_entry: dict,
-              server_hardware: str | None,
-              verification_result_path: Path,
-              rel_key: str = "", server_name: str | None = None,
-              server: dict | None = None, run_id: str = "",
-              manifest_path: Path | None = None) -> dict:
+def run_fixer(notebook_path: Path, target_name: str, target: dict,
+              req: routing.Requirements, verification_result_path: Path,
+              run_id: str = "") -> dict:
     """Run the fixer agent on a notebook using a prior verification result."""
 
     FIXES_DIR.mkdir(parents=True, exist_ok=True)
@@ -688,9 +626,8 @@ def run_fixer(notebook_path: Path, host: str, user: str,
 
     # The verify run cleaned up after itself, so copy again / use a fresh pod.
     try:
-        pod, transport_ctx = _transport(notebook_path, "fix", host, user, hf_token,
-                                        manifest_entry, server_name, server, run_id,
-                                        manifest_path)
+        pod, transport_ctx = _transport(notebook_path, "fix", target_name, target, req,
+                                        os.getenv("HF_TOKEN"), run_id)
     except RuntimeError as e:
         return {"status": "fail", "message": str(e), "cost_usd": None}
 
@@ -703,13 +640,12 @@ def run_fixer(notebook_path: Path, host: str, user: str,
         "Start by reading the verification result JSON and the notebook,",
         "then proceed through all steps. Only fix issues marked auto_fixable.",
         "Write the final result via write_result.py, then finish.",
-        *_manifest_prompt_lines(manifest_entry),
     ])
 
     runtime_ctx = f"""## Runtime Context for this Fix Run
 
 {transport_ctx}
-GPU_HARDWARE    = {server_hardware or 'unknown'}
+{_requirements_ctx(target, req)}
 NOTEBOOK_LOCAL  = {notebook_path}
 TOOLS_DIR       = {TOOLS_DIR}
 RESULTS_DIR     = {RESULTS_DIR}
@@ -717,7 +653,7 @@ FIXES_DIR       = {FIXES_DIR}  (retrieve <nb>_fixed.ipynb here as <stem>.ipynb �
 VERIFICATION_RESULT = {verification_result_path}
 
 resolve_docker_image:
-  Bash: python3 {TOOLS_DIR}/resolve_docker_image.py <repo> {server_hardware or 'mi300x'}
+  Bash: python3 {TOOLS_DIR}/resolve_docker_image.py <repo> {target.get('hardware', 'mi300x')}
 
 write_result (call this when done):
   Bash: python3 {TOOLS_DIR}/write_result.py \\
@@ -733,10 +669,10 @@ write_result (call this when done):
     system_prompt = (HERE / "CLAUDE_FIX.md").read_text() + "\n\n---\n\n" + runtime_ctx
 
     try:
-        return _run_agent("FIX", notebook_path, prompt, system_prompt)
+        return _run_agent("FIX", notebook_path, prompt, system_prompt, target)
     finally:
         if pod:
-            k8s_down(server_name, server, pod)
+            k8s_down(target_name, target, pod)
 
 
 def _find_latest_result(notebook_path: Path, since: float | None = None) -> dict | None:
@@ -807,19 +743,11 @@ def _notify_teams(run_id: str) -> None:
 def parse_args():
     p = argparse.ArgumentParser(description="Notebook regression agent — Claude Code edition")
     p.add_argument("notebook", nargs="*")
-    p.add_argument("--host",        default=None)
-    p.add_argument("--server",      default=None,
-                   help="manifest servers: entry to run every notebook on, overriding "
-                        "each notebook's own server (e.g. workshop-k8s for the "
-                        "Kubernetes pod runner).")
-    p.add_argument("--user",        default=None)
+    p.add_argument("--target",      default=None,
+                   help="Only consider this runner.yaml target (e.g. a k8s pool). "
+                        "Notebooks it cannot satisfy are reported, not run.")
     p.add_argument("--dir",         help="Run all notebooks under this directory")
-    p.add_argument("--manifest",    default=str(HERE / "manifest.yaml"))
     p.add_argument("--category",    choices=["inference", "fine_tune", "pretrain", "gpu_dev_optimize"])
-    p.add_argument("--max-gpus",    type=int, default=None,
-                   help="Only run notebooks whose manifest gpus_required is <= this. "
-                        "Notebooks needing more GPUs are skipped (reported, not failed). "
-                        "Notebooks with no gpus_required in the manifest default to 1.")
     p.add_argument("--interactive", "-i", action="store_true")
     p.add_argument("--gap", action="store_true",
                    help="Run only notebooks reported by tools/status.py --gap "
@@ -847,7 +775,7 @@ def parse_args():
 
 def main():
     args     = parse_args()
-    manifest = load_manifest(Path(args.manifest))
+    targets  = routing.load_config()["targets"]
     base_dir = Path(args.dir).resolve() if args.dir else None
 
     if args.gap and args.failing:
@@ -858,11 +786,15 @@ def main():
               file=sys.stderr)
         sys.exit(2)
     if (args.gap or args.failing) and base_dir is None:
-        print("Error: --gap/--failing requires --dir to resolve manifest-relative paths to local files",
+        print("Error: --gap/--failing requires --dir to resolve notebook keys to local files",
               file=sys.stderr)
         sys.exit(2)
-    if args.server and args.server not in (manifest.get("servers") or {}):
-        print(f"Error: --server {args.server} is not a servers: entry in {args.manifest}",
+    if not targets:
+        print(f"Error: no targets configured in {routing.CONFIG_PATH} "
+              f"(copy runner.example.yaml)", file=sys.stderr)
+        sys.exit(2)
+    if args.target and args.target not in targets:
+        print(f"Error: --target {args.target} is not a target in {routing.CONFIG_PATH}",
               file=sys.stderr)
         sys.exit(2)
 
@@ -897,18 +829,7 @@ def main():
     else:
         print("Error: provide a notebook path or --dir", file=sys.stderr)
         sys.exit(1)
-
-    # Filter by GPU capacity of the target node (e.g. --max-gpus 1 for a 1-GPU box).
-    if args.max_gpus is not None:
-        notebooks, dropped = filter_by_max_gpus(notebooks, base_dir, manifest, args.max_gpus)
-        if dropped:
-            print(f"Skipping {len(dropped)} notebook(s) needing > {args.max_gpus} GPU(s):")
-            for nb, req in sorted(dropped, key=lambda d: d[0].name):
-                print(f"  - {nb.name} (needs {req})")
-            print()
-        if not notebooks:
-            print(f"No notebooks require <= {args.max_gpus} GPU(s). Nothing to do.")
-            sys.exit(0)
+    notebooks = order_by_dependencies(notebooks, base_dir)
 
     # Validate --mode fix requires --verification-result (for single notebooks)
     if args.mode == "fix" and not args.verification_result and len(notebooks) == 1:
@@ -926,6 +847,7 @@ def main():
     print("\nNotebook regression agent  [Claude Code]")
     print(f"  Notebooks : {len(notebooks)}")
     print(f"  Mode      : {mode_label}")
+    print(f"  Targets   : {args.target or ', '.join(targets)}")
     print(f"  Results   : {RESULTS_DIR}")
 
     run_id = args.run_id or datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%S")
@@ -936,7 +858,7 @@ def main():
               f"continuing with JSON results only", file=sys.stderr)
         db = None
     _db_call(db, results_db.start_run, run_id, mode_label,
-             args.server or args.host or os.getenv("GPU_HOST"), sys.argv[1:])
+             args.target or "routed", sys.argv[1:])
     print(f"  Run ID    : {run_id}  (db: {results_db.DEFAULT_DB})\n")
 
     results = []
@@ -948,38 +870,28 @@ def main():
         print(f"Testing: {nb.name}")
         print(f"{'='*60}")
 
-        cfg = resolve_notebook_config(nb, base_dir, manifest, args.host, args.user,
-                                      args.server)
-        if cfg is None:
-            entry  = (manifest.get("notebooks", {})
-                      .get(str(nb.relative_to(base_dir)) if base_dir else nb.name, {}))
-            reason = entry.get("skip_reason", "no reason given")
-            print(f"  SKIP — {reason}\n")
+        rel_key = _rel_key(nb, base_dir)
+        req, target_name, target, reason = routing.resolve(nb, targets, args.target)
+        if target is None:
+            print(f"  NO TARGET — {reason}\n")
             skipped.append({"notebook": str(nb), "reason": reason})
-            rel_key = str(nb.relative_to(base_dir)) if base_dir else nb.name
             _db_call(db, results_db.record_result, run_id, rel_key, str(nb), "skip",
-                     {"status": "skip", "message": reason}, args.server)
+                     {"status": "skip", "message": reason}, None)
             continue
 
-        host = cfg["host"]
-        user = cfg["user"]
-        server_name, server = cfg["server_name"], cfg["server"]
-        if _is_k8s(server):
-            print(f"  GPU server : k8s {server_name} "
-                  f"({server.get('context')}/{server.get('namespace')})")
-            if server_name not in gc_done:
+        if _is_k8s(target):
+            print(f"  Target     : {target_name} (k8s {target.get('context')}/"
+                  f"{target.get('namespace')}, {target.get('hardware')})")
+            if target_name not in gc_done:
                 # Clear pods a killed earlier run left behind before adding more.
                 try:
-                    k8s_pod.gc(k8s_pod.Kubectl(server))
+                    k8s_pod.gc(k8s_pod.Kubectl(target))
                 except Exception as exc:  # noqa: BLE001 — hygiene, not a precondition
                     print(f"warning: k8s gc failed ({exc})", file=sys.stderr)
-                gc_done.add(server_name)
+                gc_done.add(target_name)
         else:
-            if not host or not user:
-                print("Error: no host/user. Set GPU_HOST/GPU_USER in .env or pass --host/--user",
-                      file=sys.stderr)
-                sys.exit(1)
-            print(f"  GPU server : {user}@{host}")
+            print(f"  Target     : {target_name} ({target.get('user')}@{target.get('host')}, "
+                  f"{target.get('hardware')})")
 
         result = None
         verify_cost = 0.0
@@ -989,26 +901,14 @@ def main():
         if args.mode in ("verify", "full"):
             print("\n  ── VERIFY ──")
             try:
-                result = run_notebook(
-                    notebook_path   = nb,
-                    host            = host,
-                    user            = user,
-                    hf_token        = os.getenv("HF_TOKEN"),
-                    manifest_entry  = cfg["manifest_entry"],
-                    server_hardware = cfg["server_hardware"],
-                    interactive     = args.interactive,
-                    rel_key         = cfg["rel_key"],
-                    manifest_path   = Path(args.manifest),
-                    skip_env_check  = args.skip_env_check,
-                    server_name     = server_name,
-                    server          = server,
-                    run_id          = run_id,
-                )
+                result = run_notebook(nb, rel_key, target_name, target, req,
+                                      interactive=args.interactive,
+                                      skip_env_check=args.skip_env_check, run_id=run_id)
             except Exception as exc:  # noqa: BLE001 — record the crash, keep the batch going
                 result = {"status": "fail", "message": f"Runner crashed: {exc}"}
 
-            _db_call(db, results_db.record_result, run_id, cfg["rel_key"], str(nb),
-                     "verify", result, server_name)
+            _db_call(db, results_db.record_result, run_id, rel_key, str(nb),
+                     "verify", result, target_name)
 
             verify_cost  = result.get("cost_usd") or 0.0
             verify_turns = result.get("num_turns") or 0
@@ -1029,24 +929,11 @@ def main():
             if vr_path and vr_path.exists():
                 print("\n  ── FIX ──")
                 try:
-                    fix_result = run_fixer(
-                        notebook_path   = nb,
-                        host            = host,
-                        user            = user,
-                        hf_token        = os.getenv("HF_TOKEN"),
-                        manifest_entry  = cfg["manifest_entry"],
-                        server_hardware = cfg["server_hardware"],
-                        verification_result_path = vr_path,
-                        rel_key         = cfg["rel_key"],
-                        server_name     = server_name,
-                        server          = server,
-                        run_id          = run_id,
-                        manifest_path   = Path(args.manifest),
-                    )
+                    fix_result = run_fixer(nb, target_name, target, req, vr_path, run_id=run_id)
                     # Recorded before cost accumulation: each DB row carries
                     # its own phase's cost, so SUM(cost_usd) never double-counts.
-                    _db_call(db, results_db.record_result, run_id, cfg["rel_key"],
-                             str(nb), "fix", fix_result, server_name)
+                    _db_call(db, results_db.record_result, run_id, rel_key,
+                             str(nb), "fix", fix_result, target_name)
                     # Accumulate costs from both agents
                     fix_cost  = fix_result.get("cost_usd") or 0.0
                     fix_turns = fix_result.get("num_turns") or 0
@@ -1059,16 +946,16 @@ def main():
                     print(f"  {f_icon} FIX: {f_status.upper()}", flush=True)
                 except Exception as exc:  # noqa: BLE001 — record the crash, keep the batch going
                     print(f"  ✗ Fixer crashed: {exc}", flush=True)
-                    _db_call(db, results_db.record_result, run_id, cfg["rel_key"],
+                    _db_call(db, results_db.record_result, run_id, rel_key,
                              str(nb), "fix",
                              {"status": "fail", "message": f"Fixer crashed: {exc}"},
-                             server_name)
+                             target_name)
             elif args.mode == "fix":
                 print(f"  ✗ No verification result found for {nb.name}", flush=True)
                 result = {"status": "fail",
                           "message": "No verification result available for fixer"}
-                _db_call(db, results_db.record_result, run_id, cfg["rel_key"],
-                         str(nb), "fix", result, server_name)
+                _db_call(db, results_db.record_result, run_id, rel_key,
+                         str(nb), "fix", result, target_name)
 
         if result is None:
             result = {"status": "fail", "message": "No result produced"}
@@ -1079,19 +966,12 @@ def main():
         turns  = result.get("num_turns")
         cost_str  = f"  cost=${cost:.4f}" if cost else ""
         turns_str = f"  turns={turns}"    if turns else ""
-        icon   = "✓" if status == "pass" else ("~" if status == "partial" else "✗")
+        icon   = "✓" if status == "pass" else "✗"
         print(f"\n  {icon} {status.upper()}{cost_str}{turns_str}\n", flush=True)
 
     # ── Summary ───────────────────────────────────────────────────────────────
-    expected = {Path(k).name: (v or {}).get("expected_result")
-                for k, v in manifest.get("notebooks", {}).items()}
-
-    def _is_pass(r):
-        partial_ok = expected.get(Path(r["notebook"]).name) == "partial"
-        return effective_status(r.get("status"), partial_ok)[1]
-
-    passed = [r for r in results if _is_pass(r)]
-    failed = [r for r in results if not _is_pass(r)]
+    passed = [r for r in results if r.get("status") == "pass"]
+    failed = [r for r in results if r.get("status") != "pass"]
     total_cost = sum(r.get("cost_usd") or 0 for r in results)
 
     print(f"\n{'='*60}")
@@ -1100,7 +980,7 @@ def main():
     print(f"  Passed  : {len(passed)}/{len(results)}")
     print(f"  Failed  : {len(failed)}/{len(results)}")
     if skipped:
-        print(f"  Skipped : {len(skipped)}")
+        print(f"  No target : {len(skipped)}")
     if total_cost:
         print(f"  Total cost : ${total_cost:.4f}")
     if failed:

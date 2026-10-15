@@ -52,10 +52,10 @@ CREATE TABLE IF NOT EXISTS runs (
 CREATE TABLE IF NOT EXISTS results (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id          TEXT REFERENCES runs(run_id),
-    notebook        TEXT NOT NULL,      -- manifest key, e.g. inference/foo.ipynb
+    notebook        TEXT NOT NULL,      -- path under the notebook root, e.g. inference/foo.ipynb
     notebook_path   TEXT,
     phase           TEXT NOT NULL,      -- verify | fix | skip
-    server          TEXT,               -- manifest servers: entry (ssh host or k8s)
+    server          TEXT,               -- runner.yaml target it ran on (ssh host or k8s pool)
     agent           TEXT,
     status          TEXT NOT NULL,      -- pass | fail | partial | skip | unknown
     summary         TEXT,
@@ -276,32 +276,26 @@ def list_runs(conn: sqlite3.Connection, limit: int = 100) -> list[dict]:
         "SELECT * FROM runs ORDER BY started_at DESC LIMIT ?", (limit,))]
 
 
-def manifest_keys(manifest_path: Path) -> dict[str, str]:
-    """Map notebook filename -> manifest key (e.g. 'foo.ipynb' -> 'inference/foo.ipynb').
+def notebook_keys(notebooks_dir: Path) -> dict[str, str]:
+    """Map notebook filename -> key (e.g. 'foo.ipynb' -> 'inference/foo.ipynb').
     Filenames that appear under more than one key are left out as ambiguous."""
-    try:
-        import yaml  # pyyaml is a project dependency; only import needs it
-        notebooks = (yaml.safe_load(manifest_path.read_text()) or {}).get("notebooks") or {}
-    except (OSError, ImportError) as e:
-        warn(f"could not read manifest {manifest_path} ({e}); keeping bare filenames")
-        return {}
     by_name: dict[str, list[str]] = {}
-    for key in notebooks:
-        by_name.setdefault(Path(key).name, []).append(key)
+    for p in sorted(notebooks_dir.rglob("*.ipynb")) if notebooks_dir.is_dir() else []:
+        by_name.setdefault(p.name, []).append(str(p.relative_to(notebooks_dir)))
     return {name: keys[0] for name, keys in by_name.items() if len(keys) == 1}
 
 
 def import_json(conn: sqlite3.Connection, results_dir: Path,
-                manifest_path: Path | None = None) -> int:
+                notebooks_dir: Path = REPO_ROOT / "notebooks") -> int:
     """Backfill results/*.json not yet in the database (e.g. from another machine).
 
     Imported rows have no run_id and no cost (cost lived only in run.py's
     memory). The JSON records only an absolute local notebook path, so the key
-    is resolved through the manifest to match what run.py writes. Files are
+    is resolved against the notebook tree to match what run.py writes. Files are
     deduplicated by filename, not absolute path, so the same result imported on
     two hosts is recorded once.
     """
-    keys = manifest_keys(manifest_path or REPO_ROOT / "manifest.yaml")
+    keys = notebook_keys(notebooks_dir)
     seen = {Path(r["result_file"]).name for r in
             conn.execute("SELECT result_file FROM results WHERE result_file IS NOT NULL")}
     n = 0
@@ -330,13 +324,13 @@ def main() -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     imp = sub.add_parser("import", help="Backfill from results/*.json (idempotent).")
     imp.add_argument("--results-dir", default=str(REPO_ROOT / "results"))
-    imp.add_argument("--manifest", default=str(REPO_ROOT / "manifest.yaml"),
-                     help="Used to map result filenames to manifest notebook keys.")
+    imp.add_argument("--notebooks-dir", default=str(REPO_ROOT / "notebooks"),
+                     help="Notebook tree used to map result filenames to notebook keys.")
     args = p.parse_args()
 
     conn = connect(args.db)
     if args.cmd == "import":
-        n = import_json(conn, Path(args.results_dir), Path(args.manifest))
+        n = import_json(conn, Path(args.results_dir), Path(args.notebooks_dir))
         print(f"imported {n} new result(s) into {args.db}")
     return 0
 

@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% from "_macros.html" import status_badge %}
+{% from "_macros.html" import status_badge, requirements %}
 {% block title %}{{ row.name }}{% endblock %}
 {% block content %}
 <p class="sub"><a href="/">Notebooks</a> / {{ row.category }}</p>
-<h1>{{ row.name }} {{ status_badge(row.status, row.counts_as_pass) }}</h1>
+<h1>{{ row.name }} {{ status_badge(row.status) }}</h1>
 <p class="sub mono">{{ key }}</p>
 
 <div class="grid2">
@@ -11,29 +11,31 @@
     <dl class="kv">
       <dt>Latest result</dt><dd>{% if row.latest %}<a href="/result/{{ row.latest.id }}">{{ row.latest.recorded_at | ts }}</a> ({{ row.latest.recorded_at | age }}){% else %}never tested{% endif %}</dd>
       <dt>Results recorded</dt><dd>{{ history | length }}</dd>
-      <dt>Expected result</dt><dd>{{ entry.expected_result or "pass" }}</dd>
-      <dt>Skipped</dt><dd>{% if entry.skip %}yes — {{ entry.skip_reason or "no reason given" }}{% else %}no{% endif %}</dd>
     </dl>
   </div>
   <div class="card">
     <dl class="kv">
-      <dt>Server</dt><dd class="mono">{{ entry.server or "—" }}</dd>
-      <dt>GPUs required</dt><dd>{{ entry.gpus_required or 1 }}</dd>
-      <dt>Hardware</dt><dd>{{ (entry.hardware_required or []) | join(", ") or "—" }}</dd>
-      <dt>Manifest notes</dt><dd class="wrap">{{ entry.notes or "—" }}</dd>
+      {% if nb %}
+      <dt>Needs</dt><dd>{{ requirements(nb.req) if nb.req else "—" }}</dd>
+      <dt>Runs on</dt><dd class="mono">{{ nb.target or "—" }}{% if nb.reason %}<br><span class="dim">{{ nb.reason }}</span>{% endif %}</dd>
+      {% if nb.req and nb.req.image %}<dt>Image</dt><dd class="mono">{{ nb.req.image }}</dd>{% endif %}
+      {% if nb.req and nb.req.parameters %}<dt>CI parameters</dt><dd class="mono">{% for k, v in nb.req.parameters.items() %}{{ k }}={{ v }} {% endfor %}</dd>{% endif %}
+      {% else %}
+      <dt>Notebook</dt><dd class="dim">no longer in the notebook tree</dd>
+      {% endif %}
     </dl>
   </div>
 </div>
 
 <h2>Runs</h2>
 <table>
-  <thead><tr><th>When</th><th>Phase</th><th>Status</th><th>Runner</th><th>Image</th><th>Issues</th><th>Turns</th><th>Cost</th><th>Batch</th></tr></thead>
+  <thead><tr><th>When</th><th>Phase</th><th>Status</th><th>Target</th><th>Image</th><th>Issues</th><th>Turns</th><th>Cost</th><th>Batch</th></tr></thead>
   <tbody>
   {% for h in history %}
     <tr>
       <td><a href="/result/{{ h.id }}">{{ h.recorded_at | ts }}</a><br><span class="dim">{{ h.recorded_at | age }}</span></td>
       <td>{{ h.phase }}</td>
-      <td>{{ status_badge(h.status, h.status == "pass" or (h.status == "partial" and row.expected_partial)) }}</td>
+      <td>{{ status_badge(h.status) }}</td>
       <td class="mono">{{ h.server or "—" }}</td>
       <td class="mono dim">{{ h.docker_image or "—" }}</td>
       <td>{{ h.issues | length or "—" }}</td>

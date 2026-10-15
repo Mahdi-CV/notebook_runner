@@ -34,7 +34,11 @@ appended below the playbook.
 |-------------------|---------------------------------------------------------|
 | `SSH_CMD`         | Exact SSH prefix to copy-paste for every server command |
 | `SSH_HF_CMD`      | SSH prefix with HF_TOKEN pre-exported                   |
-| `GPU_HARDWARE`    | Hardware name (e.g. mi300x) for Docker image resolution |
+| `GPU_HARDWARE`    | Hardware name (e.g. mi300x, rx7900xtx) for Docker image resolution |
+| `MEMORY_LIMIT`    | Host memory for the container: use it as `docker run --memory=<MEMORY_LIMIT>` |
+| `CONTAINER_ENV`   | `-e K=V` flags the notebook declares; add them to `docker run` (`(none)` if empty) |
+| `PAPERMILL_PARAMS`| `-p NAME VALUE` flags the notebook declares for CI; append them to the papermill command (`(none)` if empty) |
+| `IMAGE_REPO`      | Present only when the notebook declares its Docker repo; resolve the tag for that repo |
 | `NOTEBOOK_LOCAL`  | Local path to the notebook being tested                 |
 | `NOTEBOOK_REMOTE` | Remote path — already copied, ready to use              |
 | `WORKSPACE_BASE`  | Remote base for run dirs (`<WORKSPACE_BASE>/tutorial_agent_runs/<stem>`) |
@@ -187,11 +191,13 @@ After writing the result, print the final status line and stop. There is no
 
 These override everything else.
 
-**1. Only four pre-flight patches are allowed:**
+**1. Only five pre-flight patches are allowed:**
 - `notebook_login()` → `login(token=os.environ["HF_TOKEN"])` (add import if missing)
 - `input()` calls → replace with a static value or skip
 - Gradio launch cells (`gr.launch()`, `demo.launch()`) → skip
 - Audio playback cells (`IPython.display.Audio`, `sounddevice.play()`) → skip
+- Cells the notebook itself tags `ci-skip` → skip (the author marked them as
+  unable to run unattended; they are not failures)
 
 Everything else is a content bug that belongs in `issues`. Do NOT patch these:
 - Foreground server cell blocking papermill → `content_error`
@@ -221,7 +227,7 @@ Bash: <SSH_CMD> 'python3 <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/preflight_p
   --output <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/<nb>_patched.ipynb'
 ```
 
-This tool applies exactly the 4 allowed patches and prints a JSON report
+This tool applies exactly the 5 allowed patches and prints a JSON report
 of what it changed. Use its output notebook (`<nb>_patched.ipynb`) for the
 Phase 1 run. Point `run.sh` at `<nb>_patched.ipynb`, not the original.
 
@@ -293,7 +299,8 @@ You MUST call `resolve_docker_image.py` and capture its output. Use the
 printed `image:tag` string in your `docker run` command. Do NOT skip this
 step. Do NOT use `:latest`.
 
-Pick the repo based on what the notebook imports:
+If the runtime context has `IMAGE_REPO`, use that repo. Otherwise pick the
+repo based on what the notebook imports:
 - torch/transformers/diffusers → `rocm/pytorch`
 - vllm → `vllm/vllm-openai-rocm`
 - sglang → `lmsysorg/sglang`
@@ -318,8 +325,8 @@ Bash: <SSH_CMD> 'cat > <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh << '"'
 set -e
 pip install -q papermill ipykernel
 python -m ipykernel install --sys-prefix
-python -m papermill /workspace/<nb>.ipynb /workspace/<nb>_out.ipynb \
-  --kernel python3 --execution-timeout 3000
+python -m papermill /workspace/<nb>_patched.ipynb /workspace/<nb>_out.ipynb \
+  --kernel python3 --execution-timeout 3000 <PAPERMILL_PARAMS>
 SCRIPT
 chmod +x <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh'
 ```
@@ -328,9 +335,9 @@ chmod +x <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh'
 ```
 Bash: <SSH_HF_CMD> 'docker run --rm --name <stem> --network=host \
   --device=/dev/kfd --device=/dev/dri --group-add video \
-  --ipc=host --shm-size=8g --memory=64g \
+  --ipc=host --shm-size=8g --memory=<MEMORY_LIMIT> \
   --entrypoint /bin/bash \
-  -e HF_TOKEN=$HF_TOKEN \
+  -e HF_TOKEN=$HF_TOKEN <CONTAINER_ENV> \
   -v <WORKSPACE_BASE>/tutorial_agent_runs/<stem>:/workspace \
   rocm/pytorch:<tag> -l /workspace/run.sh'
 ```
@@ -339,9 +346,9 @@ Bash: <SSH_HF_CMD> 'docker run --rm --name <stem> --network=host \
 ```
 Bash: <SSH_HF_CMD> 'docker run --rm --name <stem> --network=host \
   --device=/dev/kfd --device=/dev/dri --group-add video \
-  --ipc=host --shm-size=8g --memory=64g \
+  --ipc=host --shm-size=8g --memory=<MEMORY_LIMIT> \
   --entrypoint /bin/bash \
-  -e HF_TOKEN=$HF_TOKEN \
+  -e HF_TOKEN=$HF_TOKEN <CONTAINER_ENV> \
   -v <WORKSPACE_BASE>/tutorial_agent_runs/<stem>:/workspace \
   <image> /workspace/run.sh'
 ```
@@ -352,8 +359,8 @@ Start the server in Docker background:
 ```
 Bash: <SSH_HF_CMD> 'docker run -d --rm --name <stem>_srv --network=host \
   --device=/dev/kfd --device=/dev/dri --group-add video \
-  --ipc=host --shm-size=8g --memory=64g \
-  -e HF_TOKEN=$HF_TOKEN \
+  --ipc=host --shm-size=8g --memory=<MEMORY_LIMIT> \
+  -e HF_TOKEN=$HF_TOKEN <CONTAINER_ENV> \
   <image> <server-args>'
 ```
 
@@ -481,8 +488,9 @@ finishes or you hit the operation's timeout in the table above.
 ```
 --rm --network=host \
 --device=/dev/kfd --device=/dev/dri --group-add video \
---ipc=host --shm-size=8g --memory=64g
+--ipc=host --shm-size=8g --memory=<MEMORY_LIMIT>
 ```
+plus `<CONTAINER_ENV>` wherever the notebook's own code runs.
 
 ---
 

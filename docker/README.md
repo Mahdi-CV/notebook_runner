@@ -85,10 +85,16 @@ fails at runtime with `exec claude failed: No such file or directory`.
 
 ---
 
-## Reaching the GPU node
+## Targets and notebooks
 
-The orchestrator host must reach both the gateway and the GPU node. Where the
-network allows only plain HTTP to the GPU node, set `AGENT_URL`/`AGENT_SECRET`
-and `run.py` sends every `ssh`/`scp` through the HMAC-signed shim in
-`tools/http_ssh_shim/`. Alternatively, run on Kubernetes with `NBR_KUBECONFIG`
-and `--server <k8s entry>` (see `tools/k8s_pod.py`).
+`runner.yaml` (from `runner.example.yaml`, mounted read-only) lists the GPU
+hosts and k8s pools; each notebook runs on the first one that meets the
+requirements it declares (`python3 tools/routing.py` prints every route). An
+SSH target reachable only over HTTP(S) gets an `agent_url`, and `run.py` sends
+its `ssh`/`scp` through the HMAC-signed shim in `tools/http_ssh_shim/`
+(`AGENT_SECRET` in `.env`); k8s targets need `NBR_KUBECONFIG` (see
+`tools/k8s_pod.py`).
+
+Each pass first updates `checkouts/notebooks` to the tip of
+`NBR_NOTEBOOKS_REPO`@`NBR_NOTEBOOKS_REF` (default ROCm/gpuaidev@main) and
+points `notebooks` at its `NBR_NOTEBOOKS_SUBDIR`.

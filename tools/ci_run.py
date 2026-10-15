@@ -22,7 +22,7 @@ Usage:
   python3 tools/ci_run.py --no-commit           # update files, don't commit
   python3 tools/ci_run.py --skip-gap            # only attack current failures
   python3 tools/ci_run.py --verify-only         # diagnose only, never auto-fix
-  python3 tools/ci_run.py --server workshop-k8s # run every notebook on that manifest server
+  python3 tools/ci_run.py --target NAME         # only use this runner.yaml target
   python3 tools/ci_run.py --dry-run             # print the plan, run nothing
 
 Scheduling:
@@ -30,8 +30,8 @@ Scheduling:
   docker/run-ci.sh (flock so passes never overlap, output tee'd to logs/).
   See docker/README.md.
 
-  Future: a self-hosted GitHub Actions runner (SSH to the GPU box + HF_TOKEN/
-  GPU_HOST/GPU_USER secrets) — required for the PR trigger, optional here.
+  Future: a self-hosted GitHub Actions runner (SSH to the GPU box + HF_TOKEN
+  secret) — required for the PR trigger, optional here.
 """
 
 import argparse
@@ -104,10 +104,10 @@ def stream(cmd: list[str], tee: Tee) -> int:
 
 
 def run_batch(paths: list[Path], base_dir: Path, tee: Tee, dry_run: bool,
-              run_id: str, mode: str = "full", server: str | None = None) -> None:
+              run_id: str, mode: str = "full", target: str | None = None) -> None:
     # --run-id groups Phase A and Phase B under one run in results/runs.db.
     cmd = [sys.executable, str(RUN_PY), "--dir", str(base_dir), "--mode", mode,
-           "--run-id", run_id, *(["--server", server] if server else []),
+           "--run-id", run_id, *(["--target", target] if target else []),
            *[str(p) for p in paths]]
     if dry_run:
         tee.line(f"[dry-run] would run: {' '.join(cmd)}")
@@ -137,7 +137,6 @@ def git_commit(tee: Tee, ts: str, dry_run: bool, push: bool) -> None:
     # results/*.json is gitignored (local cache that feeds STATUS.md). The
     # committed record is the dashboard; detailed evidence for authors lives in
     # upstream_prs/ and GitHub issues/PRs, not raw JSON in git history.
-    # manifest.yaml is hand-maintained and committed by whoever edits it.
     paths = ["STATUS.md"]
     if dry_run:
         tee.line(f"[dry-run] would: git add {' '.join(paths)} && git commit")
@@ -176,9 +175,8 @@ def main() -> int:
     p.add_argument("--verify-only", action="store_true",
                    help="Run --mode verify instead of --mode full: diagnose only, "
                         "never auto-fix. Intended for unattended/scheduled passes.")
-    p.add_argument("--server", default=None,
-                   help="Manifest servers: entry to run every notebook on (passed to "
-                        "run.py --server), e.g. workshop-k8s.")
+    p.add_argument("--target", default=None,
+                   help="Only use this runner.yaml target (passed to run.py --target).")
     p.add_argument("--no-commit", action="store_true",
                    help="Update STATUS.md/results but do not git commit.")
     p.add_argument("--push", action="store_true",
@@ -220,7 +218,7 @@ def main() -> int:
                 tee.line(f"    {p.name}")
             if gap_paths:
                 run_batch(gap_paths, base_dir, tee, args.dry_run, ts, mode=batch_mode,
-                          server=args.server)
+                          target=args.target)
 
         # ── Phase B — Failures (deduped against Phase A) ────────────────────
         failing_paths = selector_paths("--failing", base_dir, args.category)
@@ -231,7 +229,7 @@ def main() -> int:
             tee.line(f"    {p.name}")
         if failing_paths:
             run_batch(failing_paths, base_dir, tee, args.dry_run, ts, mode=batch_mode,
-                      server=args.server)
+                      target=args.target)
 
         # ── Phase C — Dashboard ─────────────────────────────────────────────
         tee.line("\n── Phase C — Regenerating STATUS.md ──")

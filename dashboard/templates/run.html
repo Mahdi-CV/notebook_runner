@@ -10,26 +10,26 @@
     <dt>Started</dt><dd>{{ run.started_at | ts }} ({{ run.started_at | age }})</dd>
     <dt>Finished</dt><dd>{% if run.finished_at %}{{ run.finished_at | ts }}{% else %}<span class="badge warn">unfinished</span> <span class="dim">still running, or interrupted before it recorded a finish time</span>{% endif %}</dd>
     <dt>Mode</dt><dd>{{ run.mode or "—" }}</dd>
-    <dt>Runner / host</dt><dd class="mono">{{ run.host or "—" }}</dd>
-    <dt>Totals</dt><dd>{{ run.passed if run.passed is not none else "—" }} pass · {{ run.failed if run.failed is not none else "—" }} not passing · {{ run.skipped if run.skipped is not none else "—" }} skipped · {{ run.total_cost_usd | cost }}</dd>
+    <dt>Targets</dt><dd class="mono">{{ run.host or "—" }}</dd>
+    <dt>Totals</dt><dd>{{ run.passed if run.passed is not none else "—" }} pass · {{ run.failed if run.failed is not none else "—" }} not passing · {{ run.skipped if run.skipped is not none else "—" }} no target · {{ run.total_cost_usd | cost }}</dd>
     <dt>Command</dt><dd class="mono dim">{{ argv or "—" }}</dd>
   </dl>
 </div>
 
 <h2>Notebooks in this run ({{ results | length }})</h2>
 <table>
-  <thead><tr><th>Notebook</th><th>Phase</th><th>Status</th><th>Runner</th><th>Recorded</th><th>Turns</th><th>Cost</th><th>Top issue</th></tr></thead>
+  <thead><tr><th>Notebook</th><th>Phase</th><th>Status</th><th>Target</th><th>Recorded</th><th>Turns</th><th>Cost</th><th>Top issue</th></tr></thead>
   <tbody>
   {% for r in results %}
     <tr>
       <td>{{ nb_link(r.notebook) }}</td>
       <td>{{ r.phase }}</td>
-      <td><a href="/result/{{ r.id }}">{{ status_badge(r.display_status, r.counts_as_pass) }}</a></td>
+      <td><a href="/result/{{ r.id }}">{{ status_badge(r.status) }}</a></td>
       <td class="mono">{{ r.server or "—" }}</td>
       <td>{{ r.recorded_at | ts }}</td>
       <td>{{ r.num_turns or "—" }}</td>
       <td>{{ r.cost_usd | cost }}</td>
-      <td class="wrap">{% if r.display_status != "pass" %}{{ r | why }}{% endif %}</td>
+      <td class="wrap">{% if r.status != "pass" %}{{ r | why }}{% endif %}</td>
     </tr>
   {% else %}
     <tr><td colspan="8" class="dim">No notebook results recorded for this run.</td></tr>

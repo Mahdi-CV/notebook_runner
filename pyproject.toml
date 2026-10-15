@@ -8,8 +8,8 @@ requires-python = ">=3.10"
 # the ROCm Docker images on the GPU node, not in this process — run.py only
 # reads notebooks, resolves config, and shells out.
 dependencies = [
-    "pyyaml>=6.0",      # manifest.yaml, status.py
-    "python-dotenv>=1.0",  # run.py load_dotenv() for GPU_HOST/GPU_USER/HF_TOKEN
+    "pyyaml>=6.0",      # runner.yaml (tools/routing.py)
+    "python-dotenv>=1.0",  # run.py load_dotenv() for HF_TOKEN, AGENT_SECRET, ...
 ]
 
 [dependency-groups]

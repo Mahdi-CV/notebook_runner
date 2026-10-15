@@ -32,7 +32,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import results_db
-from status import effective_status, failure_line, load_manifest
+import routing
+from status import failure_line
 from teams_alert import post, text_block, wrap_card
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -67,18 +68,12 @@ def _detail_blocks(title: str, entries: list[dict], color: str, limit: int = 15)
 def build_card(conn, run: dict, rows: list[dict], log_name: str | None) -> tuple[dict, bool]:
     """Return (card, quiet). Reports the notebooks this run touched, their
     change since the previous result, and the dashboard-wide totals."""
-    notebooks = load_manifest()
-    partial_ok = {k: (v or {}).get("expected_result") == "partial" for k, v in notebooks.items()}
-
-    def passes(notebook: str, status: str | None) -> bool:
-        return effective_status(status, partial_ok.get(notebook, False))[1]
-
     passing, failing, infra, skipped = [], [], [], []
     for r in rows:
         name = r["notebook"]
         if r["phase"] == "skip":
             skipped.append(name)
-        elif passes(name, r["status"]):
+        elif r["status"] == "pass":
             passing.append(name)
         else:
             entry = {"name": name, "why": failure_line(r["issues"], r["message"])}
@@ -90,12 +85,12 @@ def build_card(conn, run: dict, rows: list[dict], log_name: str | None) -> tuple
 
     prev = results_db.previous_status(conn, run["run_id"])
     newly_failing = sorted(n for n in [e["name"] for e in failing + infra]
-                           if n in prev and passes(n, prev[n]))
-    newly_passing = sorted(n for n in passing if n in prev and not passes(n, prev[n]))
+                           if prev.get(n) == "pass")
+    newly_passing = sorted(n for n in passing if n in prev and prev[n] != "pass")
 
     latest = results_db.latest_by_notebook(conn)
-    tracked = [k for k, v in notebooks.items() if not (v or {}).get("skip")]
-    dash_pass = sum(k in latest and passes(k, latest[k]["status"]) for k in tracked)
+    tracked = [k for k, (_, reason) in routing.routes().items() if not reason]
+    dash_pass = sum(k in latest and latest[k]["status"] == "pass" for k in tracked)
     never = sum(k not in latest for k in tracked)
 
     tested = len(passing) + len(failing) + len(infra)
@@ -117,7 +112,7 @@ def build_card(conn, run: dict, rows: list[dict], log_name: str | None) -> tuple
     if newly_passing:
         facts.append(("Newly passing", _names(newly_passing, 5)))
     if skipped:
-        facts.append(("Skipped", _names(skipped, 5)))
+        facts.append(("No target", _names(skipped, 5)))
     if passing and (failing or infra):
         facts.append(("Passing", _names(passing, 10)))
 

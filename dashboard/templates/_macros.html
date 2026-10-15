@@ -1,7 +1,15 @@
-{% macro status_badge(status, counts_as_pass=false) -%}
-{%- set cls = {"pass": "ok", "partial": ("ok-soft" if counts_as_pass else "warn"), "fail": "bad",
+{% macro status_badge(status) -%}
+{%- set cls = {"pass": "ok", "partial": "warn", "fail": "bad",
                "never-tested": "muted", "skip": "muted"}.get(status, "bad") -%}
-<span class="badge {{ cls }}" title="{% if status == 'partial' %}{{ 'counts as passing (expected partial)' if counts_as_pass else 'partial — not an expected result for this notebook' }}{% endif %}">{{ status }}</span>
+<span class="badge {{ cls }}">{{ status }}</span>
+{%- endmacro %}
+
+{% macro requirements(req) -%}
+{{ req.hardware | join("/") }} · {{ req.gpus }} GPU{{ "s" if req.gpus > 1 }}
+{%- if req.gpu_memory_gb %} · {{ req.gpu_memory_gb }} GB/GPU{% endif %}
+{%- if req.memory_gb != 64 %} · {{ req.memory_gb }} GB RAM{% endif %}
+{%- if req.disk_gb != 100 %} · {{ req.disk_gb }} GB disk{% endif %}
+{%- if req.capabilities %} · needs {{ req.capabilities | sort | join(", ") }}{% endif %}
 {%- endmacro %}
 
 {% macro fixability_badge(f) -%}

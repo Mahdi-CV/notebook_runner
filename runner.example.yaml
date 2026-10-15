@@ -1,0 +1,58 @@
+# Where this runner may execute notebooks. Copy to runner.yaml (gitignored)
+# and describe your own targets; nothing here names a notebook.
+#
+# Each notebook declares what it needs in its own metadata (`metadata.ci`:
+# hardware, GPUs, memory, capabilities ...; see ROCm/gpuaidev
+# .github/CI_METADATA.md). run.py sends it to the first target below that
+# meets every requirement, and reports "no target" when none does
+# (`python3 tools/routing.py` prints every route).
+#
+# Common fields:
+#   type           ssh (default) or k8s
+#   hardware       product (mi300x, mi355x, rx7900xtx, ...) or architecture (gfx942, ...)
+#   gpus           GPUs available to one run
+#   gpu_memory_gb  memory per GPU
+#   capabilities   services the target provides that notebooks may need (e.g. ollama);
+#                  ssh targets also provide `docker` for notebooks that start containers
+#
+# ssh:  host, user, workspace_base (default /home/amd), agent_url (reach the host
+#       through tools/http_ssh_shim/, signed with AGENT_SECRET from .env)
+# k8s:  context, namespace, node_selector, tolerations, gpu_resource (default
+#       amd.com/gpu), workspace_size, shm_size, schedule_timeout_min,
+#       max_lifetime_hours; see tools/k8s_pod.py for one-time cluster setup
+
+targets:
+  instinct-node:
+    type: ssh
+    hardware: mi300x
+    gpus: 1
+    gpu_memory_gb: 192
+    host: gpu-node.example.com
+    user: root
+    agent_url: https://gpu-node.example.com/agent
+    capabilities: [ollama]
+
+  instinct-pool:
+    type: k8s
+    hardware: mi300x
+    gpus: 8
+    gpu_memory_gb: 192
+    context: my-cluster
+    namespace: notebook-runner
+    node_selector: {}
+    tolerations:
+      - {key: amd.com/gpu, operator: Exists, effect: NoSchedule}
+    workspace_size: 300Gi
+    shm_size: 8Gi
+    schedule_timeout_min: 45
+    max_lifetime_hours: 12
+
+  radeon-pool:
+    type: k8s
+    hardware: rx7900xtx
+    gpus: 1
+    gpu_memory_gb: 24
+    context: my-radeon-cluster
+    namespace: notebook-runner
+    workspace_size: 200Gi
+    shm_size: 8Gi

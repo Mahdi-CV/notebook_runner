@@ -1,8 +1,9 @@
 """
 Aggregate per-notebook regression results into a status dashboard.
 
-Reads results/*.json, cross-references against manifest.yaml, and prints a
-markdown summary + table. Supports --gap (work-order list), --json
+Reads results/*.json for every notebook in notebooks/ and prints a markdown
+summary + table. Notebooks no configured target can run are listed apart (see
+tools/routing.py). Supports --gap (work-order list), --json
 (machine-readable), --write (also write STATUS.md), --results-dir PATH.
 """
 
@@ -13,11 +14,11 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import yaml
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import routing
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_RESULTS_DIR = REPO_ROOT / "results"
-MANIFEST_PATH = REPO_ROOT / "manifest.yaml"
 STATUS_MD_PATH = REPO_ROOT / "STATUS.md"
 
 TS_FILENAME_RE = re.compile(r"^(?P<stem>.+)_(?P<ts>\d{8}T\d{6})\.json$")
@@ -26,15 +27,6 @@ CATEGORIES = ("inference", "fine_tune", "pretrain", "gpu_dev_optimize")
 
 def warn(msg: str) -> None:
     print(f"warning: {msg}", file=sys.stderr)
-
-
-def load_manifest() -> dict:
-    if not MANIFEST_PATH.exists():
-        warn(f"manifest not found at {MANIFEST_PATH}")
-        return {}
-    with open(MANIFEST_PATH) as f:
-        data = yaml.safe_load(f) or {}
-    return data.get("notebooks", {}) or {}
 
 
 def parse_result_filename(path: Path) -> tuple[str, datetime | None]:
@@ -81,58 +73,31 @@ def load_results(results_dir: Path) -> dict[str, dict]:
     return latest
 
 
-def category_of(manifest_key: str) -> str:
-    head = manifest_key.split("/", 1)[0]
+def category_of(key: str) -> str:
+    head = key.split("/", 1)[0]
     return head if head in CATEGORIES else "other"
 
 
-def build_notebook_rows(manifest: dict, results: dict[str, dict]) -> list[dict]:
-    """Build per-notebook rows, excluding skipped notebooks from totals.
+def build_notebook_rows(routes: dict[str, tuple[str | None, str]],
+                        results: dict[str, dict]) -> tuple[list[dict], dict[str, str]]:
+    """Return (rows for notebooks a target can run, {key: reason} for the rest).
 
-    Also logs warnings for orphan results (manifest skipped, or notebook not in manifest).
+    `routes` comes from routing.routes(). Also warns about results whose
+    notebook no longer exists.
     """
-    # Map manifest keys → their stem (filename without .ipynb)
-    manifest_stem_to_key: dict[str, str] = {}
-    for key in manifest:
-        stem = Path(key).stem
-        manifest_stem_to_key[stem] = key
-
     rows: list[dict] = []
-    used_stems: set[str] = set()
+    no_target: dict[str, str] = {}
+    for key, (target, reason) in routes.items():
+        if reason:
+            no_target[key] = reason
+        else:
+            rows.append(_build_row(key, target, results.get(Path(key).stem)))
 
-    for key, entry in manifest.items():
-        entry = entry or {}
-        stem = Path(key).stem
-        if entry.get("skip"):
-            if stem in results:
-                warn(f"manifest entry {key} is skip:true but has result file {results[stem]['path'].name}")
-            used_stems.add(stem)
-            continue
-
-        result = results.get(stem)
-        used_stems.add(stem)
-        rows.append(_build_row(key, entry, result))
-
-    # Orphans: results without a (non-skipped) manifest entry
+    stems = {Path(key).stem for key in routes}
     for stem, rec in results.items():
-        if stem in used_stems:
-            continue
-        warn(f"orphan result {rec['path'].name}: notebook stem '{stem}' not in manifest (or is skipped)")
-
-    return rows
-
-
-def effective_status(raw_status: str | None, expected_partial: bool) -> tuple[str, bool]:
-    """(status to display, whether it counts as passing) for a notebook's latest
-    result. Shared by STATUS.md and the web dashboard so they never disagree."""
-    if raw_status is None:
-        return "never-tested", False
-    if raw_status == "pass":
-        return "pass", True
-    if raw_status == "partial":
-        # partial counts as pass only when the manifest says so; displayed as partial regardless
-        return "partial", expected_partial
-    return raw_status, False
+        if stem not in stems:
+            warn(f"orphan result {rec['path'].name}: no notebook '{stem}' in notebooks/")
+    return rows, no_target
 
 
 def failure_line(issues: list | None, message: str | None = None, width: int = 80) -> str:
@@ -148,47 +113,27 @@ def failure_line(issues: list | None, message: str | None = None, width: int = 8
     return (message or "").strip()
 
 
-def _build_row(manifest_key: str, entry: dict, result: dict | None) -> dict:
-    category = category_of(manifest_key)
-    if result is None:
-        return {
-            "notebook": manifest_key,
-            "category": category,
-            "status": "never-tested",
-            "raw_status": None,
-            "counts_as_pass": False,
-            "last_run": None,
-            "image_tested": None,
-            "top_failure": "",
-            "cost_usd": None,
-            "expected_partial": entry.get("expected_result") == "partial",
-        }
-
-    payload = result["payload"]
-    raw_status = payload.get("status", "unknown")
-    expected_partial = entry.get("expected_result") == "partial"
-    status, counts_as_pass = effective_status(raw_status, expected_partial)
-
-    top_failure = failure_line(payload.get("issues")) if status in ("fail", "partial") else ""
-
+def _build_row(key: str, target: str | None, result: dict | None) -> dict:
+    payload = result["payload"] if result else {}
+    status = payload.get("status", "unknown") if result else "never-tested"
     return {
-        "notebook": manifest_key,
-        "category": category,
+        "notebook": key,
+        "category": category_of(key),
+        "target": target,
         "status": status,
-        "raw_status": raw_status,
-        "counts_as_pass": counts_as_pass,
-        "last_run": result["display_ts"],
+        "counts_as_pass": status == "pass",
+        "last_run": result["display_ts"] if result else None,
         "image_tested": payload.get("docker_image_resolved"),
-        "top_failure": top_failure,
+        "top_failure": failure_line(payload.get("issues"))
+        if status not in ("pass", "never-tested") else "",
         "cost_usd": payload.get("cost_usd"),
-        "expected_partial": expected_partial,
     }
 
 
 def compute_summary(rows: list[dict]) -> dict:
     total = len(rows)
     pass_count = sum(1 for r in rows if r["counts_as_pass"])
-    fail_count = sum(1 for r in rows if r["status"] == "fail")
+    fail_count = sum(1 for r in rows if r["status"] not in ("pass", "never-tested"))
     never_count = sum(1 for r in rows if r["status"] == "never-tested")
 
     now = datetime.now(tz=timezone.utc)
@@ -239,7 +184,7 @@ def fmt_cost(cost: float | None) -> str:
     return f"${cost:.2f}"
 
 
-def render_markdown(rows: list[dict], summary: dict) -> str:
+def render_markdown(rows: list[dict], summary: dict, no_target: dict[str, str]) -> str:
     lines: list[str] = []
 
     lines.append("# Notebook Regression Status")
@@ -264,26 +209,34 @@ def render_markdown(rows: list[dict], summary: dict) -> str:
 
     lines.append("## Notebooks")
     lines.append("")
-    lines.append("| Notebook | Category | Status | Last run (UTC) | Image tested | Top failure | Cost |")
-    lines.append("|---|---|---|---|---|---|---|")
+    lines.append("| Notebook | Category | Status | Target | Last run (UTC) | Image tested | Top failure | Cost |")
+    lines.append("|---|---|---|---|---|---|---|---|")
 
     sorted_rows = sorted(rows, key=lambda r: (r["category"], r["notebook"]))
     prev_cat: str | None = None
     for r in sorted_rows:
         if prev_cat is not None and r["category"] != prev_cat:
-            lines.append("| | | | | | | |")
+            lines.append("| | | | | | | | |")
         prev_cat = r["category"]
         lines.append(
-            "| {nb} | {cat} | {status} | {ts} | {img} | {fail} | {cost} |".format(
+            "| {nb} | {cat} | {status} | {target} | {ts} | {img} | {fail} | {cost} |".format(
                 nb=r["notebook"],
                 cat=r["category"],
                 status=r["status"],
+                target=r["target"] or "—",
                 ts=fmt_ts(r["last_run"]) if r["last_run"] else "—",
                 img=r["image_tested"] or "—",
                 fail=r["top_failure"].replace("|", "\\|"),
                 cost=fmt_cost(r["cost_usd"]),
             )
         )
+
+    if no_target:
+        lines += ["", "## No target", "",
+                  "Notebooks whose declared requirements no configured target meets.", "",
+                  "| Notebook | Why |", "|---|---|"]
+        lines += [f"| {k} | {why.replace('|', chr(92) + '|')} |"
+                  for k, why in sorted(no_target.items())]
 
     return "\n".join(lines) + "\n"
 
@@ -302,16 +255,8 @@ def render_gap(rows: list[dict]) -> str:
 
 
 def render_failing(rows: list[dict]) -> str:
-    """Print manifest-relative paths of notebooks whose latest result is a hard fail.
-
-    A 'partial' that counts as pass (expected_result: partial) is NOT failing.
-    A 'partial' that does NOT count as pass is treated as failing — it needs work.
-    """
-    failing = [
-        r for r in rows
-        if r["status"] == "fail"
-        or (r["status"] == "partial" and not r["counts_as_pass"])
-    ]
+    """Print the keys of notebooks whose latest result is not a pass."""
+    failing = [r for r in rows if r["status"] not in ("pass", "never-tested")]
     failing.sort(key=lambda r: r["notebook"])
     return "\n".join(r["notebook"] for r in failing) + ("\n" if failing else "")
 
@@ -329,13 +274,12 @@ def render_json(rows: list[dict], summary: dict) -> str:
             "notebook": r["notebook"],
             "category": r["category"],
             "status": r["status"],
-            "raw_status": r["raw_status"],
+            "target": r["target"],
             "counts_as_pass": r["counts_as_pass"],
             "last_run": ts_iso(r["last_run"]),
             "image_tested": r["image_tested"],
             "top_failure": r["top_failure"],
             "cost_usd": r["cost_usd"],
-            "expected_partial": r["expected_partial"],
         })
 
     return json.dumps({"summary": summary_out, "notebooks": notebooks_out}, indent=2) + "\n"
@@ -345,8 +289,8 @@ def main() -> int:
     p = argparse.ArgumentParser(description="Aggregate notebook regression results.")
     p.add_argument("--gap", action="store_true", help="Print only never-tested/stale notebook paths.")
     p.add_argument("--failing", action="store_true",
-                   help="Print only currently-failing notebook paths (status fail, "
-                        "or partial that does not count as pass).")
+                   help="Print only currently-failing notebook paths (latest result "
+                        "is not a pass).")
     p.add_argument("--json", dest="as_json", action="store_true", help="Print machine-readable JSON.")
     p.add_argument("--write", action="store_true", help="Also write STATUS.md to repo root.")
     p.add_argument("--results-dir", default=None, help="Override results directory.")
@@ -357,9 +301,8 @@ def main() -> int:
         return 2
 
     results_dir = Path(args.results_dir).resolve() if args.results_dir else DEFAULT_RESULTS_DIR
-    manifest = load_manifest()
     results = load_results(results_dir)
-    rows = build_notebook_rows(manifest, results)
+    rows, no_target = build_notebook_rows(routing.routes(), results)
     summary = compute_summary(rows)
 
     if args.gap:
@@ -374,7 +317,7 @@ def main() -> int:
         sys.stdout.write(render_json(rows, summary))
         return 0
 
-    md = render_markdown(rows, summary)
+    md = render_markdown(rows, summary, no_target)
     sys.stdout.write(md)
 
     if args.write:

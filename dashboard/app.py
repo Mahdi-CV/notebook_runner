@@ -1,14 +1,15 @@
 """
 Read-only web dashboard for the notebook regression pipeline.
 
-Serves results/runs.db (written by run.py and tools/results_db.py) and
-manifest.yaml. Every route is GET and the database is opened with a read-only
+Serves results/runs.db (written by run.py and tools/results_db.py), each
+notebook's declared requirements, and where the runner's targets (runner.yaml)
+would run it. Every route is GET and the database is opened with a read-only
 URI, so the dashboard can never change what it reports on.
 
 Run:
   uvicorn dashboard.app:app --host 0.0.0.0 --port 8080
 Environment:
-  NBR_ROOT  repo root to read results/ and manifest.yaml from (default: this repo)
+  NBR_ROOT  repo root to read results/, notebooks/ and runner.yaml from (default: this repo)
 """
 
 import json
@@ -18,19 +19,20 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import yaml
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.templating import Jinja2Templates
 
 ROOT = Path(os.environ.get("NBR_ROOT") or Path(__file__).resolve().parent.parent)
 DB_PATH = ROOT / "results" / "runs.db"
-MANIFEST_PATH = ROOT / "manifest.yaml"
+NOTEBOOKS_DIR = ROOT / "notebooks"
+CONFIG_PATH = ROOT / "runner.yaml"
 STALE_AFTER = timedelta(days=7)  # matches tools/status.py --gap
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 import results_db
-from status import category_of, effective_status, failure_line
+import routing
+from status import category_of, failure_line
 
 app = FastAPI(title="Notebook regression dashboard", docs_url=None, redoc_url=None,
               openapi_url=None)
@@ -49,9 +51,14 @@ def db() -> sqlite3.Connection | None:
     return conn
 
 
-def manifest() -> dict:
-    data = yaml.safe_load(MANIFEST_PATH.read_text()) or {}
-    return {"servers": data.get("servers") or {}, "notebooks": data.get("notebooks") or {}}
+def catalog() -> dict:
+    """Targets, and for every notebook its requirements and route."""
+    config = routing.load_config(CONFIG_PATH)
+    notebooks = {}
+    for key, (target, reason) in routing.routes(NOTEBOOKS_DIR, config).items():
+        notebooks[key] = {"req": routing.resolve(NOTEBOOKS_DIR / key, {})[0],
+                          "target": target, "reason": reason}
+    return {"targets": config["targets"], "notebooks": notebooks}
 
 
 # ── formatting ───────────────────────────────────────────────────────────────
@@ -99,9 +106,8 @@ for name, fn in {"ts": fmt_ts, "age": fmt_age, "cost": fmt_cost, "why": why}.ite
     templates.env.filters[name] = fn
 
 
-def notebook_row(key: str, entry: dict, latest: dict | None) -> dict:
-    expected_partial = (entry or {}).get("expected_result") == "partial"
-    status, counts = effective_status(latest["status"] if latest else None, expected_partial)
+def notebook_row(key: str, latest: dict | None) -> dict:
+    status = latest["status"] if latest else "never-tested"
     ts = parse_ts(latest["recorded_at"]) if latest else None
     stale = bool(latest) and (
         ts is None or ts < datetime.now(timezone.utc).replace(tzinfo=None) - STALE_AFTER)
@@ -110,8 +116,6 @@ def notebook_row(key: str, entry: dict, latest: dict | None) -> dict:
         "name": Path(key).name,
         "category": category_of(key),
         "status": status,
-        "counts_as_pass": counts,
-        "expected_partial": expected_partial,
         "latest": latest,
         "stale": stale,
     }
@@ -125,28 +129,27 @@ def render(request: Request, template: str, **ctx) -> HTMLResponse:
 
 @app.get("/", response_class=HTMLResponse)
 def overview(request: Request, category: str = "", status: str = ""):
-    m = manifest()
+    m = catalog()
     conn = db()
     latest = results_db.latest_by_notebook(conn) if conn else {}
 
-    rows, skipped = [], []
-    for key, entry in sorted(m["notebooks"].items()):
-        entry = entry or {}
-        if entry.get("skip"):
-            skipped.append({"key": key, "category": category_of(key),
-                            "reason": entry.get("skip_reason") or "", "latest": latest.get(key)})
+    rows, no_target = [], []
+    for key, nb in sorted(m["notebooks"].items()):
+        if nb["reason"]:
+            no_target.append({"key": key, "category": category_of(key),
+                              "reason": nb["reason"], "latest": latest.get(key)})
             continue
-        rows.append(notebook_row(key, entry, latest.get(key)))
+        rows.append({**notebook_row(key, latest.get(key)), "target": nb["target"]})
 
     summary = {
         "total": len(rows),
-        "passing": sum(r["counts_as_pass"] for r in rows),
+        "passing": sum(r["status"] == "pass" for r in rows),
         "pass": sum(r["status"] == "pass" for r in rows),
         "partial": sum(r["status"] == "partial" for r in rows),
         "fail": sum(r["status"] not in ("pass", "partial", "never-tested") for r in rows),
         "never": sum(r["status"] == "never-tested" for r in rows),
         "stale": sum(r["stale"] for r in rows),
-        "skipped": len(skipped),
+        "no_target": len(no_target),
         "last": max((r["latest"]["recorded_at"] for r in rows if r["latest"]), default=None),
     }
     categories = sorted({r["category"] for r in rows})
@@ -154,21 +157,20 @@ def overview(request: Request, category: str = "", status: str = ""):
              if (not category or r["category"] == category)
              and (not status or r["status"] == status
                   or (status == "fail" and r["status"] not in ("pass", "partial", "never-tested")))]
-    return render(request, "overview.html", rows=shown, skipped=skipped, summary=summary,
+    return render(request, "overview.html", rows=shown, no_target=no_target, summary=summary,
                   categories=categories, category=category, status=status)
 
 
 @app.get("/notebook/{key:path}", response_class=HTMLResponse)
 def notebook(request: Request, key: str):
-    m = manifest()
-    entry = m["notebooks"].get(key)
+    m = catalog()
+    nb = m["notebooks"].get(key)
     conn = db()
     history = results_db.notebook_history(conn, key) if conn else []
-    if entry is None and not history:
+    if nb is None and not history:
         raise HTTPException(404, f"Unknown notebook {key}")
-    row = notebook_row(key, entry or {}, history[0] if history else None)
-    return render(request, "notebook.html", key=key, entry=entry or {}, row=row,
-                  history=history, servers=m["servers"])
+    row = notebook_row(key, history[0] if history else None)
+    return render(request, "notebook.html", key=key, nb=nb, row=row, history=history)
 
 
 @app.get("/result/{result_id}", response_class=HTMLResponse)
@@ -181,13 +183,11 @@ def result(request: Request, result_id: int):
         payload = json.loads(res.get("payload_json") or "{}")
     except json.JSONDecodeError:
         payload = {}
-    m = manifest()
-    entry = m["notebooks"].get(res["notebook"]) or {}
-    status, counts = effective_status(res["status"], entry.get("expected_result") == "partial")
+    targets = routing.load_config(CONFIG_PATH)["targets"]
     return render(request, "result.html", res=res, payload=payload,
                   payload_pretty=json.dumps(payload, indent=2, ensure_ascii=False),
-                  fixes=payload.get("fixes") or [], status=status, counts_as_pass=counts,
-                  server=m["servers"].get(res.get("server") or ""), entry=entry)
+                  fixes=payload.get("fixes") or [], status=res["status"],
+                  target=targets.get(res.get("server") or ""))
 
 
 @app.get("/runs", response_class=HTMLResponse)
@@ -206,21 +206,16 @@ def run(request: Request, run_id: str):
         argv = " ".join(json.loads(run_row.get("argv") or "[]"))
     except json.JSONDecodeError:
         argv = run_row.get("argv") or ""
-    notebooks = manifest()["notebooks"]
-    for r in results:
-        entry = notebooks.get(r["notebook"]) or {}
-        r["display_status"], r["counts_as_pass"] = effective_status(
-            r["status"], entry.get("expected_result") == "partial")
     return render(request, "run.html", run=run_row, results=results, argv=argv)
 
 
-@app.get("/manifest", response_class=HTMLResponse)
-def manifest_page(request: Request):
-    m = manifest()
+@app.get("/targets", response_class=HTMLResponse)
+def targets_page(request: Request):
+    m = catalog()
     groups: dict[str, list] = {}
-    for key, entry in sorted(m["notebooks"].items()):
-        groups.setdefault(category_of(key), []).append({"key": key, **(entry or {})})
-    return render(request, "manifest.html", servers=m["servers"], groups=groups)
+    for key, nb in sorted(m["notebooks"].items()):
+        groups.setdefault(category_of(key), []).append({"key": key, **nb})
+    return render(request, "targets.html", targets=m["targets"], groups=groups)
 
 
 @app.get("/healthz", response_class=PlainTextResponse)

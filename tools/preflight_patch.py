@@ -1,11 +1,12 @@
 """
 Deterministic pre-flight patcher for notebook regression testing.
 
-Applies exactly 4 allowed patches — no more, no less:
+Applies exactly 5 allowed patches — no more, no less:
   1. notebook_login() → login(token=os.environ["HF_TOKEN"])
   2. input() calls → static string "test"
   3. Gradio .launch() → skip the cell
   4. Audio playback (IPython.display.Audio, sounddevice) → skip the cell
+  5. Cells the notebook tags `ci-skip` → skip the cell
 
 Usage:
   python3 preflight_patch.py --input nb.ipynb --output nb_patched.ipynb
@@ -18,6 +19,7 @@ import re
 from pathlib import Path
 
 SKIP_CELL = "# SKIPPED by preflight_patch: {reason}\npass"
+CI_SKIP_TAG = "ci-skip"  # the notebook's own "cannot run unattended" marker
 
 HF_LOGIN_REPLACEMENT = (
     'import os\n'
@@ -181,6 +183,12 @@ def patch_notebook(nb: dict) -> dict:
 
         src = "".join(cell.get("source", []))
         if not src.strip():
+            continue
+
+        if CI_SKIP_TAG in cell.get("metadata", {}).get("tags", []):
+            cell["source"] = [SKIP_CELL.format(reason=f"tagged {CI_SKIP_TAG}")]
+            cells_skipped.append({"cell_index": i, "type": "ci_skip_tag",
+                                  "description": f"Skipped cell tagged {CI_SKIP_TAG}"})
             continue
 
         for patch_type, patcher in PATCHERS:

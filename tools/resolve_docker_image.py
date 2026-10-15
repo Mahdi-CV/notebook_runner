@@ -19,7 +19,7 @@ import sys
 import urllib.error
 import urllib.request
 
-# Maps manifest hardware names to Docker Hub tag substrings.
+# Maps hardware names to Docker Hub tag substrings.
 # MI300/MI308 share the mi30x image; MI355/MI350 share mi35x.
 _HW_TAG = {
     "mi300x": "mi30x",
@@ -100,7 +100,12 @@ def resolve(repo: str, hardware: str) -> str:
     elif repo == "lmsysorg/sglang":
         candidates = [t for t in tags if hw_suffix in t]
     else:
-        candidates = [t for t in tags if hw_suffix in t]
+        # Repos a notebook names in metadata.ci.image: prefer tags built for
+        # this hardware; a repo without per-hardware tags gets its newest release.
+        candidates = [t for t in tags if hw_suffix in t] or [
+            t for t in tags
+            if t != "latest" and "nightly" not in t and re.search(r"\d+\.\d+", t)
+        ]
 
     if not candidates:
         available = ", ".join(tags[:10])

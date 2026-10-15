@@ -20,10 +20,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-import yaml
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_MANIFEST = REPO_ROOT / "manifest.yaml"
 DEFAULT_RESULTS_DIR = REPO_ROOT / "results"
 WRITE_RESULT_SCRIPT = REPO_ROOT / "tools" / "write_result.py"
 
@@ -33,10 +30,6 @@ GATED_MODEL_RE = re.compile(
 HTTP_TIMEOUT = 10
 SSH_TIMEOUT = 15
 USER_AGENT = "notebook-runner-env-check/0.1"
-MIN_DISK_GB = 100
-# Remote workspace base to check for free disk. Defaults to /home/amd for the
-# tw* servers; the self-hosted CI box sets WORKSPACE_BASE=/home/gh-runner.
-WORKSPACE_BASE = os.getenv("WORKSPACE_BASE", "/home/amd").rstrip("/")
 
 
 def warn(msg: str) -> None:
@@ -45,15 +38,6 @@ def warn(msg: str) -> None:
 
 def err(msg: str) -> None:
     print(f"error: {msg}", file=sys.stderr)
-
-
-def load_manifest(path: Path) -> dict:
-    if not path.exists():
-        warn(f"manifest not found at {path}")
-        return {}
-    with open(path) as f:
-        data = yaml.safe_load(f) or {}
-    return data.get("notebooks", {}) or {}
 
 
 def extract_model_ids(notebook_path: Path) -> list[str]:
@@ -256,7 +240,7 @@ def _gpu_verdict(chk: Check, count: int, gpus_required: int, where: str) -> Chec
             "cell_index": None,
             "error_type": "missing_dependency",
             "description": reason,
-            "proposed_fix": f"Run this notebook on a server with at least {gpus_required} GPU(s), or update the manifest gpus_required field.",
+            "proposed_fix": f"Run this notebook on a target with at least {gpus_required} GPU(s), or correct metadata.ci.gpus in the notebook.",
             "fixability": "infra_blocked",
         })
     else:
@@ -264,9 +248,9 @@ def _gpu_verdict(chk: Check, count: int, gpus_required: int, where: str) -> Chec
     return chk
 
 
-def run_check_disk(ssh_cmd: str) -> Check:
+def run_check_disk(ssh_cmd: str, workspace: str, need_gb: int) -> Check:
     chk = Check("Disk space")
-    remote = f"df -BG --output=avail {WORKSPACE_BASE} | tail -1 | tr -dc '0-9'"
+    remote = f"df -BG --output=avail {workspace} | tail -1 | tr -dc '0-9'"
     try:
         rc, out, serr = ssh_run(ssh_cmd, remote)
     except subprocess.TimeoutExpired:
@@ -290,14 +274,14 @@ def run_check_disk(ssh_cmd: str) -> Check:
         warn(f"could not parse disk avail from output: {out.strip()[:80]!r}")
         return chk
 
-    print(f"    {avail_gb} GB free on {WORKSPACE_BASE}; require >= {MIN_DISK_GB} GB")
-    if avail_gb < MIN_DISK_GB:
-        reason = f"only {avail_gb} GB free on {WORKSPACE_BASE}, need >= {MIN_DISK_GB} GB"
+    print(f"    {avail_gb} GB free on {workspace}; require >= {need_gb} GB")
+    if avail_gb < need_gb:
+        reason = f"only {avail_gb} GB free on {workspace}, need >= {need_gb} GB"
         chk.fail(reason, {
             "cell_index": None,
             "error_type": "missing_dependency",
             "description": reason,
-            "proposed_fix": f"Free disk space on the server until {WORKSPACE_BASE} has at least {MIN_DISK_GB} GB available.",
+            "proposed_fix": f"Free disk space on the server until {workspace} has at least {need_gb} GB available.",
             "fixability": "infra_blocked",
         })
     else:
@@ -332,10 +316,12 @@ def write_failure_result(
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Environment check for a notebook before the agent runs.")
-    p.add_argument("--notebook",       required=True, help="Notebook path as it appears in the manifest (e.g. inference/foo.ipynb)")
+    p.add_argument("--notebook",       required=True, help="Notebook key (e.g. inference/foo.ipynb)")
     p.add_argument("--notebook-local", required=True, help="Absolute path to the local .ipynb file to scan")
     p.add_argument("--ssh-cmd",        default=None,  help="Full SSH prefix (e.g. 'ssh -o ... user@host')")
-    p.add_argument("--manifest",       default=str(DEFAULT_MANIFEST), help="Path to manifest.yaml")
+    p.add_argument("--gpus",           type=int, default=1, help="GPUs the notebook needs (metadata.ci.gpus)")
+    p.add_argument("--disk-gb",        type=int, default=100, help="Free disk the notebook needs (metadata.ci.disk_gb)")
+    p.add_argument("--workspace-base", default="/home/amd", help="Remote dir whose free disk is checked")
     p.add_argument("--results-dir",    default=str(DEFAULT_RESULTS_DIR), help="Where to write result JSON on failure")
     p.add_argument("--write-result",   action="store_true", help="Write a result JSON on blocking failure")
     p.add_argument("--hf-token",       default=None, help="HuggingFace token (default: $HF_TOKEN)")
@@ -358,13 +344,7 @@ def main() -> int:
         err(f"could not read notebook: {e}")
         return 2
 
-    manifest_path = Path(args.manifest)
-    manifest = load_manifest(manifest_path)
-    entry = manifest.get(args.notebook)
-    if entry is None:
-        warn(f"notebook '{args.notebook}' not in manifest; defaulting gpus_required=1")
-        entry = {}
-    gpus_required = int(entry.get("gpus_required", 1) or 1)
+    gpus_required = args.gpus
 
     hf_token = args.hf_token or os.environ.get("HF_TOKEN")
     results_dir = Path(args.results_dir)
@@ -393,14 +373,14 @@ def main() -> int:
     print("CHECK 3/3: Disk space...")
     if args.gpus_per_node is not None:
         chk3 = Check("Disk space")
-        chk3.skip("k8s runner: the pod's /workspace volume is sized by the server config")
+        chk3.skip("k8s runner: the pod's /workspace volume is sized by the target config")
         chk3.print_result()
     elif not args.ssh_cmd:
         chk3 = Check("Disk space")
         chk3.skip("--ssh-cmd not provided")
         chk3.print_result()
     else:
-        chk3 = run_check_disk(args.ssh_cmd)
+        chk3 = run_check_disk(args.ssh_cmd, args.workspace_base.rstrip('/'), args.disk_gb)
         chk3.print_result()
     checks.append(chk3)
 

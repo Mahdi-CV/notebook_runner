@@ -51,6 +51,7 @@ from pathlib import Path
 
 # Reuse the dashboard's loaders so "latest result per notebook" is defined once.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import routing
 import status as status_mod
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -73,11 +74,6 @@ NOOP = "NOOP"
 def marker(kind: str, stem: str) -> str:
     """Hidden fingerprint embedded in issue/PR bodies for dedup."""
     return f"<!-- {MANAGED}: {kind}:{stem} -->"
-
-
-def _counts_as_pass(payload: dict, expected_partial: bool) -> bool:
-    st = payload.get("status")
-    return st == "pass" or (st == "partial" and expected_partial)
 
 
 def split_issues(payload: dict) -> tuple[list, list]:
@@ -117,14 +113,14 @@ def split_issues(payload: dict) -> tuple[list, list]:
 def desired_state(rows_payloads: list[dict]) -> list[dict]:
     """Compute the desired GitHub artifact for each notebook.
 
-    rows_payloads: list of {stem, rel_key, payload, expected_partial}
+    rows_payloads: list of {stem, rel_key, payload}
     Returns a list of plans: {stem, rel_key, want_issue, want_pr, pr_fixes,
     issue_problems, passes, payload}.
     """
     plans = []
     for r in rows_payloads:
         payload = r["payload"]
-        passes = _counts_as_pass(payload, r["expected_partial"])
+        passes = payload.get("status") == "pass"
         pr_fixes, issue_problems = split_issues(payload)
         plans.append({
             "stem": r["stem"],
@@ -247,16 +243,9 @@ def pr_comment_marker(pr_number: int) -> str:
 _STATUS_EMOJI = {"pass": "✅", "partial": "🟡", "fail": "❌"}
 
 
-def _pr_row_status(payload: dict, expected_partial: bool) -> str:
+def _pr_row_status(payload: dict) -> str:
     """Human status label for the table: pass / partial / fail / (no result)."""
-    st = payload.get("status")
-    if st == "pass":
-        return "pass"
-    if st == "partial":
-        return "pass" if expected_partial else "partial"
-    if st == "fail":
-        return "fail"
-    return st or "unknown"
+    return payload.get("status") or "unknown"
 
 
 def _top_failure_reason(payload: dict) -> str:
@@ -278,31 +267,24 @@ def _top_failure_reason(payload: dict) -> str:
 def build_pr_comment_rows(changed: list[str], results_dir: Path) -> list[dict]:
     """For each changed notebook (rel path), pull its latest result payload.
 
-    Returns rows: {rel_key, stem, payload_or_None, expected_partial}. Notebooks
-    with no result JSON are reported explicitly as "no result" — never hidden.
+    Returns rows: {rel_key, stem, payload_or_None}. Notebooks with no result
+    JSON are reported explicitly as "no result" — never hidden.
     """
-    manifest = status_mod.load_manifest()
     results = status_mod.load_results(results_dir)
     rows = []
     for rel in changed:
         stem = Path(rel).stem
-        entry = manifest.get(rel) or manifest.get(Path(rel).name) or {}
         rec = results.get(stem)
-        rows.append({
-            "rel_key": rel,
-            "stem": stem,
-            "payload": rec["payload"] if rec else None,
-            "expected_partial": entry.get("expected_result") == "partial",
-        })
+        rows.append({"rel_key": rel, "stem": stem, "payload": rec["payload"] if rec else None})
     return rows
 
 
 def render_pr_comment(pr_number: int, rows: list[dict]) -> str:
     """One Markdown comment: header + per-notebook status table + failure detail."""
     n_total = len(rows)
-    n_pass = sum(1 for r in rows if r["payload"] and _pr_row_status(r["payload"], r["expected_partial"]) == "pass")
-    n_fail = sum(1 for r in rows if r["payload"] and _pr_row_status(r["payload"], r["expected_partial"]) == "fail")
-    n_partial = sum(1 for r in rows if r["payload"] and _pr_row_status(r["payload"], r["expected_partial"]) == "partial")
+    n_pass = sum(1 for r in rows if r["payload"] and _pr_row_status(r["payload"]) == "pass")
+    n_fail = sum(1 for r in rows if r["payload"] and _pr_row_status(r["payload"]) == "fail")
+    n_partial = sum(1 for r in rows if r["payload"] and _pr_row_status(r["payload"]) == "partial")
     n_missing = sum(1 for r in rows if not r["payload"])
 
     lines = [
@@ -325,7 +307,7 @@ def render_pr_comment(pr_number: int, rows: list[dict]) -> str:
         if not r["payload"]:
             lines.append(f"| `{r['rel_key']}` | ⚠️ no result | _agent produced no result JSON_ |")
             continue
-        st = _pr_row_status(r["payload"], r["expected_partial"])
+        st = _pr_row_status(r["payload"])
         emoji = _STATUS_EMOJI.get(st, "❔")
         detail = "—" if st == "pass" else _top_failure_reason(r["payload"])
         # Escape pipes in detail so the table doesn't break.
@@ -388,7 +370,7 @@ def run_pr_comment(pr_number: int, changed: list[str], repo: str | None,
 
     mode = "PUBLISH" if publish else "DRY-RUN"
     n_fail = sum(1 for r in rows if r["payload"]
-                 and _pr_row_status(r["payload"], r["expected_partial"]) == "fail")
+                 and _pr_row_status(r["payload"]) == "fail")
     print(f"\n[{mode}] pr-comment on PR #{pr_number} → {len(rows)} changed notebook(s), "
           f"{n_fail} failing")
     print(f"Preview written to {preview}")
@@ -534,24 +516,14 @@ def write_previews(plans: list[dict]) -> None:
 
 
 def load_rows_payloads(results_dir: Path) -> list[dict]:
-    """Latest result payload per manifest notebook (skips never-tested / skipped)."""
-    manifest = status_mod.load_manifest()
+    """Latest result payload per notebook a target can run (skips never-tested)."""
     results = status_mod.load_results(results_dir)
     out = []
-    for key, entry in manifest.items():
-        entry = entry or {}
-        if entry.get("skip"):
+    for key, (_, reason) in routing.routes().items():
+        rec = results.get(Path(key).stem)
+        if reason or rec is None:
             continue
-        stem = Path(key).stem
-        rec = results.get(stem)
-        if rec is None:
-            continue
-        out.append({
-            "stem": stem,
-            "rel_key": key,
-            "payload": rec["payload"],
-            "expected_partial": entry.get("expected_result") == "partial",
-        })
+        out.append({"stem": Path(key).stem, "rel_key": key, "payload": rec["payload"]})
     return out
 
 
