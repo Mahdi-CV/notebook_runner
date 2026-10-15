@@ -293,7 +293,7 @@ back to the verification result it acted on:
 `results/*.json` is a latest-wins cache that feeds `STATUS.md`. Every `run.py`
 invocation also appends to `results/runs.db` (SQLite, gitignored): one `runs`
 row per invocation, one `results` row per notebook per phase (`verify` / `fix` /
-`skip`, with cost and turns), and one `issues` row per diagnosed issue. Runner
+`skip`, with cost, turns and the full result payload, issues included). Runner
 failures that never produced a JSON file (crashes, agent wrote no result) are
 recorded too. `ci_run.py` passes `--run-id` so both of its batches form one run.
 

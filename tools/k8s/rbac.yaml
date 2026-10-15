@@ -4,7 +4,9 @@
 # Everything is confined to one namespace. The runner's agent runs with
 # --dangerously-skip-permissions and can read whatever credential the runner
 # holds, so the kubeconfig minted from this ServiceAccount must be able to do
-# exactly what k8s_pod.py does here, and nothing anywhere else.
+# exactly what k8s_pod.py does here, and nothing anywhere else. It has no access
+# to Secrets: pods get HF_TOKEN from the admin-created `hf-token` Secret (see
+# tools/k8s_pod.py) through the kubelet.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -40,9 +42,6 @@ rules:
   - apiGroups: [""]
     resources: [pods/log]
     verbs: [get]
-  - apiGroups: [""]
-    resources: [secrets]
-    verbs: [create, get, list, patch, delete]
   - apiGroups: [""]
     resources: [events]
     verbs: [list]

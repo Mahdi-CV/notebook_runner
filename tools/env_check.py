@@ -22,7 +22,6 @@ from pathlib import Path
 
 import yaml
 
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MANIFEST = REPO_ROOT / "manifest.yaml"
 DEFAULT_RESULTS_DIR = REPO_ROOT / "results"
@@ -102,7 +101,8 @@ def ssh_run(ssh_cmd: str, remote_cmd: str) -> tuple[int, str, str]:
     """Run a command via ssh. Returns (returncode, stdout, stderr)."""
     full = f"{ssh_cmd} {remote_cmd!r}"
     proc = subprocess.run(
-        full, shell=True, capture_output=True, text=True, timeout=SSH_TIMEOUT
+        full, shell=True, capture_output=True, text=True, timeout=SSH_TIMEOUT,
+        check=False,
     )
     return proc.returncode, proc.stdout, proc.stderr
 
@@ -219,7 +219,7 @@ def run_check_gpu(ssh_cmd: str, gpus_required: int) -> Check:
         chk.warn("SSH timed out")
         warn("SSH timed out during GPU count check")
         return chk
-    except Exception as e:
+    except OSError as e:
         chk.warn(f"SSH error: {e}")
         warn(f"SSH error during GPU count check: {e}")
         return chk
@@ -273,7 +273,7 @@ def run_check_disk(ssh_cmd: str) -> Check:
         chk.warn("SSH timed out")
         warn("SSH timed out during disk space check")
         return chk
-    except Exception as e:
+    except OSError as e:
         chk.warn(f"SSH error: {e}")
         warn(f"SSH error during disk space check: {e}")
         return chk
@@ -322,7 +322,7 @@ def write_failure_result(
         "--fixes", "[]",
         "--results-dir", str(results_dir),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         err(f"write_result.py failed (exit {proc.returncode}): {proc.stderr.strip()}")
     else:

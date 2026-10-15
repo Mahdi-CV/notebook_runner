@@ -17,7 +17,7 @@ Prints the path of the written file to stdout.
 import argparse
 import json
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -51,7 +51,8 @@ def write_result(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     nb_name = Path(notebook_path).stem
-    timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    timestamp = now.strftime("%Y%m%dT%H%M%S")
     out_file = out_dir / f"{nb_name}_{timestamp}.json"
 
     payload = {
@@ -60,7 +61,7 @@ def write_result(
         "summary": summary,
         "issues": issues or [],
         "fixes": fixes or [],
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": now.isoformat(),
         "agent": agent,
     }
     if docker_image_resolved:

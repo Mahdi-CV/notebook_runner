@@ -16,8 +16,8 @@ Prints ERROR: <message> to stderr and exits 1 on failure.
 import json
 import re
 import sys
-import urllib.request
 import urllib.error
+import urllib.request
 
 # Maps manifest hardware names to Docker Hub tag substrings.
 # MI300/MI308 share the mi30x image; MI355/MI350 share mi35x.

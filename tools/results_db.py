@@ -3,8 +3,8 @@ SQLite history of every notebook regression run.
 
 results/*.json is a latest-wins cache that feeds STATUS.md; this database is the
 append-only record behind it. run.py writes to it unconditionally — one `runs`
-row per invocation, one `results` row per notebook per phase (verify / fix /
-skip), and one `issues` row per diagnosed issue — so questions like "when did
+row per invocation and one `results` row per notebook per phase (verify / fix /
+skip) — so questions like "when did
 this notebook start failing?" or "what did last week's pass cost?" are a query,
 not an archaeology dig through JSON files.
 
@@ -69,19 +69,11 @@ CREATE TABLE IF NOT EXISTS results (
     UNIQUE (result_file)
 );
 
-CREATE TABLE IF NOT EXISTS issues (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    result_id       INTEGER NOT NULL REFERENCES results(id) ON DELETE CASCADE,
-    cell_index      INTEGER,
-    error_type      TEXT,
-    fixability      TEXT,
-    description     TEXT,
-    proposed_fix    TEXT
-);
+-- Issues live in payload_json; query them with json_each(payload_json, '$.issues').
+DROP TABLE IF EXISTS issues;
 
 CREATE INDEX IF NOT EXISTS idx_results_notebook ON results(notebook, recorded_at);
 CREATE INDEX IF NOT EXISTS idx_results_run      ON results(run_id);
-CREATE INDEX IF NOT EXISTS idx_issues_result    ON issues(result_id);
 
 -- Most recent non-skip result per notebook: the DB-side analogue of STATUS.md.
 -- Ordered by recorded_at, not id: a backfilled import gets higher ids than live
@@ -203,19 +195,7 @@ def record_result(conn: sqlite3.Connection, run_id: str | None, notebook: str,
                 normalize_ts(result.get("timestamp")),
             ),
         )
-        if cur.rowcount == 0:
-            return None
-        result_id = cur.lastrowid
-        conn.executemany(
-            "INSERT INTO issues (result_id, cell_index, error_type, fixability, "
-            "description, proposed_fix) VALUES (?, ?, ?, ?, ?, ?)",
-            [
-                (result_id, i.get("cell_index"), i.get("error_type"),
-                 i.get("fixability"), i.get("description"), i.get("proposed_fix"))
-                for i in (result.get("issues") or []) if isinstance(i, dict)
-            ],
-        )
-    return result_id
+    return cur.lastrowid if cur.rowcount else None
 
 
 def run_results(conn: sqlite3.Connection, run_id: str) -> tuple[dict | None, list[dict]]:
@@ -230,15 +210,23 @@ def run_results(conn: sqlite3.Connection, run_id: str) -> tuple[dict | None, lis
         """,
         (run_id,),
     ).fetchall()
-    return (dict(run) if run else None), _with_issues(conn, rows)
+    return (dict(run) if run else None), _with_issues(rows)
 
 
-def _with_issues(conn: sqlite3.Connection, rows) -> list[dict]:
+ISSUE_FIELDS = ("cell_index", "error_type", "fixability", "description", "proposed_fix")
+
+
+def _with_issues(rows) -> list[dict]:
+    """Rows as dicts, each with `issues` parsed from its payload."""
     out = []
     for row in rows:
         d = dict(row)
-        d["issues"] = [dict(i) for i in conn.execute(
-            "SELECT * FROM issues WHERE result_id = ? ORDER BY id", (row["id"],))]
+        try:
+            issues = json.loads(d.get("payload_json") or "{}").get("issues") or []
+        except (json.JSONDecodeError, AttributeError):
+            issues = []
+        d["issues"] = [{k: i.get(k) for k in ISSUE_FIELDS}
+                       for i in issues if isinstance(i, dict)]
         out.append(d)
     return out
 
@@ -246,7 +234,7 @@ def _with_issues(conn: sqlite3.Connection, rows) -> list[dict]:
 def latest_by_notebook(conn: sqlite3.Connection) -> dict[str, dict]:
     """Latest non-skip result per notebook key, with its issues."""
     rows = conn.execute("SELECT * FROM latest_results").fetchall()
-    return {r["notebook"]: r for r in _with_issues(conn, rows)}
+    return {r["notebook"]: r for r in _with_issues(rows)}
 
 
 def notebook_history(conn: sqlite3.Connection, notebook: str) -> list[dict]:
@@ -254,12 +242,33 @@ def notebook_history(conn: sqlite3.Connection, notebook: str) -> list[dict]:
     rows = conn.execute(
         "SELECT * FROM results WHERE notebook = ? AND phase != 'skip' "
         "ORDER BY recorded_at DESC, id DESC", (notebook,)).fetchall()
-    return _with_issues(conn, rows)
+    return _with_issues(rows)
+
+
+def previous_status(conn: sqlite3.Connection, run_id: str) -> dict[str, str]:
+    """{notebook: status} of each notebook's last non-skip result recorded
+    before `run_id` started, for the notebooks that run touched."""
+    run = conn.execute("SELECT started_at FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+    if run is None:
+        return {}
+    rows = conn.execute(
+        """
+        SELECT r.notebook, (
+            SELECT p.status FROM results p
+            WHERE p.notebook = r.notebook AND p.phase != 'skip'
+              AND p.recorded_at < ? AND p.run_id IS NOT ?
+            ORDER BY p.recorded_at DESC, p.id DESC LIMIT 1
+        ) AS status
+        FROM (SELECT DISTINCT notebook FROM results WHERE run_id = ?) r
+        """,
+        (normalize_ts(run["started_at"]), run_id, run_id),
+    ).fetchall()
+    return {r["notebook"]: r["status"] for r in rows if r["status"]}
 
 
 def get_result(conn: sqlite3.Connection, result_id: int) -> dict | None:
     row = conn.execute("SELECT * FROM results WHERE id = ?", (result_id,)).fetchone()
-    return _with_issues(conn, [row])[0] if row else None
+    return _with_issues([row])[0] if row else None
 
 
 def list_runs(conn: sqlite3.Connection, limit: int = 100) -> list[dict]:

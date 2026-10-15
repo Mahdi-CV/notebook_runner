@@ -1,13 +1,10 @@
-# GPU node Caddy config.
+# Route to add inside the GPU node's existing Caddy site block (the node's own
+# site config, e.g. a workshop front door, stays as it is):
 #
-# /agent/* -> the HMAC-authenticated exec/upload server (agent_server.py),
-#             which is the SSH replacement for this pipeline.
-# everything else -> the existing service on :8888
-:80 {
-	handle /agent/* {
-		reverse_proxy 127.0.0.1:8899
-	}
-	handle {
-		reverse_proxy localhost:8888
-	}
+#   /agent/* -> the HMAC-authenticated exec server (agent_server.py)
+#
+# AGENT_URL in .env is then https://<site>/agent.
+
+handle /agent/* {
+	reverse_proxy 127.0.0.1:8899
 }

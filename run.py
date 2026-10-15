@@ -55,8 +55,9 @@ RESULTS_DIR = (HERE / "results").resolve()
 FIXES_DIR   = (HERE / "fixes").resolve()   # genuine-fix notebooks retrieved by the fixer (for PRs)
 
 sys.path.insert(0, str(TOOLS_DIR))
-import k8s_pod  # noqa: E402
-import results_db  # noqa: E402
+import k8s_pod
+import results_db
+from status import effective_status
 
 # With AGENT_URL/AGENT_SECRET set, route every ssh/scp this process spawns —
 # including the agent's own Bash calls — through the HMAC-signed HTTP shim, for
@@ -363,7 +364,7 @@ def handle_stream(proc, notebook_name: str, agent_label: str = "") -> dict:
                         poll_active = True
                         poll_start  = time.time()
                         poll_label  = "Waiting"
-                        print(f" ⏳", end="", flush=True)
+                        print(" ⏳", end="", flush=True)
                     else:
                         elapsed = int(time.time() - poll_start)
                         print(f"\r  ▶  {poll_label} ⏳ {elapsed}s elapsed", end="", flush=True)
@@ -383,7 +384,7 @@ def handle_stream(proc, notebook_name: str, agent_label: str = "") -> dict:
             meta["cost_usd"]  = event.get("total_cost_usd", event.get("cost_usd", 0.0))
             meta["num_turns"] = event.get("num_turns", 0)
             if event.get("subtype") == "error_max_turns":
-                print(f"\n  ✗ Hit max turns limit", flush=True)
+                print("\n  ✗ Hit max turns limit", flush=True)
 
     proc.wait()
     return meta
@@ -511,6 +512,36 @@ def k8s_down(server_name: str, server: dict, pod: str) -> None:
 
 # ── Core runner ───────────────────────────────────────────────────────────────
 
+def _transport(notebook_path: Path, phase: str, host: str, user: str,
+               hf_token: str | None, manifest_entry: dict, server_name: str | None,
+               server: dict | None, run_id: str,
+               manifest_path: Path | None) -> tuple[str | None, str]:
+    """Return (pod or None, runtime-context block) for one agent run: copy the
+    notebook to the SSH host, or name the pod the agent will provision.
+    Raises RuntimeError if the copy fails."""
+    if _is_k8s(server):
+        return k8s_runtime(server_name, server, manifest_path or HERE / "manifest.yaml",
+                           notebook_path, manifest_entry.get("gpus_required") or 1,
+                           phase, run_id)
+    return None, _ssh_runtime(host, user, hf_token, scp_notebook(notebook_path, host, user))
+
+
+def _manifest_prompt_lines(manifest_entry: dict) -> list[str]:
+    if not manifest_entry:
+        return []
+    lines = ["", "## Manifest overrides"]
+    docker_overrides = manifest_entry.get("docker_overrides")
+    if docker_overrides:
+        lines.append("Docker image overrides (regex → replacement):")
+        lines += [f"  - `{pat}` → `{rep}`" for pat, rep in docker_overrides.items()]
+    if manifest_entry.get("expected_result") == "partial":
+        lines.append("expected_result=partial: a 'partial' outcome counts as passing. "
+                     "Do not retry indefinitely if only a secondary check fails.")
+    if manifest_entry.get("notes"):
+        lines.append(f"Known issues / notes: {manifest_entry['notes'].strip()}")
+    return lines
+
+
 def run_notebook(notebook_path: Path, host: str, user: str,
                  hf_token: str | None, manifest_entry: dict,
                  server_hardware: str | None, interactive: bool,
@@ -532,48 +563,22 @@ def run_notebook(notebook_path: Path, host: str, user: str,
     if env_blocked is not None:
         return env_blocked
 
-    # 1. Transport: copy the notebook to the SSH host, or name the pod the
-    #    agent will provision (infrastructure — not the agent's job)
-    pod = None
-    if _is_k8s(server):
-        pod, transport_ctx = k8s_runtime(
-            server_name, server, manifest_path or HERE / "manifest.yaml", notebook_path,
-            manifest_entry.get("gpus_required") or 1, "verify", run_id)
-    else:
-        try:
-            remote_path = scp_notebook(notebook_path, host, user)
-        except RuntimeError as e:
-            return {"status": "fail", "message": str(e), "cost_usd": None}
-        transport_ctx = _ssh_runtime(host, user, hf_token, remote_path)
+    try:
+        pod, transport_ctx = _transport(notebook_path, "verify", host, user, hf_token,
+                                        manifest_entry, server_name, server, run_id,
+                                        manifest_path)
+    except RuntimeError as e:
+        return {"status": "fail", "message": str(e), "cost_usd": None}
 
-    # 2. Build the task prompt (same information as original context.py)
-    prompt_lines = [
+    prompt = "\n".join([
         f"Run the regression test for this notebook: {notebook_path}",
         "",
-        "Follow the playbook in CLAUDE.md exactly. Start by reading the notebook "
-        "with the Read tool, then proceed through all phases. When done, call "
-        "write_result.py then finish. Do not retry content failures — report them accurately.",
-    ]
-    if manifest_entry:
-        prompt_lines += ["", "## Manifest overrides"]
-        docker_overrides = manifest_entry.get("docker_overrides")
-        if docker_overrides:
-            prompt_lines.append("Docker image overrides (regex → replacement):")
-            for pat, rep in docker_overrides.items():
-                prompt_lines.append(f"  - `{pat}` → `{rep}`")
-        expected = manifest_entry.get("expected_result")
-        if expected == "partial":
-            prompt_lines.append(
-                "expected_result=partial: a 'partial' outcome counts as passing. "
-                "Do not retry indefinitely if only a secondary check fails."
-            )
-        notes = manifest_entry.get("notes")
-        if notes:
-            prompt_lines.append(f"Known issues / notes: {notes.strip()}")
+        ("Follow the playbook in CLAUDE.md exactly. Start by reading the notebook "
+         "with the Read tool, then proceed through all phases. When done, call "
+         "write_result.py then finish. Do not retry content failures — report them accurately."),
+        *_manifest_prompt_lines(manifest_entry),
+    ])
 
-    prompt = "\n".join(prompt_lines)
-
-    # 3. Runtime context injected into system prompt — replaces SYSTEM_TEMPLATE.format()
     runtime_ctx = f"""## Runtime Context for this Run
 
 {transport_ctx}
@@ -596,7 +601,16 @@ write_result (call this when done):
 """
 
     try:
-        return _run_verify_agent(notebook_path, prompt, runtime_ctx, interactive)
+        if interactive:
+            # No -p: the user converses with claude; pick up whatever result it wrote.
+            print(f"\n  Opening interactive Claude session for {notebook_path.name}")
+            print("  Runtime context is in the system prompt. Type your instructions.\n")
+            started = time.time()
+            subprocess.run(["claude", "--append-system-prompt", runtime_ctx],
+                           cwd=str(HERE), check=False)
+            result = _find_latest_result(notebook_path, since=started)
+            return result or {"status": "unknown", "message": "Interactive session ended"}
+        return _run_agent("VERIFY", notebook_path, prompt, runtime_ctx)
     finally:
         if pod:
             k8s_down(server_name, server, pod)
@@ -620,32 +634,19 @@ For commands that need HF_TOKEN:
 """
 
 
-def _run_verify_agent(notebook_path: Path, prompt: str, runtime_ctx: str,
-                      interactive: bool) -> dict:
-    # 4. Interactive mode: drop -p flag, let user converse with claude normally
-    if interactive:
-        print(f"\n  Opening interactive Claude session for {notebook_path.name}")
-        print(f"  Runtime context is in the system prompt. Type your instructions.\n")
-        started = time.time()
-        subprocess.run(
-            ["claude", "--append-system-prompt", runtime_ctx],
-            cwd=str(HERE)
-        )
-        # In interactive mode, find the result file manually after session ends
-        result = _find_latest_result(notebook_path, since=started)
-        return result or {"status": "unknown", "message": "Interactive session ended"}
+def _run_agent(label: str, notebook_path: Path, prompt: str, system_prompt: str) -> dict:
+    """Run one headless agent and return the result JSON it wrote, plus cost.
 
-    # 5. Headless mode: fully autonomous
-    #
-    # A one-shot `claude -p` has no scheduler to resume it, so deny the
-    # wakeup/cron tools and make the agent poll in-turn (CLAUDE.md).
-    print(f"\n  Starting Claude Code agent (headless)…", flush=True)
+    A one-shot `claude -p` has no scheduler to resume it, so deny the
+    wakeup/cron tools and make the agent poll in-turn (CLAUDE.md).
+    """
+    print(f"\n  Starting {label.lower()} agent (headless)…", flush=True)
     started = time.time()
     proc = subprocess.Popen(
         [
             "claude",
             "-p", prompt,
-            "--append-system-prompt", runtime_ctx,
+            "--append-system-prompt", system_prompt,
             "--output-format", "stream-json",
             "--verbose",
             "--max-turns", "200",
@@ -657,22 +658,15 @@ def _run_verify_agent(notebook_path: Path, prompt: str, runtime_ctx: str,
         text=True,
         cwd=str(HERE),
     )
+    meta = handle_stream(proc, notebook_path.name, agent_label=label)
 
-    meta = handle_stream(proc, notebook_path.name, agent_label="VERIFY")
-
-    # 6. Read back the result JSON written by write_result.py
-    result = _find_latest_result(notebook_path, since=started)
-    if result:
-        result["cost_usd"]  = meta.get("cost_usd")
-        result["num_turns"] = meta.get("num_turns")
-        return result
-
-    return {
-        "status":    "fail",
-        "message":   "Agent finished but did not write a result file",
-        "cost_usd":  meta.get("cost_usd"),
-        "num_turns": meta.get("num_turns"),
+    result = _find_latest_result(notebook_path, since=started) or {
+        "status": "fail",
+        "message": f"{label.capitalize()} agent finished but did not write a result file",
     }
+    result["cost_usd"]  = meta.get("cost_usd")
+    result["num_turns"] = meta.get("num_turns")
+    return result
 
 
 def run_fixer(notebook_path: Path, host: str, user: str,
@@ -686,28 +680,21 @@ def run_fixer(notebook_path: Path, host: str, user: str,
 
     FIXES_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 0. Check for auto_fixable issues — skip if none
+    # Check for auto_fixable issues — skip if none
     if not _has_auto_fixable_issues(verification_result_path):
         print("  No auto_fixable issues — skipping fixer agent", flush=True)
         result = _find_latest_result(notebook_path)
         return result or {"status": "fail", "message": "No auto_fixable issues"}
 
-    # 1. Transport: copy to the SSH host (verification cleaned up), or name the
-    #    fixer's own pod (the verify pod is already gone)
-    pod = None
-    if _is_k8s(server):
-        pod, transport_ctx = k8s_runtime(
-            server_name, server, manifest_path or HERE / "manifest.yaml", notebook_path,
-            manifest_entry.get("gpus_required") or 1, "fix", run_id)
-    else:
-        try:
-            remote_path = scp_notebook(notebook_path, host, user)
-        except RuntimeError as e:
-            return {"status": "fail", "message": str(e), "cost_usd": None}
-        transport_ctx = _ssh_runtime(host, user, hf_token, remote_path)
+    # The verify run cleaned up after itself, so copy again / use a fresh pod.
+    try:
+        pod, transport_ctx = _transport(notebook_path, "fix", host, user, hf_token,
+                                        manifest_entry, server_name, server, run_id,
+                                        manifest_path)
+    except RuntimeError as e:
+        return {"status": "fail", "message": str(e), "cost_usd": None}
 
-    # 2. Build the fixer prompt
-    prompt_lines = [
+    prompt = "\n".join([
         f"Fix the issues identified by the verification agent for: {notebook_path}",
         "",
         f"The verification result is at: {verification_result_path}",
@@ -716,20 +703,9 @@ def run_fixer(notebook_path: Path, host: str, user: str,
         "Start by reading the verification result JSON and the notebook,",
         "then proceed through all steps. Only fix issues marked auto_fixable.",
         "Write the final result via write_result.py, then finish.",
-    ]
-    if manifest_entry:
-        expected = manifest_entry.get("expected_result")
-        if expected == "partial":
-            prompt_lines.append(
-                "\nexpected_result=partial: a 'partial' outcome counts as passing."
-            )
-        notes = manifest_entry.get("notes")
-        if notes:
-            prompt_lines.append(f"\nKnown issues / notes: {notes.strip()}")
+        *_manifest_prompt_lines(manifest_entry),
+    ])
 
-    prompt = "\n".join(prompt_lines)
-
-    # 3. Build runtime context (same as verification + VERIFICATION_RESULT)
     runtime_ctx = f"""## Runtime Context for this Fix Run
 
 {transport_ctx}
@@ -754,60 +730,13 @@ write_result (call this when done):
     --verification-result "{verification_result_path}" \\
     --results-dir "{RESULTS_DIR}"
 """
-
-    # 4. Read CLAUDE_FIX.md and append to system prompt
-    fixer_playbook_path = HERE / "CLAUDE_FIX.md"
-    with open(fixer_playbook_path) as f:
-        fixer_playbook = f.read()
-
-    system_prompt = fixer_playbook + "\n\n---\n\n" + runtime_ctx
+    system_prompt = (HERE / "CLAUDE_FIX.md").read_text() + "\n\n---\n\n" + runtime_ctx
 
     try:
-        return _run_fix_agent(notebook_path, prompt, system_prompt)
+        return _run_agent("FIX", notebook_path, prompt, system_prompt)
     finally:
         if pod:
             k8s_down(server_name, server, pod)
-
-
-def _run_fix_agent(notebook_path: Path, prompt: str, system_prompt: str) -> dict:
-    # 5. Spawn headless fixer agent
-    #
-    # A one-shot `claude -p` has no scheduler to resume it, so deny the
-    # wakeup/cron tools and make the agent poll in-turn (CLAUDE.md).
-    print(f"\n  Starting fixer agent (headless)…", flush=True)
-    started = time.time()
-    proc = subprocess.Popen(
-        [
-            "claude",
-            "-p", prompt,
-            "--append-system-prompt", system_prompt,
-            "--output-format", "stream-json",
-            "--verbose",
-            "--max-turns", "200",
-            "--dangerously-skip-permissions",
-            "--disallowedTools", "ScheduleWakeup,CronCreate,CronList,CronDelete",
-        ],
-        stdout=subprocess.PIPE,
-        stderr=sys.stderr,
-        text=True,
-        cwd=str(HERE),
-    )
-
-    meta = handle_stream(proc, notebook_path.name, agent_label="FIX")
-
-    # 6. Read back the result JSON
-    result = _find_latest_result(notebook_path, since=started)
-    if result:
-        result["cost_usd"]  = meta.get("cost_usd")
-        result["num_turns"] = meta.get("num_turns")
-        return result
-
-    return {
-        "status":    "fail",
-        "message":   "Fixer agent finished but did not write a result file",
-        "cost_usd":  meta.get("cost_usd"),
-        "num_turns": meta.get("num_turns"),
-    }
 
 
 def _find_latest_result(notebook_path: Path, since: float | None = None) -> dict | None:
@@ -864,11 +793,11 @@ def _db_call(conn, fn, *args):
         return None
 
 
-def _notify_teams(run_id: str, db_path: str) -> None:
+def _notify_teams(run_id: str) -> None:
     """Post this run's summary card. Never fatal — same as ci_run.py Phase E."""
     subprocess.run(
         [sys.executable, str(TOOLS_DIR / "report_teams.py"),
-         "--run-id", run_id, "--db", db_path],
+         "--run-id", run_id, "--always-post"],
         check=False,
     )
 
@@ -891,7 +820,6 @@ def parse_args():
                    help="Only run notebooks whose manifest gpus_required is <= this. "
                         "Notebooks needing more GPUs are skipped (reported, not failed). "
                         "Notebooks with no gpus_required in the manifest default to 1.")
-    p.add_argument("--log-level",   default="INFO", choices=["DEBUG", "INFO"])
     p.add_argument("--interactive", "-i", action="store_true")
     p.add_argument("--gap", action="store_true",
                    help="Run only notebooks reported by tools/status.py --gap "
@@ -907,9 +835,6 @@ def parse_args():
                         "full=verify then fix (default)")
     p.add_argument("--verification-result", default=None,
                    help="Path to verification result JSON (required for --mode fix)")
-    p.add_argument("--db", default=str(results_db.DEFAULT_DB),
-                   help="SQLite results database. Every run is recorded here "
-                        "(default: results/runs.db).")
     p.add_argument("--run-id", default=None,
                    help="Group this invocation's results under an existing run id "
                         "(ci_run.py uses this so its batches form one run). "
@@ -998,21 +923,21 @@ def main():
     if args.interactive:
         mode_label = "interactive"
 
-    print(f"\nNotebook regression agent  [Claude Code]")
+    print("\nNotebook regression agent  [Claude Code]")
     print(f"  Notebooks : {len(notebooks)}")
     print(f"  Mode      : {mode_label}")
     print(f"  Results   : {RESULTS_DIR}")
 
     run_id = args.run_id or datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%S")
     try:
-        db = results_db.connect(args.db)
+        db = results_db.connect()
     except sqlite3.Error as exc:
-        print(f"warning: could not open results DB {args.db} ({exc}) — "
+        print(f"warning: could not open results DB {results_db.DEFAULT_DB} ({exc}) — "
               f"continuing with JSON results only", file=sys.stderr)
         db = None
     _db_call(db, results_db.start_run, run_id, mode_label,
              args.server or args.host or os.getenv("GPU_HOST"), sys.argv[1:])
-    print(f"  Run ID    : {run_id}  (db: {args.db})\n")
+    print(f"  Run ID    : {run_id}  (db: {results_db.DEFAULT_DB})\n")
 
     results = []
     skipped = []
@@ -1062,7 +987,7 @@ def main():
 
         # ── Phase: Verify ────────────────────────────────────────────────
         if args.mode in ("verify", "full"):
-            print(f"\n  ── VERIFY ──")
+            print("\n  ── VERIFY ──")
             try:
                 result = run_notebook(
                     notebook_path   = nb,
@@ -1079,7 +1004,7 @@ def main():
                     server          = server,
                     run_id          = run_id,
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 — record the crash, keep the batch going
                 result = {"status": "fail", "message": f"Runner crashed: {exc}"}
 
             _db_call(db, results_db.record_result, run_id, cfg["rel_key"], str(nb),
@@ -1102,7 +1027,7 @@ def main():
                 vr_path = _find_latest_result_path(nb)
 
             if vr_path and vr_path.exists():
-                print(f"\n  ── FIX ──")
+                print("\n  ── FIX ──")
                 try:
                     fix_result = run_fixer(
                         notebook_path   = nb,
@@ -1132,7 +1057,7 @@ def main():
                     f_status = result.get("status", "fail")
                     f_icon   = "✓" if f_status == "pass" else "✗"
                     print(f"  {f_icon} FIX: {f_status.upper()}", flush=True)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 — record the crash, keep the batch going
                     print(f"  ✗ Fixer crashed: {exc}", flush=True)
                     _db_call(db, results_db.record_result, run_id, cfg["rel_key"],
                              str(nb), "fix",
@@ -1158,15 +1083,12 @@ def main():
         print(f"\n  {icon} {status.upper()}{cost_str}{turns_str}\n", flush=True)
 
     # ── Summary ───────────────────────────────────────────────────────────────
+    expected = {Path(k).name: (v or {}).get("expected_result")
+                for k, v in manifest.get("notebooks", {}).items()}
+
     def _is_pass(r):
-        nb_key = Path(r["notebook"]).name
-        entry  = next(
-            (v for k, v in manifest.get("notebooks", {}).items()
-             if Path(k).name == nb_key),
-            {}
-        ) or {}
-        expected = entry.get("expected_result", "pass")
-        return r.get("status") == "pass" or (expected == "partial" and r.get("status") == "partial")
+        partial_ok = expected.get(Path(r["notebook"]).name) == "partial"
+        return effective_status(r.get("status"), partial_ok)[1]
 
     passed = [r for r in results if _is_pass(r)]
     failed = [r for r in results if not _is_pass(r)]
@@ -1192,7 +1114,7 @@ def main():
     if db is not None:
         db.close()
         if args.notify:
-            _notify_teams(run_id, args.db)
+            _notify_teams(run_id)
     elif args.notify:
         print("[teams] skipped — the card is built from the results DB, which "
               "could not be opened", file=sys.stderr)

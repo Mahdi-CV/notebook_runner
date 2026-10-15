@@ -1,15 +1,10 @@
 """
-HMAC request signing shared by the client (ssh/scp shims) and the server
+HMAC request signing shared by the client (client.py) and the server
 (agent_server.py). Stdlib only — no new dependency for the crypto.
 
-Why HMAC instead of a bearer token: the transport is plain HTTP (AMD's
-egress silently drops SSH and refuses TLS to this IP range, so this
-link carries no confidentiality).
-A bearer token sent in the clear is interceptable and, once captured,
-replayable forever. HMAC signing means the shared secret itself never
-travels on the wire — only a per-request signature bound to that exact
-method/path/body and a narrow time window does — so a captured request
-can't be replayed later or repurposed into a different command.
+The shared secret never travels on the wire: each request carries a signature
+bound to its method, path, body and a short time window, so a captured request
+cannot be replayed or repurposed into a different command.
 
 Wire format: three headers alongside the normal request.
     X-Agent-Timestamp: <unix seconds, int>

@@ -3,7 +3,7 @@
 # This container does NOT run notebooks. It runs run.py, which spawns the
 # Claude Code CLI, which drives the GPU node (over the HTTP shim in
 # tools/http_ssh_shim/, or in a k8s pod via tools/k8s_pod.py). No GPU, no
-# /dev/kfd, no ROCm in here — just Python, git, kubectl, and the claude binary.
+# /dev/kfd, no ROCm in here — just Python, kubectl, and the claude binary.
 #
 # Build:  docker build -f docker/Dockerfile -t notebook-runner:latest .
 # Run:    see docker/run-ci.sh
@@ -12,16 +12,12 @@ FROM python:3.12-slim-bookworm
 
 # ---------------------------------------------------------------------------
 # System deps
-#   openssh-client : git push over SSH (ci_run.py --push)
-#   git            : Phase D commits STATUS.md; reporter needs it for PR diffs
 #   ripgrep        : the agent's Grep tool prefers rg and is much slower without
 #   ca-certificates: TLS to the Claude API gateway and github.com
 # ---------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
-        git \
-        openssh-client \
         ripgrep \
         tini \
     && rm -rf /var/lib/apt/lists/*
@@ -76,4 +72,4 @@ WORKDIR /work
 
 # tini reaps the children run.py leaves behind when a run is killed mid-flight.
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["python", "tools/ci_run.py", "--push"]
+CMD ["python", "tools/ci_run.py", "--no-commit"]

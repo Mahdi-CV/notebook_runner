@@ -1,136 +1,57 @@
 #!/usr/bin/env python3
 """
-Drop-in `scp` replacement, paired with the `ssh` shim in this directory.
-Translates file transfers into HMAC-signed HTTP calls against the agent
-server on the GPU node (see agent_server.py and ssh).
+Drop-in `scp` replacement, paired with the `ssh` shim. Supports the two shapes
+this pipeline uses, both carried over the agent server's exec endpoint:
 
-Two shapes this pipeline actually uses:
-
-  Upload (run.py::scp_notebook — one or more local files to one remote dir):
-      scp -o ... <local1> [<local2> ...] user@host:/remote/dir/
-
-  Download (CLAUDE_FIX.md Step 4c — one remote file to one local path):
-      scp -o ... user@host:/remote/path/file.ipynb /local/path/file.ipynb
-
-Direction is inferred the same way real scp infers it: whichever argument
-contains "host:" is the remote side.
+  scp [flags] <local> [<local> ...] user@host:/remote/dir/   (upload)
+  scp [flags] user@host:/remote/file /local/file              (download)
 """
 
-import json
+import base64
 import os
+import shlex
 import sys
-import urllib.error
-import urllib.parse
-import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from hmac_auth import sign_request  # noqa: E402
-
-AGENT_SECRET = os.environ.get("AGENT_SECRET", "")
-AGENT_URL = os.environ.get("AGENT_URL", "").rstrip("/")
+from client import exec_remote, fail, parse_argv
 
 
-def fail(msg: str, code: int = 1) -> None:
-    print(f"scp (http-shim): {msg}", file=sys.stderr)
-    sys.exit(code)
+def remote_path(spec: str) -> str | None:
+    """Return the path of a user@host:/path spec, or None for a local path."""
+    target, sep, path = spec.partition(":")
+    return path if sep and "@" in target else None
 
 
-def parse_argv(argv: list[str]) -> list[str]:
-    """Strip `-o k=v` (and other recognized flag pairs) the same way the
-    ssh shim does, returning the remaining bare path/remote arguments."""
-    out = []
-    i = 0
-    while i < len(argv):
-        arg = argv[i]
-        if arg in ("-o", "-i", "-P"):
-            i += 2
-            continue
-        if arg.startswith("-"):
-            i += 1
-            continue
-        out.append(arg)
-        i += 1
-    return out
-
-
-def split_remote(spec: str) -> tuple[str, str] | None:
-    """Return (target, path) if `spec` looks like user@host:/path, else None."""
-    if ":" not in spec:
-        return None
-    target, _, path = spec.partition(":")
-    if "@" not in target:
-        return None
-    return target, path
-
-
-def upload(local_paths: list[str], remote_dir: str) -> None:
-    for local in local_paths:
-        local_path = Path(local)
-        if not local_path.is_file():
-            fail(f"no such local file: {local}")
-        content = local_path.read_bytes()
-        dest_path = remote_dir.rstrip("/") + "/" + local_path.name
-        header = json.dumps({"path": dest_path, "len": len(content)}).encode()
-        body = header + b"\n" + content
-
-        headers = sign_request(AGENT_SECRET, "POST", "/agent/upload", body)
-        req = urllib.request.Request(
-            f"{AGENT_URL}/upload", data=body, headers=headers, method="POST"
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                json.loads(resp.read())  # discard — success is a 200
-        except urllib.error.HTTPError as e:
-            fail(f"upload of {local} failed (HTTP {e.code}): {e.read().decode(errors='replace')}")
-        except urllib.error.URLError as e:
-            fail(f"could not reach agent server at {AGENT_URL}: {e}")
-
-
-def download(remote_path: str, local_path: str) -> None:
-    path_qs = urllib.parse.urlencode({"path": remote_path})
-    full_path = f"/agent/download?{path_qs}"
-    headers = sign_request(AGENT_SECRET, "GET", full_path, b"")
-    req = urllib.request.Request(f"{AGENT_URL}/download?{path_qs}", headers=headers, method="GET")
-    try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            data = resp.read()
-    except urllib.error.HTTPError as e:
-        fail(f"download of {remote_path} failed (HTTP {e.code}): {e.read().decode(errors='replace')}")
-    except urllib.error.URLError as e:
-        fail(f"could not reach agent server at {AGENT_URL}: {e}")
-        return
-    Path(local_path).parent.mkdir(parents=True, exist_ok=True)
-    Path(local_path).write_bytes(data)
+def run(cmd: str, stdin: bytes = b"") -> str:
+    result = exec_remote("scp", cmd, stdin)
+    if result["exit_code"] != 0:
+        fail("scp", result["stderr"].strip() or f"remote exit {result['exit_code']}", 1)
+    return result["stdout"]
 
 
 def main() -> None:
-    if not AGENT_SECRET or not AGENT_URL:
-        fail("AGENT_SECRET / AGENT_URL not set in environment")
-
-    args = parse_argv(sys.argv[1:])
+    args = parse_argv("scp", sys.argv[1:], ("-o", "-i", "-P"))
     if len(args) < 2:
-        fail("expected at least one source and one destination argument")
-
+        fail("scp", "expected at least one source and one destination", 1)
     *sources, dest = args
-    dest_remote = split_remote(dest)
 
-    if dest_remote is not None:
-        # Upload: N local sources -> one remote dir.
-        _, remote_dir = dest_remote
+    remote_dir = remote_path(dest)
+    if remote_dir is not None:
         for src in sources:
-            if split_remote(src) is not None:
-                fail("both source and destination are remote — not supported by the http shim")
-        upload(sources, remote_dir)
-    else:
-        # Download: exactly one remote source -> one local destination.
-        if len(sources) != 1:
-            fail("download only supports exactly one remote source file")
-        src_remote = split_remote(sources[0])
-        if src_remote is None:
-            fail("neither source nor destination looks like a remote (user@host:path) target")
-        _, remote_path = src_remote
-        download(remote_path, dest)
+            local = Path(src)
+            if remote_path(src) is not None or not local.is_file():
+                fail("scp", f"not a local file: {src}", 1)
+            target = remote_dir.rstrip("/") + "/" + local.name
+            run(f"mkdir -p {shlex.quote(remote_dir)} && cat > {shlex.quote(target)}",
+                local.read_bytes())
+        return
+
+    if len(sources) != 1 or remote_path(sources[0]) is None:
+        fail("scp", "download needs exactly one remote (user@host:path) source", 1)
+    data = base64.b64decode(run(f"base64 -w0 {shlex.quote(remote_path(sources[0]))}"))
+    Path(dest).parent.mkdir(parents=True, exist_ok=True)
+    Path(dest).write_bytes(data)
 
 
 if __name__ == "__main__":

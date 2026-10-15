@@ -3,12 +3,13 @@
 # Launch one CI pass inside the notebook-runner container.
 #
 # Passes never overlap (flock) and everything is logged; the agent runs as a
-# non-root user in a read-only container.
+# non-root user in a read-only container. Container passes never git-commit:
+# results go to results/ (and the dashboard), not to the repository.
 #
 # Usage:
-#   docker/run-ci.sh                    # full pass, commit + push
+#   docker/run-ci.sh                    # full pass (verify, then auto-fix)
 #   docker/run-ci.sh --dry-run          # print the plan, run nothing
-#   docker/run-ci.sh --category inference --no-commit
+#   docker/run-ci.sh --category inference --verify-only
 #
 # Any arguments are passed straight through to tools/ci_run.py.
 
@@ -20,7 +21,6 @@ cd "$REPO_ROOT"
 
 IMAGE="${NOTEBOOK_RUNNER_IMAGE:-notebook-runner:latest}"
 TS="$(date +%Y%m%dT%H%M%S)"
-LOGFILE="$REPO_ROOT/logs/cron_${TS}.log"
 LOCKFILE="$REPO_ROOT/logs/ci_run.lock"
 
 mkdir -p "$REPO_ROOT/logs" "$REPO_ROOT/results" "$REPO_ROOT/fixes"
@@ -175,23 +175,21 @@ fi
 # over $WORKSPACE_BASE/tutorial_agent_runs and produce garbage verdicts.
 exec 9>"$LOCKFILE"
 if ! flock -n 9; then
-  echo "run-ci: previous pass still running — skipping $TS" \
-    | tee -a "$REPO_ROOT/logs/cron_skipped.log"
+  echo "run-ci: previous pass still running — skipping $TS"
   exit 0
 fi
 
-echo "run-ci: starting pass $TS (image=$IMAGE, log=$LOGFILE)"
+echo "run-ci: starting pass $TS (image=$IMAGE)"
 
 # --- run ------------------------------------------------------------------
 # Mounts, and why each one:
 #   results/, fixes/, logs/  read-write  — the pass's actual output
-#   STATUS.md, manifest.yaml read-write  — Phase C/D rewrite these
+#   STATUS.md, manifest.yaml read-write  — Phase C rewrites STATUS.md
 #   notebooks/               read-only   — inputs; the agent must never edit
 #                                          them (patching happens on the GPU
 #                                          node, on a copy)
 #   kubeconfig (optional)    read-only   — staged NBR_KUBECONFIG, k8s runner
 #   tools/ (incl. http_ssh_shim/) read-only
-#   .git                     read-write  — Phase D commits
 #
 # --read-only on the root filesystem with tmpfs for the writable spots: the
 # agent runs model-authored shell commands, and this bounds what a bad one can
@@ -221,10 +219,6 @@ docker run --rm \
   -e AGENT_URL \
   -e AGENT_SECRET \
   ${KUBE_ARGS[@]+"${KUBE_ARGS[@]}"} \
-  -e GIT_AUTHOR_NAME="notebook-runner" \
-  -e GIT_AUTHOR_EMAIL="notebook-runner@local" \
-  -e GIT_COMMITTER_NAME="notebook-runner" \
-  -e GIT_COMMITTER_EMAIL="notebook-runner@local" \
   -v "$REPO_ROOT/run.py:/work/run.py:ro" \
   -v "$REPO_ROOT/tools:/work/tools:ro" \
   -v "$REPO_ROOT/CLAUDE.md:/work/CLAUDE.md:ro" \
@@ -235,10 +229,9 @@ docker run --rm \
   -v "$REPO_ROOT/logs:/work/logs:rw" \
   -v "$REPO_ROOT/STATUS.md:/work/STATUS.md:rw" \
   -v "$REPO_ROOT/manifest.yaml:/work/manifest.yaml:rw" \
-  -v "$REPO_ROOT/.git:/work/.git:rw" \
   "$IMAGE" \
-  python tools/ci_run.py "$@" 2>&1 | tee "$LOGFILE"
+  python tools/ci_run.py --no-commit "$@" && rc=0 || rc=$?
 
-rc="${PIPESTATUS[0]}"
-echo "run-ci: pass $TS finished (exit=$rc, log=$LOGFILE)"
+# ci_run.py writes the pass log (logs/ci_<UTC timestamp>.log) itself.
+echo "run-ci: pass $TS finished (exit=$rc)"
 exit "$rc"

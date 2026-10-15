@@ -1,7 +1,7 @@
 # Containerized CI for the notebook regression agent
 
 The image runs the **orchestrator**, not the notebooks. Inside it: Python,
-`git`, `kubectl`, and the Claude Code CLI. `run.py` spawns the CLI, the CLI
+`kubectl` and the Claude Code CLI. `run.py` spawns the CLI, the CLI
 drives the GPU node, and all ROCm/papermill work happens there in AMD's own
 images. This container never needs a GPU, `/dev/kfd`, or ROCm.
 
@@ -14,13 +14,14 @@ docker build -f docker/Dockerfile -t notebook-runner:latest .
 ## Run
 
 ```bash
-docker/run-ci.sh                 # full pass, commit + push
+docker/run-ci.sh                 # full pass (verify, then auto-fix)
 docker/run-ci.sh --dry-run       # print the plan, run nothing
-docker/run-ci.sh --category inference --no-commit
-docker/notebook-runner-cron.sh   # the daily unattended pass (verify-only, no commit)
+docker/run-ci.sh --category inference --verify-only
+docker/notebook-runner-cron.sh   # the daily unattended pass (verify-only)
 ```
 
-Arguments pass through to `tools/ci_run.py`.
+Arguments pass through to `tools/ci_run.py`. Container passes never git-commit;
+results land in `results/` and the dashboard.
 
 ---
 

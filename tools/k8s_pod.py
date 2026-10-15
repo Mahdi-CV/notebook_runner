@@ -33,13 +33,15 @@ One-time cluster setup (cluster admin):
   chmod 600 ~/.kube/notebook-runner
   # then set NBR_KUBECONFIG=~/.kube/notebook-runner in .env (docker/run-ci.sh
   # stages it) or export KUBECONFIG for workstation runs.
+  # HF_TOKEN for every pod (read from stdin, so it stays out of argv):
+  kubectl --context workshop -n notebook-runner create secret generic hf-token \
+    --from-file=HF_TOKEN=/dev/stdin
 """
 
 import argparse
 import base64
 import calendar
 import json
-import os
 import re
 import subprocess
 import sys
@@ -54,6 +56,7 @@ DEFAULT_MANIFEST = REPO_ROOT / "manifest.yaml"
 APP_LABEL = "app.kubernetes.io/name"
 APP_NAME = "notebook-runner"
 SERVICE_ACCOUNT = "notebook-runner"
+HF_SECRET = "hf-token"  # created once by an admin; see the module docstring
 WORKSPACE = "/workspace"
 UP_WAIT_SECONDS = 480
 POLL_SECONDS = 10
@@ -127,12 +130,9 @@ def pod_name(stem: str, phase: str, run_id: str) -> str:
     return re.sub(r"[^a-z0-9-]", "-", f"nbr-{stem}{suffix}")
 
 
-def pod_spec(server: dict, pod: str, image: str, gpus: int, with_env: bool) -> dict:
+def pod_spec(server: dict, pod: str, image: str, gpus: int) -> dict:
     memory = server.get("memory", "64Gi")
     run_id = pod.rsplit("-", 1)[-1]
-    container_env = {"env": [{"name": "HF_HOME", "value": f"{WORKSPACE}/hf"}]}
-    if with_env:
-        container_env["envFrom"] = [{"secretRef": {"name": f"{pod}-env"}}]
     return {
         "apiVersion": "v1",
         "kind": "Pod",
@@ -156,7 +156,9 @@ def pod_spec(server: dict, pod: str, image: str, gpus: int, with_env: bool) -> d
                 # server); the agent drives everything through exec.
                 "command": ["sleep", "infinity"],
                 "workingDir": WORKSPACE,
-                **container_env,
+                "env": [{"name": "HF_HOME", "value": f"{WORKSPACE}/hf"}],
+                # optional: gated-model notebooks fail their own way without it.
+                "envFrom": [{"secretRef": {"name": HF_SECRET, "optional": True}}],
                 "resources": {
                     "requests": {"amd.com/gpu": str(gpus), "memory": memory},
                     "limits": {"amd.com/gpu": str(gpus), "memory": memory},
@@ -173,19 +175,6 @@ def pod_spec(server: dict, pod: str, image: str, gpus: int, with_env: bool) -> d
                  "emptyDir": {"medium": "Memory", "sizeLimit": server.get("shm_size", "8Gi")}},
             ],
         },
-    }
-
-
-def env_secret(pod: str, token: str) -> dict:
-    """Per-pod Secret carrying HF_TOKEN. Sent on stdin, so the token never
-    appears in a process argv. Created before the pod (so the container never
-    starts without it), then owned by the pod so it is deleted with it."""
-    return {
-        "apiVersion": "v1",
-        "kind": "Secret",
-        "metadata": {"name": f"{pod}-env", "labels": {APP_LABEL: APP_NAME}},
-        "type": "Opaque",
-        "data": {"HF_TOKEN": base64.b64encode(token.encode()).decode()},
     }
 
 
@@ -216,24 +205,15 @@ def cmd_up(kc: Kubectl, server: dict, args) -> int:
     if not args.image:
         print("FAILED: --image is required", flush=True)
         return EXIT_FAILED
-    token = os.getenv("HF_TOKEN")
-    spec = pod_spec(server, args.pod, args.image, args.gpus, with_env=bool(token))
+    spec = pod_spec(server, args.pod, args.image, args.gpus)
     if args.dry_run:
         print(yaml.safe_dump(spec, sort_keys=False))
         return EXIT_READY
 
     pod = kc.get_pod(args.pod)
     if pod is None:
-        if token:
-            kc.run("apply", "-f", "-", input=json.dumps(env_secret(args.pod, token)))
         kc.run("create", "-f", "-", input=json.dumps(spec))
         pod = kc.get_pod(args.pod)
-        if token:
-            owner = {"metadata": {"ownerReferences": [{
-                "apiVersion": "v1", "kind": "Pod",
-                "name": args.pod, "uid": pod["metadata"]["uid"]}]}}
-            kc.run("patch", "secret", f"{args.pod}-env", "--type", "merge",
-                   "-p", json.dumps(owner))
         print(f"created pod {args.pod} (image {args.image}, {args.gpus} GPU)", flush=True)
     elif pod["spec"]["containers"][0]["image"] != args.image:
         print(f"FAILED: pod {args.pod} already exists with image "
@@ -307,22 +287,12 @@ def down(kc: Kubectl, pod: str) -> int:
 
 
 def gc(kc: Kubectl) -> int:
-    """Delete finished pods, and env Secrets left without a pod (a runner
-    killed between creating the Secret and the pod taking ownership)."""
+    """Delete finished pods a killed runner left behind."""
     proc = kc.run("delete", "pods", "-l", f"{APP_LABEL}={APP_NAME}",
                   "--field-selector", "status.phase!=Running,status.phase!=Pending",
                   "--ignore-not-found", "--wait=false", check=False)
     sys.stdout.write(proc.stdout)
     sys.stderr.write(proc.stderr)
-
-    selector = ["-l", f"{APP_LABEL}={APP_NAME}", "-o", "json"]
-    pods = {p["metadata"]["name"] for p in
-            json.loads(kc.run("get", "pods", *selector).stdout)["items"]}
-    for sec in json.loads(kc.run("get", "secrets", *selector).stdout)["items"]:
-        name = sec["metadata"]["name"]
-        if name.endswith("-env") and name[: -len("-env")] not in pods:
-            kc.run("delete", "secret", name, "--ignore-not-found", check=False)
-            print(f"secret/{name} deleted (orphaned)")
     return proc.returncode
 
 

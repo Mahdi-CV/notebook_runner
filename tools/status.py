@@ -15,7 +15,6 @@ from pathlib import Path
 
 import yaml
 
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_RESULTS_DIR = REPO_ROOT / "results"
 MANIFEST_PATH = REPO_ROOT / "manifest.yaml"
@@ -136,6 +135,19 @@ def effective_status(raw_status: str | None, expected_partial: bool) -> tuple[st
     return raw_status, False
 
 
+def failure_line(issues: list | None, message: str | None = None, width: int = 80) -> str:
+    """One-line reason for a non-passing result: the first issue, else the
+    runner's message. Shared by STATUS.md, the dashboard and the Teams card."""
+    if issues:
+        first = issues[0] or {}
+        etype = first.get("error_type") or "unknown"
+        desc = (first.get("description") or "").strip().replace("\n", " ")
+        if len(desc) > width:
+            desc = desc[:width - 3] + "..."
+        return f"{etype}: {desc}" if desc else etype
+    return (message or "").strip()
+
+
 def _build_row(manifest_key: str, entry: dict, result: dict | None) -> dict:
     category = category_of(manifest_key)
     if result is None:
@@ -157,15 +169,7 @@ def _build_row(manifest_key: str, entry: dict, result: dict | None) -> dict:
     expected_partial = entry.get("expected_result") == "partial"
     status, counts_as_pass = effective_status(raw_status, expected_partial)
 
-    issues = payload.get("issues") or []
-    top_failure = ""
-    if status in ("fail", "partial") and issues:
-        first = issues[0] or {}
-        etype = first.get("error_type", "unknown")
-        desc = (first.get("description") or "").strip().replace("\n", " ")
-        if len(desc) > 80:
-            desc = desc[:77] + "..."
-        top_failure = f"{etype}: {desc}" if desc else etype
+    top_failure = failure_line(payload.get("issues")) if status in ("fail", "partial") else ""
 
     return {
         "notebook": manifest_key,
@@ -229,7 +233,7 @@ def fmt_ts(ts: datetime | None) -> str:
     return ts.strftime("%Y-%m-%d %H:%M")
 
 
-def fmt_cost(cost: float | int | None) -> str:
+def fmt_cost(cost: float | None) -> str:
     if cost is None:
         return ""
     return f"${cost:.2f}"

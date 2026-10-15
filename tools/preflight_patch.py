@@ -15,7 +15,6 @@ Usage:
 import argparse
 import json
 import re
-import sys
 from pathlib import Path
 
 SKIP_CELL = "# SKIPPED by preflight_patch: {reason}\npass"
@@ -61,7 +60,7 @@ def _is_trivial_cell(src: str, pattern_re: re.Pattern, import_re: re.Pattern | N
         return True
 
     def _is_related_import(ln: str) -> bool:
-        if not (ln.startswith('import ') or ln.startswith('from ')):
+        if not ln.startswith(('import ', 'from ')):
             return False
         return import_re.search(ln) is not None if import_re else True
 

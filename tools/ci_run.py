@@ -11,7 +11,7 @@ One command that runs an automated regression pass and updates the dashboard:
   Phase C — Dashboard : regenerate STATUS.md from the fresh results.
   Phase D — Commit    : auto-commit STATUS.md + manifest.yaml (results/ is a
                         gitignored local cache) (skip with --no-commit).
-  Phase E — Notify    : post a summary card to Teams (skip with --no-notify;
+  Phase E — Notify    : post this pass's card to Teams (skip with --no-notify;
                         also skipped when TEAMS_WEBHOOK_URL is unset).
 
 Everything is tee'd to logs/ci_<timestamp>.log.
@@ -247,13 +247,13 @@ def main() -> int:
             git_commit(tee, ts, args.dry_run, args.push)
 
         # ── Phase E — Notify ────────────────────────────────────────────────
-        # After the commit, so "newly failing/passing" compares against the
-        # previous pass's STATUS.md. Never fatal: a Teams outage must not fail a pass.
+        # Never fatal: a Teams outage must not fail a pass.
         tee.line("\n── Phase E — Notify ──")
         if args.no_notify:
             tee.line("[teams] skipped (--no-notify)")
         else:
-            notify_cmd = [sys.executable, str(TEAMS_PY), "--log-name", logpath.name]
+            notify_cmd = [sys.executable, str(TEAMS_PY), "--run-id", ts,
+                          "--log-name", logpath.name]
             if args.dry_run:
                 notify_cmd.append("--dry-run")
             stream(notify_cmd, tee)

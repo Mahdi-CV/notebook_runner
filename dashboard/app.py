@@ -29,8 +29,8 @@ MANIFEST_PATH = ROOT / "manifest.yaml"
 STALE_AFTER = timedelta(days=7)  # matches tools/status.py --gap
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
-import results_db  # noqa: E402
-from status import category_of, effective_status  # noqa: E402
+import results_db
+from status import category_of, effective_status, failure_line
 
 app = FastAPI(title="Notebook regression dashboard", docs_url=None, redoc_url=None,
               openapi_url=None)
@@ -91,18 +91,8 @@ def fmt_cost(v) -> str:
 
 
 def why(result: dict | None) -> str:
-    """One-line reason for a non-passing result (same shape as the Teams card)."""
-    if not result:
-        return ""
-    issues = result.get("issues") or []
-    if issues:
-        first = issues[0]
-        etype = first.get("error_type") or "issue"
-        desc = (first.get("description") or "").strip().replace("\n", " ")
-        if len(desc) > 110:
-            desc = desc[:107] + "…"
-        return f"{etype}: {desc}" if desc else etype
-    return (result.get("message") or "").strip()
+    """One-line reason for a non-passing result (same as STATUS.md and Teams)."""
+    return failure_line(result.get("issues"), result.get("message"), width=110) if result else ""
 
 
 for name, fn in {"ts": fmt_ts, "age": fmt_age, "cost": fmt_cost, "why": why}.items():
@@ -112,8 +102,9 @@ for name, fn in {"ts": fmt_ts, "age": fmt_age, "cost": fmt_cost, "why": why}.ite
 def notebook_row(key: str, entry: dict, latest: dict | None) -> dict:
     expected_partial = (entry or {}).get("expected_result") == "partial"
     status, counts = effective_status(latest["status"] if latest else None, expected_partial)
-    stale = bool(latest) and (parse_ts(latest["recorded_at"]) or datetime.min) < (
-        datetime.now(timezone.utc).replace(tzinfo=None) - STALE_AFTER)
+    ts = parse_ts(latest["recorded_at"]) if latest else None
+    stale = bool(latest) and (
+        ts is None or ts < datetime.now(timezone.utc).replace(tzinfo=None) - STALE_AFTER)
     return {
         "key": key,
         "name": Path(key).name,

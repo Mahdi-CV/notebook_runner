@@ -51,7 +51,7 @@ from pathlib import Path
 
 # Reuse the dashboard's loaders so "latest result per notebook" is defined once.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import status as status_mod  # noqa: E402
+import status as status_mod
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PREVIEW_DIR = REPO_ROOT / "logs" / "github_preview"
@@ -107,9 +107,8 @@ def split_issues(payload: dict) -> tuple[list, list]:
     issue_problems = []
     for iss in issues:
         fixability = iss.get("fixability")
-        if fixability in ("needs_author", "infra_blocked"):
-            issue_problems.append(iss)
-        elif fixability == "auto_fixable" and not has_validated:
+        if fixability in ("needs_author", "infra_blocked") or (
+                fixability == "auto_fixable" and not has_validated):
             issue_problems.append(iss)
         # auto_fixable + has_validated => considered covered by the PR
     return pr_fixes, issue_problems
@@ -148,9 +147,9 @@ def desired_state(rows_payloads: list[dict]) -> list[dict]:
 
 def _issue_lines(iss: dict) -> list[str]:
     out = [
-        f"- **Error type:** `{iss.get('error_type', 'unknown')}`"
-        f"  ·  **Cell:** {iss.get('cell_index', '?')}"
-        f"  ·  **Fixability:** `{iss.get('fixability', 'unknown')}`",
+        (f"- **Error type:** `{iss.get('error_type', 'unknown')}`"
+         f"  ·  **Cell:** {iss.get('cell_index', '?')}"
+         f"  ·  **Fixability:** `{iss.get('fixability', 'unknown')}`"),
     ]
     if iss.get("description"):
         out.append(f"  - **What broke:** {iss['description'].strip()}")
@@ -165,8 +164,8 @@ def render_issue_body(plan: dict) -> str:
         marker("issue", plan["stem"]),
         f"## Regression report — `{plan['rel_key']}`",
         "",
-        "_Filed automatically by the notebook regression agent. "
-        "These issues require author judgment to fix._",
+        ("_Filed automatically by the notebook regression agent. "
+         "These issues require author judgment to fix._"),
         "",
         f"**Status:** {p.get('status', 'fail')}",
     ]
@@ -178,10 +177,10 @@ def render_issue_body(plan: dict) -> str:
     for iss in plan["issue_problems"]:
         lines += _issue_lines(iss)
     if plan["pr_fixes"]:
-        lines += ["", "_A separate PR proposes mechanical fixes for the "
-                  "auto-fixable issues in this notebook._"]
-    lines += ["", "---", "_Agent-managed: this issue is updated on each run and "
-              "auto-closed when the notebook passes._"]
+        lines += ["", ("_A separate PR proposes mechanical fixes for the "
+                       "auto-fixable issues in this notebook._")]
+    lines += ["", "---", ("_Agent-managed: this issue is updated on each run and "
+                          "auto-closed when the notebook passes._")]
     return "\n".join(lines)
 
 
@@ -192,8 +191,8 @@ def _cell_diff(rel_key: str, fixed_path: str) -> list[str]:
     if not orig_p.exists() or not fixed_p.exists():
         return ["_(diff unavailable — original or fixed notebook not found locally)_"]
     try:
-        orig = json.load(open(orig_p))["cells"]
-        fixed = json.load(open(fixed_p))["cells"]
+        orig = json.loads(orig_p.read_text())["cells"]
+        fixed = json.loads(fixed_p.read_text())["cells"]
     except (OSError, json.JSONDecodeError, KeyError):
         return ["_(diff unavailable — could not parse notebooks)_"]
 
@@ -219,10 +218,10 @@ def render_pr_body(plan: dict) -> str:
         marker("fix", plan["stem"]),
         f"## Proposed fix — `{plan['rel_key']}`",
         "",
-        "_Opened automatically by the notebook regression agent. "
-        "Each change below was validated by re-running the notebook on an "
-        "AMD ROCm GPU. **Review before merging — this PR is a proposal, not "
-        "an auto-merge.**_",
+        ("_Opened automatically by the notebook regression agent. "
+         "Each change below was validated by re-running the notebook on an "
+         "AMD ROCm GPU. **Review before merging — this PR is a proposal, not "
+         "an auto-merge.**_"),
         "",
     ]
     if p.get("docker_image_resolved"):
@@ -310,9 +309,9 @@ def render_pr_comment(pr_number: int, rows: list[dict]) -> str:
         pr_comment_marker(pr_number),
         "## Notebook regression — changed notebooks",
         "",
-        "_Posted automatically by the notebook regression agent. Each changed "
-        "notebook below was executed on an AMD ROCm GPU. This is a report, not a "
-        "merge gate._",
+        ("_Posted automatically by the notebook regression agent. Each changed "
+         "notebook below was executed on an AMD ROCm GPU. This is a report, not a "
+         "merge gate._"),
         "",
         f"**Summary:** {n_pass}/{n_total} pass"
         + (f", {n_partial} partial" if n_partial else "")
