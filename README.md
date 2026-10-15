@@ -158,8 +158,10 @@ A notebook says what it needs in its own metadata (`metadata.ci`: hardware,
 GPU count and memory, host memory, disk, capabilities, environment, image,
 CI parameters, dependencies) and tags cells that cannot run unattended
 `ci-skip`; see `.github/CI_METADATA.md` in
-[ROCm/gpuaidev](https://github.com/ROCm/gpuaidev). With nothing declared, a
-notebook needs one AMD Instinct GPU.
+[ROCm/gpuaidev](https://github.com/ROCm/gpuaidev). Every tutorial there
+declares at least its hardware and GPU count (a PR check enforces it); a
+notebook from elsewhere with no metadata is treated as needing one AMD Instinct
+GPU.
 
 `runner.yaml` lists the targets this deployment can use (SSH hosts, where the
 agent runs `docker` on the machine, and `type: k8s` pools, where
