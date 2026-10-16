@@ -67,7 +67,7 @@ import os, sys, sysconfig
 extra = [p for p in sys.stdin.read().split() if os.path.isdir(p) and p not in sys.path]
 if extra:
     with open(sysconfig.get_path("purelib") + "/_nbr_image_site.pth", "w") as f:
-        f.write(f"import site; [site.addsitedir(p) for p in {extra!r}]\n")
+        f.write(f"import site; list(map(site.addsitedir, {extra!r}))\n")
 '
 fi
 deps=(papermill ipykernel)
