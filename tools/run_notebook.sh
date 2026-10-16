@@ -70,8 +70,20 @@ if extra:
 fi
 deps=(papermill ipykernel)
 [[ -n "$REQUIREMENTS" ]] && deps+=(-r "$REQUIREMENTS")
-log "installing ${deps[*]}"
-uv pip install -q --python "$VENV/bin/python" "${deps[@]}"
+# Hold the image's PyTorch stack: a requirement that cannot use it should fail
+# here, not quietly replace the ROCm build with a PyPI (CUDA) one.
+"$VENV/bin/python" - > "$VENV/image-constraints.txt" <<'PY'
+from importlib.metadata import PackageNotFoundError, version
+for name in ("torch", "torchvision", "torchaudio", "triton", "pytorch-triton-rocm"):
+    try:
+        print(f"{name}=={version(name)}")
+    except PackageNotFoundError:
+        pass
+PY
+log "installing ${deps[*]} (holding: $(tr '\n' ' ' < "$VENV/image-constraints.txt"))"
+# pip, not uv: uv does not count the image packages the venv inherits as
+# installed, so anything that depends on torch would pull a second one.
+"$VENV/bin/python" -m pip install -q --disable-pip-version-check -c "$VENV/image-constraints.txt" "${deps[@]}"
 
 "$VENV/bin/python" -m ipykernel install --prefix "$VENV" --name nbr \
   --display-name "Python 3 (notebook sandbox)" \
