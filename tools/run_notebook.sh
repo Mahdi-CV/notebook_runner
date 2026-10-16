@@ -58,9 +58,15 @@ if [[ ! -x "$VENV/bin/python" ]]; then
   uv venv -q --seed --system-site-packages --python "$(command -v python3)" "$VENV"
   # --system-site-packages only exposes the base interpreter's packages. When the
   # image's python3 is itself a venv or conda env (e.g. /opt/venv in
-  # rocm/comfyui), its own site-packages hold the ROCm PyTorch, so list them too.
-  python3 -c 'import site; print("\n".join(site.getsitepackages()))' \
-    > "$("$VENV/bin/python" -c 'import sysconfig; print(sysconfig.get_path("purelib"))')/_nbr_image_site.pth"
+  # rocm/comfyui), its own site-packages hold the ROCm PyTorch, so add them too,
+  # with site.addsitedir so their .pth files (eggs, editable installs) apply.
+  python3 -c 'import site; print("\n".join(site.getsitepackages()))' | "$VENV/bin/python" -c '
+import os, sys, sysconfig
+extra = [p for p in sys.stdin.read().split() if os.path.isdir(p) and p not in sys.path]
+if extra:
+    with open(sysconfig.get_path("purelib") + "/_nbr_image_site.pth", "w") as f:
+        f.write(f"import site; [site.addsitedir(p) for p in {extra!r}]\n")
+'
 fi
 deps=(papermill ipykernel)
 [[ -n "$REQUIREMENTS" ]] && deps+=(-r "$REQUIREMENTS")
