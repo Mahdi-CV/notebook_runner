@@ -67,3 +67,7 @@ targets:
     images:
       rocm/pytorch: <catalog image built from rocm/pytorch>
       vllm/vllm-openai-rocm: <catalog image with vLLM for Radeon>
+    env:
+      # Radeon Global instances use a PyPI mirror that can lag pypi.org.
+      PIP_EXTRA_INDEX_URL: https://pypi.org/simple
+      UV_EXTRA_INDEX_URL: https://pypi.org/simple

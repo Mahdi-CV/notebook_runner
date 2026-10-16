@@ -332,8 +332,11 @@ def cmd_up(target: dict, args) -> int:
                  "env": dict(e.split("=", 1) for e in args.env or [])}
         repo = (args.image or "").rsplit(":", 1)[0] if "/" in (args.image or "") else args.image
         image = (target.get("images") or {}).get(repo) or target.get("image")
-        svc.launch(svc.template(args.gpus, args.memory_gb), image=image, key=uuid.uuid5(
-            uuid.NAMESPACE_URL, f"{target['user_name']}/{args.pod}").hex)
+        # A fresh key per launch: one derived from the pod name would make the API
+        # replay an earlier, already-deleted launch of the same pod name.
+        state["launch_key"] = uuid.uuid4().hex
+        save_state(target, state)
+        svc.launch(svc.template(args.gpus, args.memory_gb), image=image, key=state["launch_key"])
         save_state(target, state)
         print(f"launched instance for {target['user_name']} ({args.gpus} GPU, "
               f"image {image or 'pool default'})", flush=True)
