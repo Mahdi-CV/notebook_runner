@@ -150,6 +150,19 @@ def pod_spec(server: dict, pod: str, image: str, gpus: int, memory_gb: int = 64,
             "activeDeadlineSeconds": int(server.get("max_lifetime_hours", 12) * 3600),
             "nodeSelector": server.get("node_selector") or {},
             "tolerations": server.get("tolerations") or [],
+            # The workspace volume hides whatever the image keeps in /workspace
+            # (rlsys/slime installs Megatron-LM and SGLang there in editable
+            # mode, rocm/primus keeps Primus there), so copy it in first.
+            "initContainers": [{
+                "name": "seed-workspace",
+                "image": image,
+                "imagePullPolicy": "IfNotPresent",
+                "command": ["sh", "-c", f"cp -a {WORKSPACE}/. /nbr-seed/ 2>/dev/null; true"],
+                # The copy's page cache counts against the limit; a pod's request
+                # is the larger of its init and main containers', so this is free.
+                "resources": {"requests": {"memory": memory}, "limits": {"memory": memory}},
+                "volumeMounts": [{"name": "workspace", "mountPath": "/nbr-seed"}],
+            }],
             "containers": [{
                 "name": "main",
                 "image": image,
