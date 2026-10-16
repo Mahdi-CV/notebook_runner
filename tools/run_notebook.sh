@@ -96,16 +96,32 @@ log "installing ${deps[*]} (holding: $(tr '\n' ' ' < "$CONSTRAINTS"))"
 # installed, so anything that depends on torch would pull a second one.
 "$PY" -m pip install -q --disable-pip-version-check -c "$CONSTRAINTS" "${deps[@]}"
 
-# PYTHONPATH: the image's own console scripts (torchrun, accelerate, deepspeed)
-# run the image Python, which would not see what the notebook installs here.
+# The image's own console scripts (torchrun, accelerate, deepspeed) run the
+# image Python, which would not see what the notebook installs here. A
+# sitecustomize on PYTHONPATH adds the sandbox's site-packages as a site
+# directory, so its .pth files (editable installs) apply too, then runs the
+# sitecustomize it shadows, if any.
 if [[ $SANDBOX == 0 ]]; then
   "$PY" -m ipykernel install --user --name nbr --display-name "Python 3 (image)" >/dev/null
 else
   SITE=$("$VENV/bin/python" -c 'import sysconfig; print(sysconfig.get_path("purelib"))')
+  mkdir -p "$VENV/nbr-site"
+  cat > "$VENV/nbr-site/sitecustomize.py" <<PY
+import os, site, sys
+if "$SITE" not in sys.path:
+    site.addsitedir("$SITE")
+_here = os.path.dirname(os.path.abspath(__file__))
+sys.path[:] = [p for p in sys.path if os.path.abspath(p or ".") != _here]
+del sys.modules["sitecustomize"]
+try:
+    import sitecustomize  # noqa: F401
+except ImportError:
+    pass
+PY
   "$VENV/bin/python" -m ipykernel install --prefix "$VENV" --name nbr \
     --display-name "Python 3 (notebook sandbox)" \
     --env PATH "$VENV/bin:$PATH" --env VIRTUAL_ENV "$VENV" \
-    --env PYTHONPATH "$SITE${PYTHONPATH:+:$PYTHONPATH}" >/dev/null
+    --env PYTHONPATH "$VENV/nbr-site${PYTHONPATH:+:$PYTHONPATH}" >/dev/null
 fi
 
 # In the repository, notebooks read shared files from ../assets: run the kernel
