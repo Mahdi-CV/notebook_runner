@@ -75,18 +75,18 @@ DROP TABLE IF EXISTS issues;
 CREATE INDEX IF NOT EXISTS idx_results_notebook ON results(notebook, recorded_at);
 CREATE INDEX IF NOT EXISTS idx_results_run      ON results(run_id);
 
--- Most recent non-skip result per notebook: the DB-side analogue of STATUS.md.
--- Ordered by recorded_at, not id: a backfilled import gets higher ids than live
--- rows recorded earlier. Recreated on every connect so the definition stays current.
-DROP VIEW IF EXISTS latest_results;
-CREATE VIEW latest_results AS
+"""
+
+# Most recent non-skip result per notebook: the DB-side analogue of STATUS.md.
+# Ordered by recorded_at, not id: a backfilled import gets higher ids than live
+# rows recorded earlier.
+LATEST_VIEW = """CREATE VIEW latest_results AS
 SELECT r.* FROM results r
 WHERE r.phase != 'skip' AND r.id = (
     SELECT r2.id FROM results r2
     WHERE r2.notebook = r.notebook AND r2.phase != 'skip'
     ORDER BY r2.recorded_at DESC, r2.id DESC LIMIT 1
-);
-"""
+)"""
 
 def now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
@@ -110,6 +110,22 @@ def normalize_ts(ts: str | None) -> str:
     return dt.isoformat()
 
 
+def _ensure_latest_view(conn: sqlite3.Connection) -> None:
+    """Create latest_results, or replace it if its definition changed. Runs
+    that start together all get here; one replacing it under another is fine."""
+    row = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'view' "
+                       "AND name = 'latest_results'").fetchone()
+    if row and row[0] == LATEST_VIEW:
+        return
+    try:
+        with conn:
+            conn.execute("DROP VIEW IF EXISTS latest_results")
+            conn.execute(LATEST_VIEW)
+    except sqlite3.OperationalError as e:
+        if "already exists" not in str(e):
+            raise
+
+
 def connect(db_path: Path | str = DEFAULT_DB) -> sqlite3.Connection:
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -117,6 +133,7 @@ def connect(db_path: Path | str = DEFAULT_DB) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
+    _ensure_latest_view(conn)
     return conn
 
 
