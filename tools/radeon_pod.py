@@ -127,6 +127,8 @@ class Service:
             body["repo_sub_path"] = t.get("repo_subpath", "docs/notebooks")
         if image:
             body["image"] = image
+        if t.get("model_mount"):  # a prewarmed model mount (Radeon admin: model-prewarm)
+            body["model_mount"] = t["model_mount"]
         r = self.call("POST", "notebooks", params={"uid": self.user}, json=body, timeout=120,
                       headers={"Idempotency-Key": key})
         if r.status_code not in (200, 201, 202):

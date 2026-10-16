@@ -63,6 +63,9 @@ targets:
     gpu_memory_gb: 48
     user_name: someone@example.com
     pod_type: hf
+    # Optional: a model mount pre-warmed on the pool's nodes (Radeon admin, Model
+    # Prewarm), mounted read-only at its mount path; MODELS_DIR names it.
+    model_mount: gpuaidev-ci
     image: <catalog image for the AMD OneClick Base>
     images:
       rocm/pytorch: <catalog image built from rocm/pytorch>
