@@ -87,9 +87,13 @@ log "installing ${deps[*]} (holding: $(tr '\n' ' ' < "$VENV/image-constraints.tx
 # installed, so anything that depends on torch would pull a second one.
 "$VENV/bin/python" -m pip install -q --disable-pip-version-check -c "$VENV/image-constraints.txt" "${deps[@]}"
 
+# PYTHONPATH: the image's own console scripts (torchrun, accelerate, deepspeed)
+# run the image Python, which would not see what the notebook installs here.
+SITE=$("$VENV/bin/python" -c 'import sysconfig; print(sysconfig.get_path("purelib"))')
 "$VENV/bin/python" -m ipykernel install --prefix "$VENV" --name nbr \
   --display-name "Python 3 (notebook sandbox)" \
-  --env PATH "$VENV/bin:$PATH" --env VIRTUAL_ENV "$VENV" >/dev/null
+  --env PATH "$VENV/bin:$PATH" --env VIRTUAL_ENV "$VENV" \
+  --env PYTHONPATH "$SITE${PYTHONPATH:+:$PYTHONPATH}" >/dev/null
 
 # In the repository, notebooks read shared files from ../assets: run the kernel
 # one level down so the pushed copies are found the same way.
