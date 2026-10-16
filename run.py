@@ -533,7 +533,7 @@ def collect_output(notebook_path: Path, phase: str, target_name: str, target: di
         if pod:
             subprocess.run([*shlex.split(_pod_tool(target_name, target)), "pull", "--pod", pod,
                             f"{POD_WORKSPACE}/{name}", str(local)],
-                           capture_output=True, timeout=600, check=False)
+                           capture_output=True, timeout=1900, check=False)
         else:
             dest, run_dir = f"{target['user']}@{target['host']}", _run_dir(target, notebook_path)
             env = target_env(target)

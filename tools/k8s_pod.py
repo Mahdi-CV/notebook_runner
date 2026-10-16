@@ -42,6 +42,7 @@ One-time cluster setup (cluster admin):
 import argparse
 import base64
 import calendar
+import hashlib
 import json
 import re
 import subprocess
@@ -273,12 +274,26 @@ def cmd_exec(kc: Kubectl, args) -> int:
 
 
 def cmd_pull(kc: Kubectl, args) -> int:
-    Path(args.local).parent.mkdir(parents=True, exist_ok=True)
-    proc = kc.run("cp", f"{args.pod}:{args.remote}", args.local, "-c", "main",
-                  check=False, timeout=300)
-    sys.stdout.write(proc.stdout)
-    sys.stderr.write(proc.stderr)
-    return proc.returncode
+    """Copy a file out of the pod. A dropped exec stream can leave kubectl cp
+    with a truncated file and exit 0, so the copy is checked against the pod's
+    sha256 and repeated if it differs."""
+    local = Path(args.local)
+    local.parent.mkdir(parents=True, exist_ok=True)
+    want = kc.run("exec", args.pod, "-c", "main", "--", "sha256sum", args.remote,
+                  check=False)
+    want = want.stdout.split()[0] if want.returncode == 0 and want.stdout else None
+    for _ in range(3):
+        proc = kc.run("cp", "--retries", "5", f"{args.pod}:{args.remote}", args.local,
+                      "-c", "main", check=False, timeout=600)
+        sys.stdout.write(proc.stdout)
+        sys.stderr.write(proc.stderr)
+        if proc.returncode != 0 or not want or not local.is_file():
+            return proc.returncode
+        if hashlib.sha256(local.read_bytes()).hexdigest() == want:
+            return 0
+    print(f"FAILED: {args.local} does not match {args.remote} after 3 copies",
+          file=sys.stderr)
+    return 1
 
 
 def down(kc: Kubectl, pod: str) -> int:
