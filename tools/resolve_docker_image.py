@@ -30,7 +30,10 @@ _HW_TAG = {
 
 
 def resolve(repo: str, hardware: str) -> str:
-    """Return the full image:tag string for repo + hardware. Raises on failure."""
+    """Return the full image:tag string for repo + hardware. Raises on failure.
+    A notebook that pins a tag in metadata.ci.image (repo:tag) gets that tag."""
+    if ":" in repo:
+        return repo
     org, name = repo.split("/", 1)
     url = (
         f"https://hub.docker.com/v2/repositories/{org}/{name}/tags/"
