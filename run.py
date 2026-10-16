@@ -591,10 +591,22 @@ def blocked(notebook_path: Path, phase: str, reason: str) -> dict:
     return finalize(notebook_path, phase, {"message": reason}, None) | {"message": reason}
 
 
+ASSET_RE = re.compile(r"\.\./assets/([\w.\-]+)")
+
+
+def _assets(notebook_path: Path) -> list[Path]:
+    """Files the notebook's code reads from the repository's shared assets/."""
+    cells = json.loads(notebook_path.read_text(encoding="utf-8")).get("cells", [])
+    names = {m for c in cells if c.get("cell_type") == "code"
+             for m in ASSET_RE.findall("".join(c.get("source", [])))}
+    return [p for n in sorted(names) if (p := notebook_path.parent.parent / "assets" / n).is_file()]
+
+
 def support_files(notebook_path: Path, req: routing.Requirements) -> list[Path]:
     """Files every run needs next to the notebook: preflight_patch.py,
-    run_notebook.sh, its settings (run_notebook.env, from metadata.ci) and the
-    notebook's requirements file, if it declares one."""
+    run_notebook.sh, its settings (run_notebook.env, from metadata.ci), the
+    notebook's requirements file, if it declares one, and the ../assets files
+    its code reads."""
     stage = HERE / "logs" / ".stage" / notebook_path.stem
     stage.mkdir(parents=True, exist_ok=True)
     files = [TOOLS_DIR / "preflight_patch.py", TOOLS_DIR / "run_notebook.sh",
@@ -609,6 +621,8 @@ def support_files(notebook_path: Path, req: routing.Requirements) -> list[Path]:
         (stage / "ci_requirements.txt").write_text("\n".join(req.requirements) + "\n")
         files.append(stage / "ci_requirements.txt")
         requirements = "ci_requirements.txt"
+    assets = _assets(notebook_path)
+    files += assets
     params = " ".join(f"-p {shlex.quote(str(k))} {shlex.quote(str(v))}"
                       for k, v in req.parameters.items())
     (stage / "run_notebook.env").write_text(
@@ -616,6 +630,7 @@ def support_files(notebook_path: Path, req: routing.Requirements) -> list[Path]:
         f"REQUIREMENTS={shlex.quote(requirements)}\n"
         f"TIMEOUT_MINUTES={_papermill_minutes(req)}\n"
         f"PAPERMILL_ARGS=({params})\n"
+        f"ASSETS=({' '.join(shlex.quote(a.name) for a in assets)})\n"
         + "".join(f"export {k}={shlex.quote(str(v))}\n" for k, v in req.env.items()))
     return files
 

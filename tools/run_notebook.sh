@@ -15,7 +15,8 @@
 #
 # Usage: bash run_notebook.sh INPUT.ipynb OUTPUT.ipynb
 # Settings (run_notebook.env, all optional): SYSTEM_PACKAGES, REQUIREMENTS
-# (a file next to the notebook), TIMEOUT_MINUTES, PAPERMILL_ARGS (array).
+# (a file next to the notebook), TIMEOUT_MINUTES, PAPERMILL_ARGS (array),
+# ASSETS (array: files pushed with the notebook that it reads from ../assets).
 
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -25,6 +26,7 @@ SYSTEM_PACKAGES=""
 REQUIREMENTS=""
 TIMEOUT_MINUTES=50
 PAPERMILL_ARGS=()
+ASSETS=()
 # shellcheck disable=SC1091
 [[ -f run_notebook.env ]] && source run_notebook.env
 VENV="$PWD/.nbr-venv"
@@ -88,6 +90,14 @@ log "installing ${deps[*]} (holding: $(tr '\n' ' ' < "$VENV/image-constraints.tx
 "$VENV/bin/python" -m ipykernel install --prefix "$VENV" --name nbr \
   --display-name "Python 3 (notebook sandbox)" \
   --env PATH "$VENV/bin:$PATH" --env VIRTUAL_ENV "$VENV" >/dev/null
+
+# In the repository, notebooks read shared files from ../assets: run the kernel
+# one level down so the pushed copies are found the same way.
+if ((${#ASSETS[@]})); then
+  mkdir -p assets notebook
+  cp "${ASSETS[@]}" assets/
+  PAPERMILL_ARGS+=(--cwd notebook)
+fi
 
 log "running papermill (timeout ${TIMEOUT_MINUTES}m)"
 exec timeout "${TIMEOUT_MINUTES}m" "$VENV/bin/python" -m papermill "$INPUT" "$OUTPUT" \
