@@ -238,6 +238,7 @@ docker run --rm \
   -e TEAMS_WEBHOOK_URL \
   -e HF_TOKEN \
   -e AGENT_SECRET \
+  -e RADEON_CLOUD_API_TOKEN \
   ${KUBE_ARGS[@]+"${KUBE_ARGS[@]}"} \
   -v "$REPO_ROOT/run.py:/work/run.py:ro" \
   -v "$REPO_ROOT/tools:/work/tools:ro" \

@@ -10,6 +10,8 @@ requires-python = ">=3.10"
 dependencies = [
     "pyyaml>=6.0",      # runner.yaml (tools/routing.py)
     "python-dotenv>=1.0",  # run.py load_dotenv() for HF_TOKEN, AGENT_SECRET, ...
+    "requests>=2.31",   # tools/radeon_pod.py: Radeon Global Service API + Jupyter REST
+    "websocket-client>=1.7",  # tools/radeon_pod.py: Jupyter kernel WebSocket
 ]
 
 [dependency-groups]

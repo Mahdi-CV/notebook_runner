@@ -45,9 +45,10 @@ appended below the playbook.
 | `WORKSPACE_BASE`  | Remote base for run dirs (`<WORKSPACE_BASE>/tutorial_agent_runs/<stem>`) |
 | `TOOLS_DIR`       | Absolute path to the shared tools/ directory            |
 | `RESULTS_DIR`     | Where to write the result JSON                          |
-| `RUNNER`          | Present only as `k8s` — see "Runner: Kubernetes pod" below |
+| `RUNNER`          | Present only as `k8s` or `radeon` — see "Runner: pod" below |
 | `POD_CMD`         | k8s only: prefix for every command, run inside the pod  |
-| `K8S_UP_CMD`      | k8s only: provisions the pod; append `--image <image:tag>` |
+| `K8S_UP_CMD`      | Pod runners only: provisions the pod; append `--image <image:tag>` |
+| `TIMEBOX_MINUTES` | Wall-clock limit for this run; the runner stops you after it (see Timeouts) |
 
 Everywhere this playbook shows `<WORKSPACE_BASE>/tutorial_agent_runs/<stem>`,
 substitute the literal `WORKSPACE_BASE` value from the runtime context (it
@@ -55,11 +56,12 @@ defaults to `/home/amd` but is `/home/gh-runner` on the self-hosted CI box).
 
 ---
 
-## Runner: Kubernetes pod (RUNNER=k8s)
+## Runner: pod (RUNNER=k8s or RUNNER=radeon)
 
-Skip this section unless the runtime context says `RUNNER = k8s`. Then there is
-no SSH host and no Docker daemon: the notebook runs inside one GPU pod built
-from the image you resolve. Everything else in this playbook (hard rules,
+Skip this section unless the runtime context says `RUNNER = k8s` (a Kubernetes
+GPU pod) or `RUNNER = radeon` (a Radeon Global instance). Then there is no SSH
+host and no Docker daemon: the notebook runs inside one GPU pod built from the
+image you resolve (on Radeon, the catalog image the runner maps it to). Everything else in this playbook (hard rules,
 patterns, analysis, fixability, write_result) still applies, with these
 substitutions:
 
@@ -82,9 +84,9 @@ substitutions:
   papermill in the same pod.
 - **Pattern C** (notebook code itself runs `docker`): do not provision a pod.
   Record one issue — `error_type: other`, `fixability: infra_blocked`,
-  description "k8s runner cannot run nested containers; run this notebook on
+  description "pod runners cannot run nested containers; run this notebook on
   an SSH server" — write the result, and stop (the runner records it as
-  `blocked`). Routing normally keeps such notebooks off k8s targets.
+  `blocked`). Routing normally keeps such notebooks off pod targets.
 - **Pattern D:** provision with the resolved `rocm/pytorch` image and run
   papermill there.
 - **`FAILED:` or `UNSCHEDULABLE:` from K8S_UP_CMD** is an infrastructure
@@ -336,7 +338,7 @@ Bash: <SSH_CMD> 'cat > <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh << '"'
 set -e
 pip install -q papermill ipykernel
 python -m ipykernel install --sys-prefix
-python -m papermill /workspace/<nb>_patched.ipynb /workspace/<nb>_out.ipynb \
+timeout <papermill minutes from TIMEBOX_MINUTES>m python -m papermill /workspace/<nb>_patched.ipynb /workspace/<nb>_out.ipynb \
   --kernel python3 --execution-timeout 3000 <PAPERMILL_PARAMS>
 SCRIPT
 chmod +x <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh'
@@ -483,6 +485,12 @@ The fixer agent will only attempt issues marked `auto_fixable`.
 | papermill — inference/quant          | inline                | 600s        |
 | papermill — fine-tune/pretrain       | background + poll 60s | 15s/poll    |
 | Cleanup                              | inline                | 30s         |
+
+**The whole run has a timebox** (`TIMEBOX_MINUTES`). The runner stops you when
+it expires and records whatever papermill wrote; an unfinished run is reported
+as `blocked`. Run papermill under `timeout` with the minutes the runtime
+context gives for it, so a hung notebook ends with an executed notebook to
+judge and you still have time to write the diagnosis.
 
 **Background process rule** — always redirect stdin or SSH will hang:
 ```

@@ -163,13 +163,19 @@ declares at least its hardware and GPU count (a PR check enforces it); a
 notebook from elsewhere with no metadata is treated as needing one AMD Instinct
 GPU.
 
-`runner.yaml` lists the targets this deployment can use (SSH hosts, where the
-agent runs `docker` on the machine, and `type: k8s` pools, where
+`runner.yaml` lists the targets this deployment can use: SSH hosts, where the
+agent runs `docker` on the machine; `type: k8s` pools, where
 `tools/k8s_pod.py` gives each agent run its own pod built from the resolved
-image). Each notebook runs on the first target that meets all its
+image; and `type: radeon`, where `tools/radeon_pod.py` launches a Radeon Global
+instance through its Service API and drives its Jupyter server (one instance
+per user name, so runs there are serial). Each notebook runs on the first target that meets all its
 requirements; when none does, it is reported as "no target" with the reason.
 Notebooks whose cells start containers themselves need a Docker daemon, so
 they only route to SSH targets.
+
+Each run is timeboxed: `timebox_minutes` in `runner.yaml` (default 60), or the
+notebook's own `ci.timeout_minutes`. A run that hits it is stopped, its partial
+output judged, and an unfinished run recorded as `blocked`.
 
 ```bash
 python3 tools/routing.py          # where every notebook would run, and why not

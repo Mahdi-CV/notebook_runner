@@ -38,9 +38,11 @@ import json
 import os
 import re
 import shlex
+import signal
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,6 +60,7 @@ SHIM_DIR    = (TOOLS_DIR / "http_ssh_shim").resolve()
 
 sys.path.insert(0, str(TOOLS_DIR))
 import k8s_pod
+import radeon_pod
 import results_db
 import routing
 import verdict
@@ -377,7 +380,7 @@ def run_env_check(notebook_path: Path, rel_key: str, target: dict,
         "--results-dir",    str(RESULTS_DIR),
         "--write-result",
     ]
-    if _is_k8s(target):
+    if _is_pod(target):
         # No host to probe: GPU fit is checked statically, disk is the pod's
         # sized /workspace volume.
         cmd += ["--gpus-per-node", str(target.get("gpus", 1))]
@@ -417,13 +420,22 @@ def run_env_check(notebook_path: Path, rel_key: str, target: dict,
         return None
 
 
-# ── Kubernetes runner ─────────────────────────────────────────────────────────
+# ── Pod runners (Kubernetes, Radeon Global) ───────────────────────────────────
 
-def _is_k8s(target: dict | None) -> bool:
-    return bool(target) and target.get("type") == "k8s"
+POD_TOOLS = {"k8s": "k8s_pod.py", "radeon": "radeon_pod.py"}
+POD_WORKSPACE = "/workspace"  # same in a k8s pod and a Radeon instance
 
 
-def k8s_runtime(target_name: str, target: dict, notebook_path: Path,
+def _is_pod(target: dict | None) -> bool:
+    """Targets where the agent provisions its own pod/instance per run."""
+    return bool(target) and target.get("type") in POD_TOOLS
+
+
+def _pod_tool(target_name: str, target: dict) -> str:
+    return f"python3 {TOOLS_DIR}/{POD_TOOLS[target['type']]} --target {target_name}"
+
+
+def pod_runtime(target_name: str, target: dict, notebook_path: Path,
                 req: routing.Requirements, phase: str, run_id: str) -> tuple[str, str]:
     """Return (pod name, runtime-context block) for one agent run in a pod.
 
@@ -431,15 +443,15 @@ def k8s_runtime(target_name: str, target: dict, notebook_path: Path,
     notebook); run.py only names it and deletes it afterwards.
     """
     pod  = k8s_pod.pod_name(notebook_path.stem, phase, run_id)
-    tool = f"python3 {TOOLS_DIR}/k8s_pod.py --target {target_name}"
+    tool = _pod_tool(target_name, target)
     up_cmd = (f"{tool} up --pod {pod} --gpus {req.gpus} --memory-gb {req.memory_gb} "
               + "".join(f"--env {shlex.quote(f'{k}={v}')} " for k, v in req.env.items())
               + f"--push {notebook_path} --push {TOOLS_DIR / 'preflight_patch.py'}")
-    block = f"""RUNNER          = k8s  (target {target_name}: follow CLAUDE.md "Runner: Kubernetes pod" — there is no SSH host)
+    block = f"""RUNNER          = {target['type']}  (target {target_name}: follow CLAUDE.md "Runner: pod" — there is no SSH host)
 POD_CMD         = {tool} exec --pod {pod}
 K8S_UP_CMD      = {up_cmd}
-NOTEBOOK_REMOTE = {k8s_pod.WORKSPACE}/{notebook_path.name}  (K8S_UP_CMD copies it in once the pod is READY)
-WORKSPACE       = {k8s_pod.WORKSPACE}  (use this wherever the playbook says <WORKSPACE_BASE>/tutorial_agent_runs/<stem>)
+NOTEBOOK_REMOTE = {POD_WORKSPACE}/{notebook_path.name}  (K8S_UP_CMD copies it in once the pod is READY)
+WORKSPACE       = {POD_WORKSPACE}  (use this wherever the playbook says <WORKSPACE_BASE>/tutorial_agent_runs/<stem>)
 SCHEDULE_TIMEOUT = {target.get('schedule_timeout_min', 45)} min (K8S_UP_CMD reports UNSCHEDULABLE after this)
 
 Provision the pod once you have resolved the image (repeat until it prints READY):
@@ -448,22 +460,32 @@ Provision the pod once you have resolved the image (repeat until it prints READY
 Use POD_CMD like this (HF_TOKEN and CONTAINER_ENV are already set in the pod environment):
   Bash: {tool} exec --pod {pod} '<your command here>'
 """
+    if target["type"] == "radeon":
+        block += """
+On Radeon Global only catalog images run: K8S_UP_CMD maps the repository you
+pass with --image to the target's catalog image for it (the tag is ignored) and
+prints the image it launched — report that one as the resolved image. There is
+no Docker in the instance.
+"""
     if phase == "fix":
         block += f"""
 POD_PULL_CMD    = {tool} pull --pod {pod}
 Retrieve the genuine-fix notebook (CLAUDE_FIX.md Step 4c) with:
-  Bash: {tool} pull --pod {pod} {k8s_pod.WORKSPACE}/{notebook_path.stem}_fixed.ipynb {FIXES_DIR}/{notebook_path.stem}.ipynb
+  Bash: {tool} pull --pod {pod} {POD_WORKSPACE}/{notebook_path.stem}_fixed.ipynb {FIXES_DIR}/{notebook_path.stem}.ipynb
 """
     return pod, block
 
 
-def k8s_down(target_name: str, target: dict, pod: str) -> None:
-    """Delete the agent's pod. Called from a finally, so never raises."""
+def pod_down(target_name: str, target: dict, pod: str) -> None:
+    """Delete the agent's pod or instance. Called from a finally, so never raises."""
     try:
-        k8s_pod.down(k8s_pod.Kubectl(target), pod)
+        if target["type"] == "radeon":
+            radeon_pod.down(target, pod)
+        else:
+            k8s_pod.down(k8s_pod.Kubectl(target), pod)
     except Exception as exc:  # noqa: BLE001 — cleanup must not mask the result
         print(f"warning: could not delete pod {pod} on {target_name} ({exc}); "
-              f"activeDeadlineSeconds will stop it", file=sys.stderr)
+              f"its lifetime limit will stop it", file=sys.stderr)
 
 
 # ── Core runner ───────────────────────────────────────────────────────────────
@@ -474,12 +496,12 @@ def _transport(notebook_path: Path, phase: str, target_name: str, target: dict,
     """Return (pod or None, runtime-context block) for one agent run: copy the
     notebook to the SSH target, or name the pod the agent will provision.
     Raises RuntimeError if the copy fails."""
-    if _is_k8s(target):
-        pod, block = k8s_runtime(target_name, target, notebook_path, req, phase, run_id)
+    if _is_pod(target):
+        pod, block = pod_runtime(target_name, target, notebook_path, req, phase, run_id)
     else:
         pod, block = None, _ssh_runtime(target, hf_token, scp_notebook(notebook_path, target))
     name = _output_name(notebook_path, phase)
-    where = (f"{k8s_pod.WORKSPACE}/{name}" if pod else
+    where = (f"{POD_WORKSPACE}/{name}" if pod else
              f"{_run_dir(target, notebook_path)}/{name}  (inside the container: /workspace/{name})")
     return pod, block + f"""
 OUTPUT_NOTEBOOK = {where}
@@ -496,7 +518,7 @@ def _run_dir(target: dict, notebook_path: Path) -> str:
     return f"{_workspace_base(target)}/tutorial_agent_runs/{notebook_path.stem}"
 
 
-def collect_output(notebook_path: Path, phase: str, target: dict,
+def collect_output(notebook_path: Path, phase: str, target_name: str, target: dict,
                    pod: str | None) -> Path | None:
     """Copy the executed notebook back, then remove the SSH run dir (a pod is
     deleted by the caller). Returns the local copy, or None if there is none."""
@@ -506,15 +528,19 @@ def collect_output(notebook_path: Path, phase: str, target: dict,
     EXECUTED_DIR.mkdir(parents=True, exist_ok=True)
     try:
         if pod:
-            k8s_pod.Kubectl(target).run("cp", f"{pod}:{k8s_pod.WORKSPACE}/{name}", str(local),
-                                        "-c", "main", check=False, timeout=300)
+            subprocess.run([*shlex.split(_pod_tool(target_name, target)), "pull", "--pod", pod,
+                            f"{POD_WORKSPACE}/{name}", str(local)],
+                           capture_output=True, timeout=600, check=False)
         else:
             dest, run_dir = f"{target['user']}@{target['host']}", _run_dir(target, notebook_path)
             env = target_env(target)
             subprocess.run(["scp", "-o", "StrictHostKeyChecking=no", f"{dest}:{run_dir}/{name}",
                             str(local)], capture_output=True, timeout=300, check=False, env=env)
-            # Container-written files are root-owned: remove them from a container too.
-            cleanup = (f"docker run --rm -v {run_dir}:/workspace alpine sh -c "
+            # Stop the agent's containers (a timeboxed run may leave them up), then
+            # remove the run dir; container-written files are root-owned, so via a container.
+            stem = notebook_path.stem
+            cleanup = (f"docker rm -f {stem} {stem}_srv >/dev/null 2>&1; "
+                       f"docker run --rm -v {run_dir}:/workspace alpine sh -c "
                        f"'rm -rf /workspace/* /workspace/.[!.]*' 2>/dev/null; rm -rf {run_dir}")
             subprocess.run(["ssh", "-o", "StrictHostKeyChecking=no", dest, cleanup],
                            capture_output=True, timeout=120, check=False, env=env)
@@ -528,6 +554,10 @@ def finalize(notebook_path: Path, phase: str, agent_result: dict,
     """Set the verdict on this attempt's result JSON, writing one if the agent
     did not. The agent's own status, if it gave one, is kept as agent_status."""
     v = verdict.verdict(executed)
+    if agent_result.get("timebox_minutes"):
+        v["timebox_minutes"] = agent_result["timebox_minutes"]
+        if v["status"] == "blocked":
+            v["reason"] = f"stopped at its {agent_result['timebox_minutes']}-minute timebox; {v['reason']}"
     path = agent_result.get("result_path")
     if path:
         payload = json.loads(Path(path).read_text())
@@ -567,11 +597,18 @@ def _requirements_ctx(target: dict, req: routing.Requirements) -> str:
         f"MEMORY_LIMIT    = {req.memory_gb}g  (use for docker run --memory)",
         f"CONTAINER_ENV   = {env or '(none)'}  (add to docker run)",
         f"PAPERMILL_PARAMS = {params or '(none)'}  (append to the papermill command)",
+        (f"TIMEBOX_MINUTES = {req.timeout_minutes}  (the runner stops you after this; run "
+         f"papermill as `timeout {_papermill_minutes(req)}m python -m papermill ...`)"),
     ]
     if req.image:
         lines.append(f"IMAGE_REPO      = {req.image}  (the notebook declares this repo; "
                      f"resolve its tag with resolve_docker_image.py)")
     return "\n".join(lines)
+
+
+def _papermill_minutes(req: routing.Requirements) -> int:
+    """Papermill's share of the timebox, leaving the agent time to diagnose."""
+    return max(req.timeout_minutes - 10, req.timeout_minutes // 2)
 
 
 def run_notebook(notebook_path: Path, rel_key: str, target_name: str, target: dict,
@@ -630,11 +667,12 @@ write_result (call this when done):
             result = (_find_latest_result(notebook_path, since=started)
                       or {"message": "Interactive session ended without a result"})
         else:
-            result = _run_agent("VERIFY", notebook_path, prompt, runtime_ctx, target)
-        executed = collect_output(notebook_path, "verify", target, pod)
+            result = _run_agent("VERIFY", notebook_path, prompt, runtime_ctx, target,
+                                req.timeout_minutes)
+        executed = collect_output(notebook_path, "verify", target_name, target, pod)
     finally:
         if pod:
-            k8s_down(target_name, target, pod)
+            pod_down(target_name, target, pod)
     return finalize(notebook_path, "verify", result, executed)
 
 
@@ -658,11 +696,12 @@ For commands that need HF_TOKEN:
 
 
 def _run_agent(label: str, notebook_path: Path, prompt: str, system_prompt: str,
-               target: dict) -> dict:
+               target: dict, timebox_minutes: int) -> dict:
     """Run one headless agent and return the result JSON it wrote, plus cost.
 
     A one-shot `claude -p` has no scheduler to resume it, so deny the
-    wakeup/cron tools and make the agent poll in-turn (CLAUDE.md).
+    wakeup/cron tools and make the agent poll in-turn (CLAUDE.md). The agent
+    and everything it started locally are stopped at the timebox.
     """
     print(f"\n  Starting {label.lower()} agent (headless)…", flush=True)
     started = time.time()
@@ -682,14 +721,39 @@ def _run_agent(label: str, notebook_path: Path, prompt: str, system_prompt: str,
         text=True,
         cwd=str(HERE),
         env=target_env(target),
+        start_new_session=True,  # its own process group, so the timebox stops all of it
     )
-    meta = handle_stream(proc, notebook_path.name, agent_label=label)
+    stopped = threading.Event()
+
+    def stop() -> None:
+        stopped.set()
+        print(f"\n  ✗ {timebox_minutes}-minute timebox reached — stopping the agent", flush=True)
+        for sig, grace in ((signal.SIGTERM, 30), (signal.SIGKILL, 0)):
+            try:
+                os.killpg(proc.pid, sig)
+            except ProcessLookupError:
+                return
+            try:
+                proc.wait(timeout=grace)
+                return
+            except subprocess.TimeoutExpired:
+                pass
+
+    timer = threading.Timer(timebox_minutes * 60, stop)
+    timer.daemon = True
+    timer.start()
+    try:
+        meta = handle_stream(proc, notebook_path.name, agent_label=label)
+    finally:
+        timer.cancel()
 
     result = _find_latest_result(notebook_path, since=started) or {
         "message": f"{label.capitalize()} agent finished but did not write a result file",
     }
     result["cost_usd"]  = meta.get("cost_usd")
     result["num_turns"] = meta.get("num_turns")
+    if stopped.is_set():
+        result["timebox_minutes"] = timebox_minutes
     return result
 
 
@@ -750,11 +814,12 @@ write_result (call this when done):
     system_prompt = (HERE / "CLAUDE_FIX.md").read_text() + "\n\n---\n\n" + runtime_ctx
 
     try:
-        result = _run_agent("FIX", notebook_path, prompt, system_prompt, target)
-        executed = collect_output(notebook_path, "fix", target, pod)
+        result = _run_agent("FIX", notebook_path, prompt, system_prompt, target,
+                            req.timeout_minutes)
+        executed = collect_output(notebook_path, "fix", target_name, target, pod)
     finally:
         if pod:
-            k8s_down(target_name, target, pod)
+            pod_down(target_name, target, pod)
     return finalize(notebook_path, "fix", result, executed)
 
 
@@ -858,7 +923,8 @@ def parse_args():
 
 def main():
     args     = parse_args()
-    targets  = routing.load_config()["targets"]
+    config   = routing.load_config()
+    targets  = config["targets"]
     base_dir = Path(args.dir).resolve() if args.dir else None
 
     if args.gap and args.failing:
@@ -955,6 +1021,8 @@ def main():
 
         rel_key = _rel_key(nb, base_dir)
         req, target_name, target, reason = routing.resolve(nb, targets, args.target)
+        if req:
+            req.timeout_minutes = req.timeout_minutes or config["timebox_minutes"]
         if target is None:
             print(f"  NO TARGET — {reason}\n")
             skipped.append({"notebook": str(nb), "reason": reason})
@@ -962,7 +1030,7 @@ def main():
                      {"status": "skip", "message": reason}, None)
             continue
 
-        if _is_k8s(target):
+        if target.get("type") == "k8s":
             print(f"  Target     : {target_name} (k8s {target.get('context')}/"
                   f"{target.get('namespace')}, {target.get('hardware')})")
             if target_name not in gc_done:
@@ -972,6 +1040,9 @@ def main():
                 except Exception as exc:  # noqa: BLE001 — hygiene, not a precondition
                     print(f"warning: k8s gc failed ({exc})", file=sys.stderr)
                 gc_done.add(target_name)
+        elif target.get("type") == "radeon":
+            print(f"  Target     : {target_name} (Radeon Global as {target.get('user_name')}, "
+                  f"{target.get('hardware')})")
         else:
             print(f"  Target     : {target_name} ({target.get('user')}@{target.get('host')}, "
                   f"{target.get('hardware')})")

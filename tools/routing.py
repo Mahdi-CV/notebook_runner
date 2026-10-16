@@ -41,6 +41,7 @@ KNOWN_HARDWARE = (set(PRODUCT_ARCH) | set(ARCH_FAMILIES)
                   | {f for fams in ARCH_FAMILIES.values() for f in fams})
 
 DEFAULTS = {"hardware": ["instinct"], "gpus": 1, "memory_gb": 64, "disk_gb": 100}
+DEFAULT_TIMEBOX_MINUTES = 60  # runner.yaml timebox_minutes overrides
 
 # A code cell that starts containers itself needs a Docker daemon on the target.
 DOCKER_RE = re.compile(r"\bdocker\s+(run|exec|pull|compose|build|start)\b")
@@ -58,6 +59,7 @@ class Requirements:
     image: str | None = None
     parameters: dict = field(default_factory=dict)
     depends_on: list[str] = field(default_factory=list)
+    timeout_minutes: int | None = None
 
 
 def hardware_names(hardware: str) -> set[str]:
@@ -81,15 +83,16 @@ def requirements(nb_path: Path) -> Requirements:
         env=dict(ci.get("env") or {}), image=ci.get("image"),
         parameters=dict(ci.get("parameters") or {}),
         depends_on=list(ci.get("depends_on") or []),
+        timeout_minutes=int(ci["timeout_minutes"]) if ci.get("timeout_minutes") else None,
     )
 
 
 def load_config(path: Path = CONFIG_PATH) -> dict:
-    """runner.yaml as {"targets": {name: target}}; no targets if it is missing."""
-    if not path.exists():
-        return {"targets": {}}
-    data = yaml.safe_load(path.read_text()) or {}
-    return {"targets": data.get("targets") or {}}
+    """runner.yaml as {"targets": {name: target}, "timebox_minutes": N}; no
+    targets if it is missing."""
+    data = (yaml.safe_load(path.read_text()) or {}) if path.exists() else {}
+    return {"targets": data.get("targets") or {},
+            "timebox_minutes": int(data.get("timebox_minutes") or DEFAULT_TIMEBOX_MINUTES)}
 
 
 def target_capabilities(target: dict) -> set[str]:

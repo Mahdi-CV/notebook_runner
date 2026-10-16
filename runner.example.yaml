@@ -20,6 +20,15 @@
 # k8s:  context, namespace, node_selector, tolerations, gpu_resource (default
 #       amd.com/gpu), workspace_size, shm_size, schedule_timeout_min,
 #       max_lifetime_hours; see tools/k8s_pod.py for one-time cluster setup
+# radeon: a Radeon Global instance per run (tools/radeon_pod.py; needs
+#       RADEON_CLOUD_API_TOKEN in .env). user_name (one active instance per user:
+#       an existing one is deleted before each launch), pod_type (resource pool),
+#       image (catalog default) and images (Docker repository -> catalog image),
+#       env (set for every command). Runs on it are serial.
+
+# Wall-clock limit for one notebook run (agent + execution), unless the notebook
+# declares metadata.ci.timeout_minutes. A run that hits it is stopped and blocked.
+timebox_minutes: 60
 
 targets:
   instinct-node:
@@ -47,12 +56,16 @@ targets:
     schedule_timeout_min: 45
     max_lifetime_hours: 12
 
-  radeon-pool:
-    type: k8s
-    hardware: rx7900xtx
+  radeon-global:
+    type: radeon
+    hardware: w7900
     gpus: 1
-    gpu_memory_gb: 24
-    context: my-radeon-cluster
-    namespace: notebook-runner
-    workspace_size: 200Gi
-    shm_size: 8Gi
+    gpu_memory_gb: 48
+    user_name: someone@example.com
+    pod_type: dev
+    image: <catalog image for the AMD OneClick Base>
+    images:
+      rocm/pytorch: <catalog image built from rocm/pytorch>
+      vllm/vllm-openai-rocm: <catalog image with vLLM for Radeon>
+    env:
+      PIP_BREAK_SYSTEM_PACKAGES: "1"  # the images' system Python is externally managed

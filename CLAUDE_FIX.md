@@ -45,7 +45,8 @@ the system prompt appended below.
 | `RESULTS_DIR`         | Where to write the result JSON                          |
 | `FIXES_DIR`           | Local dir to retrieve the genuine-fix notebook into     |
 | `VERIFICATION_RESULT` | Local path to the verification agent's result JSON      |
-| `RUNNER`, `POD_CMD`, `K8S_UP_CMD`, `POD_PULL_CMD` | k8s runner only — see below |
+| `RUNNER`, `POD_CMD`, `K8S_UP_CMD`, `POD_PULL_CMD` | Pod runners (k8s, radeon) only — see below |
+| `TIMEBOX_MINUTES`     | Wall-clock limit for this run, as in CLAUDE.md |
 
 Everywhere this playbook shows `<WORKSPACE_BASE>/tutorial_agent_runs/<stem>`,
 substitute the literal `WORKSPACE_BASE` value from the runtime context (it
@@ -66,7 +67,7 @@ Refer to CLAUDE.md (loaded automatically from the project root) for:
 
 All those patterns apply identically to the fixer agent.
 
-With `RUNNER = k8s`, CLAUDE.md's "Runner: Kubernetes pod" section applies too.
+With `RUNNER = k8s` or `radeon`, CLAUDE.md's "Runner: pod" section applies too.
 The verification pod is gone; provision your own with `K8S_UP_CMD` before
 Step 2 and use it for every step after.
 
@@ -172,7 +173,7 @@ Bash: <SSH_HF_CMD> 'docker run --rm --entrypoint /bin/bash \
   python3 -c \"import <package>; print(\\\"ok\\\")\" || echo FAILED"'
 ```
 
-With `RUNNER = k8s`, test in a throwaway venv inside your pod instead, so the
+With a pod runner (`RUNNER = k8s` or `radeon`), test in a throwaway venv inside your pod instead, so the
 candidate never lands in the environment the fixed notebook later runs in:
 ```
 Bash: <POD_CMD> 'python3 -m venv --system-site-packages /tmp/pin && \
@@ -237,7 +238,7 @@ Bash: <SSH_CMD> 'cat > <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh << '"'
 set -e
 pip install -q papermill ipykernel
 python -m ipykernel install --sys-prefix
-python -m papermill /workspace/<nb>_fixed_patched.ipynb /workspace/<nb>_fixed_out.ipynb \
+timeout <papermill minutes from TIMEBOX_MINUTES>m python -m papermill /workspace/<nb>_fixed_patched.ipynb /workspace/<nb>_fixed_out.ipynb \
   --kernel python3 --execution-timeout 3000 <PAPERMILL_PARAMS>
 SCRIPT
 chmod +x <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh'
@@ -300,7 +301,7 @@ error, `fail` if a cell raised, `blocked` if it could not be evaluated. Your
 
 ### 4c. Retrieve the genuine-fix notebook (for the GitHub reporter)
 
-(With `RUNNER = k8s`, use the `POD_PULL_CMD` line from the runtime context
+(With a pod runner, use the `POD_PULL_CMD` line from the runtime context
 instead of the scp below.)
 
 If **at least one** fix validated, copy the genuine-fix notebook back to this
