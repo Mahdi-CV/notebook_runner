@@ -55,6 +55,7 @@ UP_WAIT_SECONDS = 480
 GONE_WAIT_SECONDS = 180
 SETTLE_SECONDS = 30  # after delete, before the user name can launch again
 UNSCHEDULABLE_GRACE = 300
+LAUNCH_GRACE_SECONDS = 180  # an accepted launch can read not_found this long
 EXEC_MARKER = "__NBR_EXIT__="
 EXIT_READY, EXIT_FAILED, EXIT_WAITING, EXIT_UNSCHEDULABLE = 0, 2, 3, 4
 
@@ -350,9 +351,19 @@ def cmd_up(target: dict, args) -> int:
             if st.get("status") in ("failed", "error"):
                 print(f"FAILED: instance {st.get('status')}: {st.get('reason')} {st.get('detail')}")
                 return EXIT_FAILED
+            if st.get("reason"):
+                state["last_reason"] = f"{st.get('reason')}: {st.get('detail') or ''}".strip()
+                save_state(target, state)
             if st.get("status") == "not_found":
-                print("FAILED: instance disappeared before it was ready")
-                return EXIT_FAILED
+                # Radeon Global reaps an instance that stays unschedulable (no free
+                # GPU in the pool) after about 30 seconds; say so, not just "gone".
+                if state.get("last_reason", "").startswith("Unschedulable"):
+                    print(f"UNSCHEDULABLE: {state['last_reason']}")
+                    return EXIT_UNSCHEDULABLE
+                # Right after a launch is accepted the instance may not exist yet.
+                if time.time() - state["launched_at"] > LAUNCH_GRACE_SECONDS:
+                    print("FAILED: instance disappeared before it was ready")
+                    return EXIT_FAILED
             if (st.get("reason") == "Unschedulable"
                     and time.time() - state["launched_at"] > UNSCHEDULABLE_GRACE):
                 print(f"UNSCHEDULABLE: {st.get('detail') or st.get('reason')}")

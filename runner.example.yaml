@@ -62,7 +62,7 @@ targets:
     gpus: 1
     gpu_memory_gb: 48
     user_name: someone@example.com
-    pod_type: dev
+    pod_type: hf
     image: <catalog image for the AMD OneClick Base>
     images:
       rocm/pytorch: <catalog image built from rocm/pytorch>
