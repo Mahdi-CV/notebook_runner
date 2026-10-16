@@ -237,8 +237,8 @@ Bash: <SSH_CMD> 'cat > <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh << '"'
 #!/bin/bash
 set -e
 pip install -q papermill ipykernel
-python -m ipykernel install --sys-prefix
-timeout <papermill minutes from TIMEBOX_MINUTES>m python -m papermill /workspace/<nb>_fixed_patched.ipynb /workspace/<nb>_fixed_out.ipynb \
+python3 -m ipykernel install --sys-prefix
+timeout <papermill minutes from TIMEBOX_MINUTES>m python3 -m papermill /workspace/<nb>_fixed_patched.ipynb /workspace/<nb>_fixed_out.ipynb \
   --kernel python3 --execution-timeout 3000 <PAPERMILL_PARAMS>
 SCRIPT
 chmod +x <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh'
