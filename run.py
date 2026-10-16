@@ -172,12 +172,12 @@ def collect_status_notebooks(selector: str, base_dir: Path,
 
 # ── Notebook transfer ─────────────────────────────────────────────────────────
 
-def scp_notebook(local_path: Path, target: dict) -> str:
-    """Copy notebook and preflight_patch.py to an SSH target. Returns remote path."""
+def scp_notebook(local_path: Path, target: dict, support: list[Path]) -> str:
+    """Copy the notebook and its support files (preflight_patch.py,
+    run_notebook.sh and its settings) to an SSH target. Returns remote path."""
     remote_dir = f"{_workspace_base(target)}/tutorial_agent_runs/{local_path.stem}"
     remote_path = f"{remote_dir}/{local_path.name}"
     dest       = f"{target['user']}@{target['host']}"
-    preflight  = TOOLS_DIR / "preflight_patch.py"
     env        = target_env(target)
 
     print(f"  Copying {local_path.name} → {dest}:{remote_dir}/", flush=True)
@@ -190,7 +190,7 @@ def scp_notebook(local_path: Path, target: dict) -> str:
             )
             subprocess.run(
                 ["scp", "-o", "StrictHostKeyChecking=no", "-o", "ForwardX11=no",
-                 str(local_path), str(preflight), f"{dest}:{remote_dir}/"],
+                 str(local_path), *map(str, support), f"{dest}:{remote_dir}/"],
                 check=True, capture_output=True, timeout=60, env=env,
             )
             return remote_path
@@ -436,7 +436,8 @@ def _pod_tool(target_name: str, target: dict) -> str:
 
 
 def pod_runtime(target_name: str, target: dict, notebook_path: Path,
-                req: routing.Requirements, phase: str, run_id: str) -> tuple[str, str]:
+                req: routing.Requirements, phase: str, run_id: str,
+                support: list[Path]) -> tuple[str, str]:
     """Return (pod name, runtime-context block) for one agent run in a pod.
 
     The agent provisions the pod itself (it picks the image after reading the
@@ -446,7 +447,7 @@ def pod_runtime(target_name: str, target: dict, notebook_path: Path,
     tool = _pod_tool(target_name, target)
     up_cmd = (f"{tool} up --pod {pod} --gpus {req.gpus} --memory-gb {req.memory_gb} "
               + "".join(f"--env {shlex.quote(f'{k}={v}')} " for k, v in req.env.items())
-              + f"--push {notebook_path} --push {TOOLS_DIR / 'preflight_patch.py'}")
+              + f"--push {notebook_path} " + " ".join(f"--push {p}" for p in support))
     block = f"""RUNNER          = {target['type']}  (target {target_name}: follow CLAUDE.md "Runner: pod" — there is no SSH host)
 POD_CMD         = {tool} exec --pod {pod}
 K8S_UP_CMD      = {up_cmd}
@@ -497,9 +498,11 @@ def _transport(notebook_path: Path, phase: str, target_name: str, target: dict,
     notebook to the SSH target, or name the pod the agent will provision.
     Raises RuntimeError if the copy fails."""
     if _is_pod(target):
-        pod, block = pod_runtime(target_name, target, notebook_path, req, phase, run_id)
+        pod, block = pod_runtime(target_name, target, notebook_path, req, phase, run_id,
+                                 support_files(notebook_path, req))
     else:
-        pod, block = None, _ssh_runtime(target, hf_token, scp_notebook(notebook_path, target))
+        pod, block = None, _ssh_runtime(
+            target, hf_token, scp_notebook(notebook_path, target, support_files(notebook_path, req)))
     name = _output_name(notebook_path, phase)
     where = (f"{POD_WORKSPACE}/{name}" if pod else
              f"{_run_dir(target, notebook_path)}/{name}  (inside the container: /workspace/{name})")
@@ -588,17 +591,48 @@ def blocked(notebook_path: Path, phase: str, reason: str) -> dict:
     return finalize(notebook_path, phase, {"message": reason}, None) | {"message": reason}
 
 
+def support_files(notebook_path: Path, req: routing.Requirements) -> list[Path]:
+    """Files every run needs next to the notebook: preflight_patch.py,
+    run_notebook.sh, its settings (run_notebook.env, from metadata.ci) and the
+    notebook's requirements file, if it declares one."""
+    stage = HERE / "logs" / ".stage" / notebook_path.stem
+    stage.mkdir(parents=True, exist_ok=True)
+    files = [TOOLS_DIR / "preflight_patch.py", TOOLS_DIR / "run_notebook.sh",
+             stage / "run_notebook.env"]
+    requirements = ""
+    if isinstance(req.requirements, str):  # a file next to the notebook
+        source = notebook_path.parent / req.requirements
+        if source.is_file():
+            files.append(source)
+            requirements = source.name
+    elif req.requirements:  # a list of pip specs
+        (stage / "ci_requirements.txt").write_text("\n".join(req.requirements) + "\n")
+        files.append(stage / "ci_requirements.txt")
+        requirements = "ci_requirements.txt"
+    params = " ".join(f"-p {shlex.quote(str(k))} {shlex.quote(str(v))}"
+                      for k, v in req.parameters.items())
+    (stage / "run_notebook.env").write_text(
+        f"SYSTEM_PACKAGES={shlex.quote(' '.join(req.system_packages))}\n"
+        f"REQUIREMENTS={shlex.quote(requirements)}\n"
+        f"TIMEOUT_MINUTES={_papermill_minutes(req)}\n"
+        f"PAPERMILL_ARGS=({params})\n"
+        + "".join(f"export {k}={shlex.quote(str(v))}\n" for k, v in req.env.items()))
+    return files
+
+
 def _requirements_ctx(target: dict, req: routing.Requirements) -> str:
     """Runtime-context lines for what the notebook declares in metadata.ci."""
-    params = " ".join(f"-p {k} {shlex.quote(str(v))}" for k, v in req.parameters.items())
     env = " ".join(f"-e {shlex.quote(f'{k}={v}')}" for k, v in req.env.items())
     lines = [
         f"GPU_HARDWARE    = {target.get('hardware', 'unknown')}",
         f"MEMORY_LIMIT    = {req.memory_gb}g  (use for docker run --memory)",
         f"CONTAINER_ENV   = {env or '(none)'}  (add to docker run)",
-        f"PAPERMILL_PARAMS = {params or '(none)'}  (append to the papermill command)",
-        (f"TIMEBOX_MINUTES = {req.timeout_minutes}  (the runner stops you after this; run "
-         f"papermill as `timeout {_papermill_minutes(req)}m python -m papermill ...`)"),
+        ("RUN_NOTEBOOK    = bash run_notebook.sh <input.ipynb> <output.ipynb>  (run it in the "
+         "notebook's run dir; it installs the notebook's declared system packages and "
+         "requirements into a sandbox venv and runs papermill with its CI parameters and "
+         "timeout)"),
+        (f"TIMEBOX_MINUTES = {req.timeout_minutes}  (the runner stops you after this; "
+         f"run_notebook.sh gives papermill {_papermill_minutes(req)} of them)"),
     ]
     if req.image:
         lines.append(f"IMAGE_REPO      = {req.image}  (the notebook declares this repo; "

@@ -36,7 +36,7 @@ the system prompt appended below.
 | `SSH_CMD`             | Exact SSH prefix for every server command                |
 | `SSH_HF_CMD`          | SSH prefix with HF_TOKEN pre-exported                   |
 | `GPU_HARDWARE`        | Hardware name (e.g. mi300x, rx7900xtx) for Docker image resolution |
-| `MEMORY_LIMIT`, `CONTAINER_ENV`, `PAPERMILL_PARAMS`, `IMAGE_REPO` | The notebook's declared requirements; use them as in CLAUDE.md |
+| `MEMORY_LIMIT`, `CONTAINER_ENV`, `RUN_NOTEBOOK`, `IMAGE_REPO` | The notebook's declared requirements and how to run it; use them as in CLAUDE.md |
 | `OUTPUT_NOTEBOOK`     | Where papermill must write the executed fixed notebook (`<nb>_fixed_out.ipynb`); the runner's verdict comes from it |
 | `NOTEBOOK_LOCAL`      | Local path to the notebook being tested                 |
 | `NOTEBOOK_REMOTE`     | Remote path — already copied, ready to use              |
@@ -236,10 +236,7 @@ audio, `ci-skip` cells) deterministically. Use `<nb>_fixed_patched.ipynb` for th
 Bash: <SSH_CMD> 'cat > <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh << '"'"'SCRIPT'"'"'
 #!/bin/bash
 set -e
-pip install -q papermill ipykernel
-python3 -m ipykernel install --sys-prefix
-timeout <papermill minutes from TIMEBOX_MINUTES>m python3 -m papermill /workspace/<nb>_fixed_patched.ipynb /workspace/<nb>_fixed_out.ipynb \
-  --kernel python3 --execution-timeout 3000 <PAPERMILL_PARAMS>
+bash /workspace/run_notebook.sh /workspace/<nb>_fixed_patched.ipynb /workspace/<nb>_fixed_out.ipynb
 SCRIPT
 chmod +x <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh'
 ```

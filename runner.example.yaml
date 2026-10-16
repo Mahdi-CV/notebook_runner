@@ -67,5 +67,3 @@ targets:
     images:
       rocm/pytorch: <catalog image built from rocm/pytorch>
       vllm/vllm-openai-rocm: <catalog image with vLLM for Radeon>
-    env:
-      PIP_BREAK_SYSTEM_PACKAGES: "1"  # the images' system Python is externally managed

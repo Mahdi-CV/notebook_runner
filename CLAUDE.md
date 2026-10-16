@@ -37,7 +37,7 @@ appended below the playbook.
 | `GPU_HARDWARE`    | Hardware name (e.g. mi300x, rx7900xtx) for Docker image resolution |
 | `MEMORY_LIMIT`    | Host memory for the container: use it as `docker run --memory=<MEMORY_LIMIT>` |
 | `CONTAINER_ENV`   | `-e K=V` flags the notebook declares; add them to `docker run` (`(none)` if empty) |
-| `PAPERMILL_PARAMS`| `-p NAME VALUE` flags the notebook declares for CI; append them to the papermill command (`(none)` if empty) |
+| `RUN_NOTEBOOK`    | How to execute the notebook: `bash run_notebook.sh <input> <output>` in its run dir. It installs the notebook's declared system packages and requirements into a sandbox venv, then runs papermill with the notebook's CI parameters and timeout |
 | `IMAGE_REPO`      | Present only when the notebook declares its Docker repo; resolve the tag for that repo |
 | `OUTPUT_NOTEBOOK` | Where papermill must write the executed notebook (host path, and its `/workspace/...` path inside the container) |
 | `NOTEBOOK_LOCAL`  | Local path to the notebook being tested                 |
@@ -118,10 +118,7 @@ embed multi-line logic in the SSH argument (quoting breaks):
 Bash: <SSH_CMD> 'cat > <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh << '"'"'SCRIPT'"'"'
 #!/bin/bash
 set -e
-pip install -q papermill ipykernel
-python3 -m ipykernel install --sys-prefix
-python3 -m papermill /workspace/<nb>.ipynb /workspace/<nb>_out.ipynb \
-  --kernel python3 --execution-timeout 3000
+bash /workspace/run_notebook.sh /workspace/<nb>_patched.ipynb /workspace/<nb>_out.ipynb
 SCRIPT
 chmod +x <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh'
 
@@ -336,10 +333,7 @@ and use it as the image in ALL subsequent `docker run` commands for this noteboo
 Bash: <SSH_CMD> 'cat > <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh << '"'"'SCRIPT'"'"'
 #!/bin/bash
 set -e
-pip install -q papermill ipykernel
-python3 -m ipykernel install --sys-prefix
-timeout <papermill minutes from TIMEBOX_MINUTES>m python3 -m papermill /workspace/<nb>_patched.ipynb /workspace/<nb>_out.ipynb \
-  --kernel python3 --execution-timeout 3000 <PAPERMILL_PARAMS>
+bash /workspace/run_notebook.sh /workspace/<nb>_patched.ipynb /workspace/<nb>_out.ipynb
 SCRIPT
 chmod +x <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh'
 ```
@@ -393,10 +387,12 @@ Run the `%%bash` cell content directly on host, then poll health as Pattern B.
 ### Pattern D — Host Python
 
 ```
-Bash: <SSH_CMD> 'cd <WORKSPACE_BASE>/tutorial_agent_runs/<stem> && python3 -m papermill <nb>_patched.ipynb <OUTPUT_NOTEBOOK> --kernel python3 --execution-timeout 600 <PAPERMILL_PARAMS>'
+Bash: <SSH_CMD> 'cd <WORKSPACE_BASE>/tutorial_agent_runs/<stem> && bash run_notebook.sh <nb>_patched.ipynb <OUTPUT_NOTEBOOK>'
 ```
 
-Whatever the pattern, papermill's output goes to `OUTPUT_NOTEBOOK` (in
+Whatever the pattern, run the notebook with `run_notebook.sh` (never a
+papermill command of your own: it sets up the notebook's sandbox environment,
+CI parameters and timeout) and write the output to `OUTPUT_NOTEBOOK` (in
 Pattern A that is `/workspace/<nb>_out.ipynb` inside the container). The
 verdict is computed from that file, so a run that writes it elsewhere is
 reported as `blocked`.
@@ -488,9 +484,9 @@ The fixer agent will only attempt issues marked `auto_fixable`.
 
 **The whole run has a timebox** (`TIMEBOX_MINUTES`). The runner stops you when
 it expires and records whatever papermill wrote; an unfinished run is reported
-as `blocked`. Run papermill under `timeout` with the minutes the runtime
-context gives for it, so a hung notebook ends with an executed notebook to
-judge and you still have time to write the diagnosis.
+as `blocked`. `run_notebook.sh` gives papermill part of the timebox, so a hung
+notebook ends with an executed notebook to judge and you still have time to
+write the diagnosis.
 
 **Background process rule** — always redirect stdin or SSH will hang:
 ```
