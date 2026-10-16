@@ -5,9 +5,9 @@
 # metadata.ci) to every target, so a notebook runs the same way everywhere:
 #
 #   1. install the declared system packages (apt), if any are missing;
-#   2. create a virtual environment on top of the image's Python
-#      (--system-site-packages keeps its ROCm PyTorch) with uv, which needs
-#      neither python3-venv nor a pip the system lets it use;
+#   2. create a virtual environment on top of the image's Python with uv, which
+#      needs neither python3-venv nor a pip the system lets it use; the image
+#      Python's packages (its ROCm PyTorch) stay importable;
 #   3. install the declared requirements, papermill and ipykernel into it;
 #   4. register it as the papermill kernel with its bin/ first on PATH, so the
 #      notebook's own `!pip` / `%pip` cells install into it too;
@@ -56,6 +56,11 @@ fi
 if [[ ! -x "$VENV/bin/python" ]]; then
   log "creating $VENV on top of $(command -v python3)"
   uv venv -q --seed --system-site-packages --python "$(command -v python3)" "$VENV"
+  # --system-site-packages only exposes the base interpreter's packages. When the
+  # image's python3 is itself a venv or conda env (e.g. /opt/venv in
+  # rocm/comfyui), its own site-packages hold the ROCm PyTorch, so list them too.
+  python3 -c 'import site; print("\n".join(site.getsitepackages()))' \
+    > "$("$VENV/bin/python" -c 'import sysconfig; print(sysconfig.get_path("purelib"))')/_nbr_image_site.pth"
 fi
 deps=(papermill ipykernel)
 [[ -n "$REQUIREMENTS" ]] && deps+=(-r "$REQUIREMENTS")
