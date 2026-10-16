@@ -62,6 +62,7 @@ class Requirements:
     timeout_minutes: int | None = None
     requirements: list[str] | str | None = None  # pip specs, or a file next to the notebook
     system_packages: list[str] = field(default_factory=list)
+    sandbox: bool = True  # False: run in the image's Python, not a sandbox venv
 
 
 def hardware_names(hardware: str) -> set[str]:
@@ -88,6 +89,7 @@ def requirements(nb_path: Path) -> Requirements:
         timeout_minutes=int(ci["timeout_minutes"]) if ci.get("timeout_minutes") else None,
         requirements=ci.get("requirements") or None,
         system_packages=list(ci.get("system_packages") or []),
+        sandbox=bool(ci.get("sandbox", True)),
     )
 
 

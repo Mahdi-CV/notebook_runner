@@ -631,6 +631,7 @@ def support_files(notebook_path: Path, req: routing.Requirements) -> list[Path]:
         f"TIMEOUT_MINUTES={_papermill_minutes(req)}\n"
         f"PAPERMILL_ARGS=({params})\n"
         f"ASSETS=({' '.join(shlex.quote(a.name) for a in assets)})\n"
+        f"SANDBOX={1 if req.sandbox else 0}\n"
         + "".join(f"export {k}={shlex.quote(str(v))}\n" for k, v in req.env.items()))
     return files
 
@@ -650,8 +651,8 @@ def _requirements_ctx(target: dict, req: routing.Requirements) -> str:
          f"run_notebook.sh gives papermill {_papermill_minutes(req)} of them)"),
     ]
     if req.image:
-        lines.append(f"IMAGE_REPO      = {req.image}  (the notebook declares this repo; "
-                     f"resolve its tag with resolve_docker_image.py)")
+        lines.append(f"IMAGE_REPO      = {req.image}  (the notebook declares this repo, or "
+                     f"repo:tag; resolve it with resolve_docker_image.py)")
     return "\n".join(lines)
 
 

@@ -16,7 +16,9 @@
 # Usage: bash run_notebook.sh INPUT.ipynb OUTPUT.ipynb
 # Settings (run_notebook.env, all optional): SYSTEM_PACKAGES, REQUIREMENTS
 # (a file next to the notebook), TIMEOUT_MINUTES, PAPERMILL_ARGS (array),
-# ASSETS (array: files pushed with the notebook that it reads from ../assets).
+# ASSETS (array: files pushed with the notebook that it reads from ../assets),
+# SANDBOX (0: install into and run with the image's Python, for notebooks whose
+# tools start their own processes with it, such as Ray workers).
 
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -27,6 +29,7 @@ REQUIREMENTS=""
 TIMEOUT_MINUTES=50
 PAPERMILL_ARGS=()
 ASSETS=()
+SANDBOX=1
 # shellcheck disable=SC1091
 [[ -f run_notebook.env ]] && source run_notebook.env
 VENV="$PWD/.nbr-venv"
@@ -46,7 +49,11 @@ if ((${#missing[@]})); then
   DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq "${missing[@]}"
 fi
 
-if ! command -v uv >/dev/null; then
+if [[ $SANDBOX == 0 ]]; then
+  PY=$(command -v python3)
+  log "no sandbox: using $PY"
+  export PIP_BREAK_SYSTEM_PACKAGES=1
+elif ! command -v uv >/dev/null; then
   log "installing uv"
   # Images whose system Python is externally managed (PEP 668) refuse a plain
   # pip install; uv itself is the only thing installed outside the venv.
@@ -55,7 +62,8 @@ if ! command -v uv >/dev/null; then
   export PATH="$HOME/.local/bin:$PATH"
 fi
 
-if [[ ! -x "$VENV/bin/python" ]]; then
+[[ $SANDBOX == 0 ]] || PY="$VENV/bin/python"
+if [[ $SANDBOX != 0 && ! -x "$VENV/bin/python" ]]; then
   log "creating $VENV on top of $(command -v python3)"
   uv venv -q --seed --system-site-packages --python "$(command -v python3)" "$VENV"
   # --system-site-packages only exposes the base interpreter's packages. When the
@@ -74,7 +82,8 @@ deps=(papermill ipykernel)
 [[ -n "$REQUIREMENTS" ]] && deps+=(-r "$REQUIREMENTS")
 # Hold the image's PyTorch stack: a requirement that cannot use it should fail
 # here, not quietly replace the ROCm build with a PyPI (CUDA) one.
-"$VENV/bin/python" - > "$VENV/image-constraints.txt" <<'PY'
+CONSTRAINTS="$PWD/.nbr-image-constraints.txt"
+"$PY" - > "$CONSTRAINTS" <<'PY'
 from importlib.metadata import PackageNotFoundError, version
 for name in ("torch", "torchvision", "torchaudio", "triton", "pytorch-triton-rocm"):
     try:
@@ -82,18 +91,22 @@ for name in ("torch", "torchvision", "torchaudio", "triton", "pytorch-triton-roc
     except PackageNotFoundError:
         pass
 PY
-log "installing ${deps[*]} (holding: $(tr '\n' ' ' < "$VENV/image-constraints.txt"))"
+log "installing ${deps[*]} (holding: $(tr '\n' ' ' < "$CONSTRAINTS"))"
 # pip, not uv: uv does not count the image packages the venv inherits as
 # installed, so anything that depends on torch would pull a second one.
-"$VENV/bin/python" -m pip install -q --disable-pip-version-check -c "$VENV/image-constraints.txt" "${deps[@]}"
+"$PY" -m pip install -q --disable-pip-version-check -c "$CONSTRAINTS" "${deps[@]}"
 
 # PYTHONPATH: the image's own console scripts (torchrun, accelerate, deepspeed)
 # run the image Python, which would not see what the notebook installs here.
-SITE=$("$VENV/bin/python" -c 'import sysconfig; print(sysconfig.get_path("purelib"))')
-"$VENV/bin/python" -m ipykernel install --prefix "$VENV" --name nbr \
-  --display-name "Python 3 (notebook sandbox)" \
-  --env PATH "$VENV/bin:$PATH" --env VIRTUAL_ENV "$VENV" \
-  --env PYTHONPATH "$SITE${PYTHONPATH:+:$PYTHONPATH}" >/dev/null
+if [[ $SANDBOX == 0 ]]; then
+  "$PY" -m ipykernel install --user --name nbr --display-name "Python 3 (image)" >/dev/null
+else
+  SITE=$("$VENV/bin/python" -c 'import sysconfig; print(sysconfig.get_path("purelib"))')
+  "$VENV/bin/python" -m ipykernel install --prefix "$VENV" --name nbr \
+    --display-name "Python 3 (notebook sandbox)" \
+    --env PATH "$VENV/bin:$PATH" --env VIRTUAL_ENV "$VENV" \
+    --env PYTHONPATH "$SITE${PYTHONPATH:+:$PYTHONPATH}" >/dev/null
+fi
 
 # In the repository, notebooks read shared files from ../assets: run the kernel
 # one level down so the pushed copies are found the same way.
@@ -104,5 +117,5 @@ if ((${#ASSETS[@]})); then
 fi
 
 log "running papermill (timeout ${TIMEOUT_MINUTES}m)"
-exec timeout "${TIMEOUT_MINUTES}m" "$VENV/bin/python" -m papermill "$INPUT" "$OUTPUT" \
+exec timeout "${TIMEOUT_MINUTES}m" "$PY" -m papermill "$INPUT" "$OUTPUT" \
   --kernel nbr --execution-timeout 3000 "${PAPERMILL_ARGS[@]}"
