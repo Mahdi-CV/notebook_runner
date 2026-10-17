@@ -12,15 +12,16 @@
   {% for name, t in targets.items() %}
     <tr>
       <td class="mono">{{ name }}</td>
-      <td>{{ "Kubernetes pod" if t.type == "k8s" else "SSH host" }}</td>
+      <td>{{ {"k8s": "Kubernetes pod", "radeon": "Radeon Global instance"}.get(t.type, "SSH host") }}</td>
       <td>{{ t.hardware or "—" }}</td>
       <td>{{ t.gpus or 1 }}{% if t.gpu_memory_gb %} × {{ t.gpu_memory_gb }} GB{% endif %}</td>
-      <td class="mono">{% if t.type == "k8s" %}{{ t.context }} / {{ t.namespace }}{% else %}{{ t.user }}@{{ t.host }}{% endif %}</td>
+      <td class="mono">{% if t.type == "k8s" %}{{ t.context }} / {{ t.namespace }}{% elif t.type == "radeon" %}{{ t.user_name }} · pool {{ t.pod_type }}{% else %}{{ t.user }}@{{ t.host }}{% endif %}</td>
       <td class="mono">
         {% for k, v in (t.node_selector or {}).items() %}{{ k }}={{ v }}<br>{% endfor %}
         {% for tol in (t.tolerations or []) %}<span class="dim">tolerates</span> {{ tol.key }}{% if tol.value %}={{ tol.value }}{% endif %}<br>{% endfor %}
+        {% if t.model_mount %}<span class="dim">model mount</span> {{ t.model_mount }}<br>{% endif %}
       </td>
-      <td>{{ ((t.capabilities or []) + (["docker"] if t.type != "k8s" else [])) | join(", ") or "—" }}</td>
+      <td>{{ ((t.capabilities or []) + (["docker"] if t.type in (None, "ssh") else [])) | join(", ") or "—" }}</td>
     </tr>
   {% else %}
     <tr><td colspan="7" class="dim">No runner.yaml on this host: routes are not shown.</td></tr>
