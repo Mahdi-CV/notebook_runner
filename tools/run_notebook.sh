@@ -56,10 +56,14 @@ if [[ $SANDBOX == 0 ]]; then
 elif ! command -v uv >/dev/null; then
   log "installing uv"
   # Images whose system Python is externally managed (PEP 668) refuse a plain
-  # pip install; uv itself is the only thing installed outside the venv.
+  # pip install; uv itself is the only thing installed outside the venv. An image
+  # whose python3 is itself a venv refuses --user, so fall back to a private
+  # --target directory (from PyPI, which egress proxies allow more often than
+  # astral.sh), then to uv's installer.
   PIP_BREAK_SYSTEM_PACKAGES=1 python3 -m pip install -q --user uv 2>/dev/null \
+    || python3 -m pip install -q --target "$HOME/.nbr-uv" uv 2>/dev/null \
     || curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null
-  export PATH="$HOME/.local/bin:$PATH"
+  export PATH="$HOME/.nbr-uv/bin:$HOME/.local/bin:$PATH"
 fi
 
 [[ $SANDBOX == 0 ]] || PY="$VENV/bin/python"
