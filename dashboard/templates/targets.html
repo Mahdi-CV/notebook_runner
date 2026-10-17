@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% from "_macros.html" import nb_link, requirements %}
+{% block title %}Targets{% endblock %}
+{% block content %}
+<h1>Targets</h1>
+<p class="sub">Where the runner can execute notebooks (<span class="mono">runner.yaml</span>, in preference order), and where each notebook's declared requirements route it.</p>
+
+<h2>Targets ({{ targets | length }})</h2>
+<table>
+  <thead><tr><th>Name</th><th>Type</th><th>Hardware</th><th>GPUs</th><th>Where</th><th>Scheduling</th><th>Provides</th></tr></thead>
+  <tbody>
+  {% for name, t in targets.items() %}
+    <tr>
+      <td class="mono">{{ name }}</td>
+      <td>{{ {"k8s": "Kubernetes pod", "radeon": "Radeon Global instance"}.get(t.type, "SSH host") }}</td>
+      <td>{{ t.hardware or "—" }}</td>
+      <td>{{ t.gpus or 1 }}{% if t.gpu_memory_gb %} × {{ t.gpu_memory_gb }} GB{% endif %}</td>
+      <td class="mono">{% if t.type == "k8s" %}{{ t.context }} / {{ t.namespace }}{% elif t.type == "radeon" %}{{ t.user_name }} · pool {{ t.pod_type }}{% else %}{{ t.user }}@{{ t.host }}{% endif %}</td>
+      <td class="mono">
+        {% for k, v in (t.node_selector or {}).items() %}{{ k }}={{ v }}<br>{% endfor %}
+        {% for tol in (t.tolerations or []) %}<span class="dim">tolerates</span> {{ tol.key }}{% if tol.value %}={{ tol.value }}{% endif %}<br>{% endfor %}
+        {% if t.model_mount %}<span class="dim">model mount</span> {{ t.model_mount }}<br>{% endif %}
+      </td>
+      <td>{{ ((t.capabilities or []) + (["docker"] if t.type in (None, "ssh") else [])) | join(", ") or "—" }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="7" class="dim">No runner.yaml on this host: routes are not shown.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{% for category, items in groups.items() %}
+<h2>{{ category }} ({{ items | length }})</h2>
+<table>
+  <thead><tr><th>Notebook</th><th>Needs</th><th>Runs on</th></tr></thead>
+  <tbody>
+  {% for n in items %}
+    <tr>
+      <td>{{ nb_link(n.key) }}</td>
+      <td>{{ requirements(n.req) if n.req else "—" }}</td>
+      <td class="mono">{% if n.target %}{{ n.target }}{% elif n.reason %}<span class="badge muted">no target</span> <span class="dim wrap">{{ n.reason }}</span>{% else %}—{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endfor %}
+{% endblock %}

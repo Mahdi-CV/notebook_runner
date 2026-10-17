@@ -139,17 +139,47 @@ Both agents always clean up remote files and containers after any outcome.
 git clone https://github.com/Mahdi-CV/notebook-runner-agent.git
 cd notebook-runner-agent
 
-cp .env.example .env
-# Edit .env and fill in GPU_HOST, GPU_USER, HF_TOKEN
+cp .env.example .env              # secrets: HF_TOKEN, gateway credentials, ...
+cp runner.example.yaml runner.yaml # the GPU hosts and k8s pools this runner may use
+ln -s /path/to/gpuaidev/docs/notebooks notebooks   # the notebooks under test
 ```
 
 **.env keys:**
 
 | Variable   | Required | Description |
 |------------|----------|-------------|
-| `GPU_HOST` | yes      | Hostname or IP of the AMD GPU server |
-| `GPU_USER` | yes      | SSH username on the GPU server |
 | `HF_TOKEN` | yes      | HuggingFace access token for gated model downloads |
+| `AGENT_SECRET` | with `agent_url` targets | Signs requests to GPU nodes reached through `tools/http_ssh_shim/` |
+| `NBR_KUBECONFIG` | with k8s targets | Namespace-scoped kubeconfig (see `tools/k8s_pod.py`) |
+
+### Where notebooks run
+
+A notebook says what it needs in its own metadata (`metadata.ci`: hardware,
+GPU count and memory, host memory, disk, capabilities, environment, image,
+CI parameters, dependencies) and tags cells that cannot run unattended
+`ci-skip`; see `.github/CI_METADATA.md` in
+[ROCm/gpuaidev](https://github.com/ROCm/gpuaidev). Every tutorial there
+declares at least its hardware and GPU count (a PR check enforces it); a
+notebook from elsewhere with no metadata is treated as needing one AMD Instinct
+GPU.
+
+`runner.yaml` lists the targets this deployment can use: SSH hosts, where the
+agent runs `docker` on the machine; `type: k8s` pools, where
+`tools/k8s_pod.py` gives each agent run its own pod built from the resolved
+image; and `type: radeon`, where `tools/radeon_pod.py` launches a Radeon Global
+instance through its Service API and drives its Jupyter server (one instance
+per user name, so runs there are serial). Each notebook runs on the first target that meets all its
+requirements; when none does, it is reported as "no target" with the reason.
+Notebooks whose cells start containers themselves need a Docker daemon, so
+they only route to SSH targets.
+
+Each run is timeboxed: `timebox_minutes` in `runner.yaml` (default 60), or the
+notebook's own `ci.timeout_minutes`. A run that hits it is stopped, its partial
+output judged, and an unfinished run recorded as `blocked`.
+
+```bash
+python3 tools/routing.py          # where every notebook would run, and why not
+```
 
 ---
 
@@ -177,11 +207,8 @@ python3 run.py --dir /path/to/notebooks/ --gap
 # Only notebooks whose latest result is a hard fail
 python3 run.py --dir /path/to/notebooks/ --failing
 
-# Skip notebooks that need more GPUs than the target node has
-python3 run.py --dir /path/to/notebooks/ --max-gpus 1
-
-# Override server credentials for this run
-python3 run.py path/to/notebook.ipynb --host my-server.example.com --user amd
+# Only consider one runner.yaml target (others' notebooks are reported, not run)
+python3 run.py --dir /path/to/notebooks/ --target radeon-pool
 
 # Interactive mode — opens a live Claude session with full runtime context pre-loaded
 python3 run.py path/to/notebook.ipynb --interactive
@@ -190,6 +217,9 @@ python3 run.py path/to/notebook.ipynb --interactive
 **Modes:** `verify` (diagnosis only) | `fix` (apply fixes from prior result) | `full` (verify then fix — default)
 
 **Categories:** `inference` | `fine_tune` | `pretrain` | `gpu_dev_optimize`
+
+**Targets:** see "Where notebooks run" above. One-time cluster setup for k8s
+targets is in the `tools/k8s_pod.py` docstring.
 
 ### CI orchestrator
 
@@ -208,32 +238,11 @@ python3 tools/ci_run.py --dry-run             # print the plan, run nothing
 | A | Freshness | Run the gap set (never-tested + stale >7d) in `--mode full` |
 | B | Failures | Re-aggregate, then re-run notebooks still failing (deduped vs Phase A) |
 | C | Dashboard | Regenerate `STATUS.md` from fresh results |
-| D | Commit | Auto-commit `STATUS.md` + `manifest.yaml` (skip with `--no-commit`) |
+| D | Commit | Auto-commit `STATUS.md` (skip with `--no-commit`) |
+| E | Notify | Post a summary card to Teams (skip with `--no-notify`) |
 
-A weekly cron (`tools/ci_cron.sh`, `flock`-guarded) drives this unattended.
-
-### Manifest (optional)
-
-Create `manifest.yaml` in the same directory as `run.py` to control per-notebook behaviour:
-
-```yaml
-servers:
-  mi300x-box:
-    host: gpu1.example.com
-    user: amd
-    hardware: mi300x
-
-notebooks:
-  inference/my_notebook.ipynb:
-    server: mi300x-box
-    expected_result: partial   # "partial" counts as passing
-    skip: false
-    notes: "Known issue: cell 3 uses deprecated vllm flag --max-num-seqs"
-
-  fine_tune/slow_notebook.ipynb:
-    skip: true
-    skip_reason: "Requires H100, not available on ROCm server"
-```
+The daily unattended pass runs it in a container via `docker/notebook-runner-cron.sh`
+(see `docker/README.md`).
 
 ---
 
@@ -275,13 +284,60 @@ back to the verification result it acted on:
 }
 ```
 
+### Results database
+
+`results/*.json` is a latest-wins cache that feeds `STATUS.md`. Every `run.py`
+invocation also appends to `results/runs.db` (SQLite, gitignored): one `runs`
+row per invocation, one `results` row per notebook per phase (`verify` / `fix` /
+`skip`, with cost, turns and the full result payload, issues included). Runner
+failures that never produced a JSON file (crashes, agent wrote no result) are
+recorded too. `ci_run.py` passes `--run-id` so both of its batches form one run.
+
+```bash
+python3 run.py nb.ipynb --notify              # also post this run's card to Teams
+python3 tools/results_db.py import            # backfill existing results/*.json (idempotent)
+sqlite3 results/runs.db 'SELECT notebook, status, recorded_at FROM latest_results'
+```
+
+`--notify` needs `TEAMS_WEBHOOK_URL`; without it the run still records and
+just skips the post. A DB write failure is logged as a warning and never fails
+the run.
+
 **Status values:**
 
 | Status | Meaning |
 |--------|---------|
-| `pass` | All cells ran cleanly, or all fixable errors were validated |
-| `fail` | Errors remain that could not be fixed |
-| `partial` | Some errors fixed, some remain (used with `expected_result: partial` in manifest) |
+| `pass` | Every code cell of the executed notebook ran without an error |
+| `fail` | A cell raised (including a per-cell timeout) |
+| `blocked` | The notebook could not be run or evaluated: no executed notebook, nothing ran, the run stopped part-way, or the environment check stopped it |
+
+The runner decides the status from the executed notebook papermill wrote
+(`tools/verdict.py`, kept under `results/executed/`); the agent only writes the
+diagnosis. A result whose agent claimed a different status is flagged
+(`verdict.agent_disagrees`).
+
+### Dashboard
+
+A read-only web view of `results/runs.db` and the notebooks' routes runs on the
+orchestrator host at **http://xcovdashdbd01:8080**: every notebook's latest
+status and when it was last verified, each notebook's history of runs, a page
+per result (runner, image, cost, turns, summary, every issue with its proposed
+fix), the batch runs, and the targets with where each notebook runs. It opens the
+database with a read-only URI and has no write routes.
+
+```bash
+# run it locally against this checkout
+uv run --with-requirements dashboard/requirements.txt uvicorn dashboard.app:app --port 8080
+# copy results from a run made on this machine to the dashboard host
+tools/push_results.sh
+```
+
+On the host it's the `notebook-dashboard` systemd unit
+(`dashboard/notebook-dashboard.service`, venv in `.venv-dashboard`). There,
+`results/` is a symlink to `/aig_dashboard/notebook_runner/results` on the
+snapshotted NFS share, so the history survives the host's local disk. The daily
+pass writes the host's `runs.db` directly; runs made elsewhere only appear once
+pushed.
 
 ---
 
@@ -375,7 +431,7 @@ notebook-runner-agent/
 ├── CLAUDE.md              # VERIFY agent playbook — diagnose & classify
 ├── CLAUDE_FIX.md         # FIX agent playbook — apply auto_fixable fixes & validate
 ├── run.py                 # Launcher: SCP → spawn verify/fix agents → parse → read result
-├── manifest.yaml          # Optional: per-notebook server/skip/expectation config
+├── runner.example.yaml    # Template for runner.yaml: the targets notebooks may run on
 ├── .claude/
 │   └── settings.json      # Permitted tools: Bash, Read, Write, Glob, Grep
 ├── .env.example           # Secret variable documentation
@@ -384,12 +440,15 @@ notebook-runner-agent/
 ├── logs/                  # CI run logs (gitignored)
 └── tools/
     ├── resolve_docker_image.py  # Queries Docker Hub for the versioned tag matching AMD hardware
-    ├── preflight_patch.py       # Applies exactly the 4 allowed pre-flight patches, deterministically
+    ├── preflight_patch.py       # Applies exactly the 5 allowed pre-flight patches, deterministically
+    ├── routing.py               # Notebook requirements → the first runner.yaml target that meets them
     ├── write_result.py          # Writes structured JSON result to results/
+    ├── results_db.py            # SQLite run history (results/runs.db); backfill via `import`
+    ├── k8s_pod.py               # k8s runner: per-notebook GPU pod up/exec/pull/down/gc
+    ├── k8s/rbac.yaml            # One-time namespace + ServiceAccount for the k8s runner
     ├── status.py                # Aggregates latest result per notebook → STATUS.md dashboard
     ├── report_github.py         # Files issues / PRs / closes them from results
-    ├── ci_run.py                # CI orchestrator: gap → failures → dashboard → commit
-    └── ci_cron.sh               # flock-guarded weekly cron wrapper around ci_run.py
+    └── ci_run.py                # CI orchestrator: gap → failures → dashboard → commit → notify
 ```
 
 ---

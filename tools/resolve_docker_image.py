@@ -16,10 +16,10 @@ Prints ERROR: <message> to stderr and exits 1 on failure.
 import json
 import re
 import sys
-import urllib.request
 import urllib.error
+import urllib.request
 
-# Maps manifest hardware names to Docker Hub tag substrings.
+# Maps hardware names to Docker Hub tag substrings.
 # MI300/MI308 share the mi30x image; MI355/MI350 share mi35x.
 _HW_TAG = {
     "mi300x": "mi30x",
@@ -30,7 +30,10 @@ _HW_TAG = {
 
 
 def resolve(repo: str, hardware: str) -> str:
-    """Return the full image:tag string for repo + hardware. Raises on failure."""
+    """Return the full image:tag string for repo + hardware. Raises on failure.
+    A notebook that pins a tag in metadata.ci.image (repo:tag) gets that tag."""
+    if ":" in repo:
+        return repo
     org, name = repo.split("/", 1)
     url = (
         f"https://hub.docker.com/v2/repositories/{org}/{name}/tags/"
@@ -100,7 +103,12 @@ def resolve(repo: str, hardware: str) -> str:
     elif repo == "lmsysorg/sglang":
         candidates = [t for t in tags if hw_suffix in t]
     else:
-        candidates = [t for t in tags if hw_suffix in t]
+        # Repos a notebook names in metadata.ci.image: prefer tags built for
+        # this hardware; a repo without per-hardware tags gets its newest release.
+        candidates = [t for t in tags if hw_suffix in t] or [
+            t for t in tags
+            if t != "latest" and "nightly" not in t and re.search(r"\d+\.\d+", t)
+        ]
 
     if not candidates:
         available = ", ".join(tags[:10])

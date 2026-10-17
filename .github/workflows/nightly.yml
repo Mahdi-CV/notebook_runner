@@ -39,12 +39,10 @@ jobs:
       # Notebooks under test are checked out into GITHUB_WORKSPACE.
       NOTEBOOKS_REPO: AMD-ROCm-Internal/gpuaidev-internal
       NOTEBOOKS_SUBDIR: docs/notebooks
-      # Local topology: the runner IS the GPU box. run.py SSHes to localhost for
-      # docker/papermill; claude runs as a local subprocess.
-      WORKSPACE_BASE: /home/gh-runner
-      GPU_HOST: localhost
-      GPU_USER: gh-runner
-      GPU_HARDWARE: mi300x
+      # Local topology: the runner IS the GPU box (its only target, written to
+      # runner.yaml below). run.py SSHes to localhost for docker/papermill;
+      # claude runs as a local subprocess.
+      GPU_COUNT: ${{ vars.GPU_COUNT || '8' }}
       # AMD Claude gateway (headless claude) — env-var driven.
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
@@ -71,7 +69,7 @@ jobs:
       - name: Configure git identity + authenticated remotes
         run: |
           set -euo pipefail
-          # ci_run.py commits STATUS.md + manifest.yaml and pushes them back to the
+          # ci_run.py commits STATUS.md and pushes it back to the
           # harness repo. The runner box has no git identity or credentials, so set
           # both here. HARNESS_PUSH_TOKEN needs write access to Mahdi-CV/notebook_runner.
           git -C "$HARNESS_DIR" config user.name  "gpuaidev-ci-bot"
@@ -95,6 +93,22 @@ jobs:
           token: ${{ secrets.GPUAIDEV_GH_TOKEN }}
           path: notebooks-repo
 
+      - name: Point the harness at this box and the checked-out notebooks
+        run: |
+          set -euo pipefail
+          ln -sfn "$GITHUB_WORKSPACE/notebooks-repo/$NOTEBOOKS_SUBDIR" "$HARNESS_DIR/notebooks"
+          cat > "$HARNESS_DIR/runner.yaml" <<EOF
+          targets:
+            this-box:
+              type: ssh
+              hardware: mi300x
+              gpus: $GPU_COUNT
+              gpu_memory_gb: 192
+              host: localhost
+              user: gh-runner
+              workspace_base: /home/gh-runner
+          EOF
+
       - name: Run nightly regression pass
         run: |
           set -euo pipefail
@@ -109,9 +123,7 @@ jobs:
           # ci_run.py drives run.py in --mode full over the gap + failing sets,
           # regenerates STATUS.md, and commits+pushes it to the harness repo.
           # shellcheck disable=SC2086
-          .venv/bin/python tools/ci_run.py \
-            --dir "$GITHUB_WORKSPACE/notebooks-repo/$NOTEBOOKS_SUBDIR" \
-            --push $EXTRA
+          .venv/bin/python tools/ci_run.py --push $EXTRA
 
       - name: File / refresh GitHub issues and fix PRs
         if: always()

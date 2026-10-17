@@ -34,16 +34,66 @@ appended below the playbook.
 |-------------------|---------------------------------------------------------|
 | `SSH_CMD`         | Exact SSH prefix to copy-paste for every server command |
 | `SSH_HF_CMD`      | SSH prefix with HF_TOKEN pre-exported                   |
-| `GPU_HARDWARE`    | Hardware name (e.g. mi300x) for Docker image resolution |
+| `GPU_HARDWARE`    | Hardware name (e.g. mi300x, rx7900xtx) for Docker image resolution |
+| `MEMORY_LIMIT`    | Host memory for the container: use it as `docker run --memory=<MEMORY_LIMIT>` |
+| `CONTAINER_ENV`   | `-e K=V` flags the notebook declares; add them to `docker run` (`(none)` if empty) |
+| `RUN_NOTEBOOK`    | How to execute the notebook: `bash run_notebook.sh <input> <output>` in its run dir. It installs the notebook's declared system packages and requirements into a sandbox venv, then runs papermill with the notebook's CI parameters and timeout |
+| `IMAGE_REPO`      | Present only when the notebook declares its Docker repo; resolve the tag for that repo |
+| `OUTPUT_NOTEBOOK` | Where papermill must write the executed notebook (host path, and its `/workspace/...` path inside the container) |
 | `NOTEBOOK_LOCAL`  | Local path to the notebook being tested                 |
 | `NOTEBOOK_REMOTE` | Remote path — already copied, ready to use              |
 | `WORKSPACE_BASE`  | Remote base for run dirs (`<WORKSPACE_BASE>/tutorial_agent_runs/<stem>`) |
 | `TOOLS_DIR`       | Absolute path to the shared tools/ directory            |
 | `RESULTS_DIR`     | Where to write the result JSON                          |
+| `RUNNER`          | Present only as `k8s` or `radeon` — see "Runner: pod" below |
+| `POD_CMD`         | k8s only: prefix for every command, run inside the pod  |
+| `K8S_UP_CMD`      | Pod runners only: provisions the pod; append `--image <image:tag>` |
+| `TIMEBOX_MINUTES` | Wall-clock limit for this run; the runner stops you after it (see Timeouts) |
 
 Everywhere this playbook shows `<WORKSPACE_BASE>/tutorial_agent_runs/<stem>`,
 substitute the literal `WORKSPACE_BASE` value from the runtime context (it
 defaults to `/home/amd` but is `/home/gh-runner` on the self-hosted CI box).
+
+---
+
+## Runner: pod (RUNNER=k8s or RUNNER=radeon)
+
+Skip this section unless the runtime context says `RUNNER = k8s` (a Kubernetes
+GPU pod) or `RUNNER = radeon` (a Radeon Global instance). Then there is no SSH
+host and no Docker daemon: the notebook runs inside one GPU pod built from the
+image you resolve (on Radeon, the catalog image the runner maps it to). Everything else in this playbook (hard rules,
+patterns, analysis, fixability, write_result) still applies, with these
+substitutions:
+
+- **Commands:** use `POD_CMD '<cmd>'` wherever the playbook says `SSH_CMD` or
+  `SSH_HF_CMD`. HF_TOKEN is already in the pod environment. Paths:
+  `<WORKSPACE_BASE>/tutorial_agent_runs/<stem>` and the container's
+  `/workspace` are both just `/workspace`.
+- **Provisioning replaces `docker run`:** after resolving the image, run
+  `K8S_UP_CMD --image <image:tag>`. Repeat the identical command while it
+  prints `Waiting for pod: ...`; continue once it prints `READY` (the notebook
+  and `preflight_patch.py` are then in `/workspace`). One pod, one image —
+  call it once per notebook run.
+- **Pattern A:** after READY, write `run.sh` via `POD_CMD`, then
+  `POD_CMD 'nohup bash -l /workspace/run.sh < /dev/null > /workspace/op.log 2>&1 &'`
+  for rocm/pytorch (`bash` without `-l` for other images) and poll `op.log`.
+- **Pattern B:** provision the pod with the **server** image, start the server
+  as a background process inside it (the command and arguments the notebook's
+  `docker run` would have passed to that image), poll
+  `http://localhost:<port>/health` via `POD_CMD`, then run the client cells with
+  papermill in the same pod.
+- **Pattern C** (notebook code itself runs `docker`): do not provision a pod.
+  Record one issue — `error_type: other`, `fixability: infra_blocked`,
+  description "pod runners cannot run nested containers; run this notebook on
+  an SSH server" — write the result, and stop (the runner records it as
+  `blocked`). Routing normally keeps such notebooks off pod targets.
+- **Pattern D:** provision with the resolved `rocm/pytorch` image and run
+  papermill there.
+- **`FAILED:` or `UNSCHEDULABLE:` from K8S_UP_CMD** is an infrastructure
+  failure, not a content one: retry once, then record it as an `other` /
+  `infra_blocked` issue with the printed reason; the runner records the
+  run as `blocked`.
+- **Cleanup:** skip the Cleanup section; the runner deletes the pod.
 
 ---
 
@@ -68,10 +118,7 @@ embed multi-line logic in the SSH argument (quoting breaks):
 Bash: <SSH_CMD> 'cat > <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh << '"'"'SCRIPT'"'"'
 #!/bin/bash
 set -e
-pip install -q papermill ipykernel
-python -m ipykernel install --sys-prefix
-python -m papermill /workspace/<nb>.ipynb /workspace/<nb>_out.ipynb \
-  --kernel python3 --execution-timeout 3000
+bash /workspace/run_notebook.sh /workspace/<nb>_patched.ipynb /workspace/<nb>_out.ipynb
 SCRIPT
 chmod +x <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh'
 
@@ -114,12 +161,20 @@ Repos: `rocm/pytorch` | `vllm/vllm-openai-rocm` | `lmsysorg/sglang`
 
 ## How to Write the Result
 
+**You do not decide pass or fail.** The runner reads the executed notebook at
+`OUTPUT_NOTEBOOK` after you finish and decides the verdict itself: `pass` if
+every code cell ran without an error, `fail` if a cell raised, `blocked` if the
+notebook could not be run or evaluated (no executed notebook, nothing ran, the
+run stopped part-way). Your job is the diagnosis: what happened, which cells
+broke, why, and what the author should change. If you could not run the
+notebook at all (image pull failed, server never came up, pod unschedulable),
+say exactly why in the summary and record it as an issue.
+
 Call this after all phases complete, before finishing:
 
 ```
 Bash: python3 <TOOLS_DIR>/write_result.py \
   --notebook "<NOTEBOOK_LOCAL>" \
-  --status pass|fail \
   --summary "One paragraph: what ran, what broke" \
   --issues '<json array with fixability field>' \
   --fixes  '[]' \
@@ -137,8 +192,8 @@ tag — that is where the GPU work runs. For Pattern D (host Python, no Docker),
 omit the flag entirely. The value comes from the `resolve_docker_image.py`
 output you already captured in Step 1.
 
-After writing the result, print the final status line and stop. There is no
-`task_complete` signal — finishing naturally ends the run.
+After writing the result, stop. There is no `task_complete` signal —
+finishing naturally ends the run.
 
 ---
 
@@ -146,11 +201,13 @@ After writing the result, print the final status line and stop. There is no
 
 These override everything else.
 
-**1. Only four pre-flight patches are allowed:**
+**1. Only five pre-flight patches are allowed:**
 - `notebook_login()` → `login(token=os.environ["HF_TOKEN"])` (add import if missing)
 - `input()` calls → replace with a static value or skip
 - Gradio launch cells (`gr.launch()`, `demo.launch()`) → skip
 - Audio playback cells (`IPython.display.Audio`, `sounddevice.play()`) → skip
+- Cells the notebook itself tags `ci-skip` → skip (the author marked them as
+  unable to run unattended; they are not failures)
 
 Everything else is a content bug that belongs in `issues`. Do NOT patch these:
 - Foreground server cell blocking papermill → `content_error`
@@ -180,7 +237,7 @@ Bash: <SSH_CMD> 'python3 <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/preflight_p
   --output <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/<nb>_patched.ipynb'
 ```
 
-This tool applies exactly the 4 allowed patches and prints a JSON report
+This tool applies exactly the 5 allowed patches and prints a JSON report
 of what it changed. Use its output notebook (`<nb>_patched.ipynb`) for the
 Phase 1 run. Point `run.sh` at `<nb>_patched.ipynb`, not the original.
 
@@ -199,6 +256,28 @@ work around content errors.
 
 Retry Phase 1 only for infrastructure failures: Docker daemon error,
 out-of-disk, SSH drop, image pull failure.
+
+**5. Never try to get around a local permission problem.**
+If writing to `/work/results`, `/work/logs`, `/work/fixes` or `STATUS.md`
+fails with a permission error (`EACCES` / `PermissionError`),
+that is a host misconfiguration for a human to fix — not something to work
+around. Do NOT: search for SUID binaries, run `su` or `sudo`, probe
+capabilities, disable or bypass the sandbox, `chown`/`chmod`/recreate/rename
+the mounted directories, or write to `results/runs.db` directly (only
+`write_result.py` and `run.py` write results). Probing for elevated access on
+this host triggers security alerts.
+Retry the write ONCE. If it still fails, write the exact payload
+`write_result.py` would have produced (including a UTC `timestamp`) to
+`/work/logs/<notebook_stem>_PENDING_RESULT.json`, name the blocker in your
+final message, and stop.
+
+The same applies beyond these paths: if any of your own actions fails on
+permissions or ownership (on the GPU server, in a pod, reading a file), do not
+reach for more privilege or someone else's — no `sudo`/`su`, no other users'
+credentials or keys, no searching for credentials or reading `.env` files.
+Record it as an `other` / `infra_blocked` issue and stop. Commands a notebook's
+own cells run (for example a `sudo systemctl` cell) are notebook content: if
+they fail, record that as an issue like any other failure.
 
 ---
 
@@ -230,7 +309,8 @@ You MUST call `resolve_docker_image.py` and capture its output. Use the
 printed `image:tag` string in your `docker run` command. Do NOT skip this
 step. Do NOT use `:latest`.
 
-Pick the repo based on what the notebook imports:
+If the runtime context has `IMAGE_REPO`, use that repo. Otherwise pick the
+repo based on what the notebook imports:
 - torch/transformers/diffusers → `rocm/pytorch`
 - vllm → `vllm/vllm-openai-rocm`
 - sglang → `lmsysorg/sglang`
@@ -253,10 +333,7 @@ and use it as the image in ALL subsequent `docker run` commands for this noteboo
 Bash: <SSH_CMD> 'cat > <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh << '"'"'SCRIPT'"'"'
 #!/bin/bash
 set -e
-pip install -q papermill ipykernel
-python -m ipykernel install --sys-prefix
-python -m papermill /workspace/<nb>.ipynb /workspace/<nb>_out.ipynb \
-  --kernel python3 --execution-timeout 3000
+bash /workspace/run_notebook.sh /workspace/<nb>_patched.ipynb /workspace/<nb>_out.ipynb
 SCRIPT
 chmod +x <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh'
 ```
@@ -265,9 +342,9 @@ chmod +x <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh'
 ```
 Bash: <SSH_HF_CMD> 'docker run --rm --name <stem> --network=host \
   --device=/dev/kfd --device=/dev/dri --group-add video \
-  --ipc=host --shm-size=8g --memory=64g \
+  --ipc=host --shm-size=8g --memory=<MEMORY_LIMIT> \
   --entrypoint /bin/bash \
-  -e HF_TOKEN=$HF_TOKEN \
+  -e HF_TOKEN=$HF_TOKEN <CONTAINER_ENV> \
   -v <WORKSPACE_BASE>/tutorial_agent_runs/<stem>:/workspace \
   rocm/pytorch:<tag> -l /workspace/run.sh'
 ```
@@ -276,9 +353,9 @@ Bash: <SSH_HF_CMD> 'docker run --rm --name <stem> --network=host \
 ```
 Bash: <SSH_HF_CMD> 'docker run --rm --name <stem> --network=host \
   --device=/dev/kfd --device=/dev/dri --group-add video \
-  --ipc=host --shm-size=8g --memory=64g \
+  --ipc=host --shm-size=8g --memory=<MEMORY_LIMIT> \
   --entrypoint /bin/bash \
-  -e HF_TOKEN=$HF_TOKEN \
+  -e HF_TOKEN=$HF_TOKEN <CONTAINER_ENV> \
   -v <WORKSPACE_BASE>/tutorial_agent_runs/<stem>:/workspace \
   <image> /workspace/run.sh'
 ```
@@ -289,8 +366,8 @@ Start the server in Docker background:
 ```
 Bash: <SSH_HF_CMD> 'docker run -d --rm --name <stem>_srv --network=host \
   --device=/dev/kfd --device=/dev/dri --group-add video \
-  --ipc=host --shm-size=8g --memory=64g \
-  -e HF_TOKEN=$HF_TOKEN \
+  --ipc=host --shm-size=8g --memory=<MEMORY_LIMIT> \
+  -e HF_TOKEN=$HF_TOKEN <CONTAINER_ENV> \
   <image> <server-args>'
 ```
 
@@ -310,8 +387,15 @@ Run the `%%bash` cell content directly on host, then poll health as Pattern B.
 ### Pattern D — Host Python
 
 ```
-Bash: <SSH_CMD> 'python3 -m papermill <nb>.ipynb <nb>_out.ipynb --kernel python3 --execution-timeout 600'
+Bash: <SSH_CMD> 'cd <WORKSPACE_BASE>/tutorial_agent_runs/<stem> && bash run_notebook.sh <nb>_patched.ipynb <OUTPUT_NOTEBOOK>'
 ```
+
+Whatever the pattern, run the notebook with `run_notebook.sh` (never a
+papermill command of your own: it sets up the notebook's sandbox environment,
+CI parameters and timeout) and write the output to `OUTPUT_NOTEBOOK` (in
+Pattern A that is `/workspace/<nb>_out.ipynb` inside the container). The
+verdict is computed from that file, so a run that writes it elsewhere is
+reported as `blocked`.
 
 ### After the run — collect errors
 
@@ -327,8 +411,8 @@ for i, cell in enumerate(nb["cells"]):
 PYEOF'
 ```
 
-**If no errors: skip Phase 2.** Call `write_result.py` with
-`status=pass`, `issues=[]`, `fixes=[]` and finish. Do not invent analysis.
+**If no errors: skip Phase 2.** Call `write_result.py` with `issues=[]`,
+`fixes=[]` and finish. Do not invent analysis.
 
 ---
 
@@ -398,39 +482,52 @@ The fixer agent will only attempt issues marked `auto_fixable`.
 | papermill — fine-tune/pretrain       | background + poll 60s | 15s/poll    |
 | Cleanup                              | inline                | 30s         |
 
+**The whole run has a timebox** (`TIMEBOX_MINUTES`). The runner stops you when
+it expires and records whatever papermill wrote; an unfinished run is reported
+as `blocked`. `run_notebook.sh` gives papermill part of the timebox, so a hung
+notebook ends with an executed notebook to judge and you still have time to
+write the diagnosis.
+
 **Background process rule** — always redirect stdin or SSH will hang:
 ```
 nohup <cmd> < /dev/null > op.log 2>&1 & disown
 echo $! > op.pid
 ```
 
+**Never schedule a wakeup or wait on a background task.** You are a one-shot
+headless process — there is no scheduler to resume you and no notification
+will ever arrive. Scheduling a wakeup, or running a Bash command with
+`run_in_background` and then ending your turn to "wait for it", just ends the
+run with nothing written. Every Bash call must run in the foreground and
+return; never end a turn until `write_result.py` has been called. To wait on a long-running remote command, poll for it **within the
+same turn**: `nohup` it on the server as above, then repeatedly check
+`cat op.log` / `curl health` yourself, sleeping between checks, until it
+finishes or you hit the operation's timeout in the table above.
+
 **ROCm flags** — required for every `docker run` that uses the GPU:
 ```
 --rm --network=host \
 --device=/dev/kfd --device=/dev/dri --group-add video \
---ipc=host --shm-size=8g --memory=64g
+--ipc=host --shm-size=8g --memory=<MEMORY_LIMIT>
 ```
+plus `<CONTAINER_ENV>` wherever the notebook's own code runs.
 
 ---
 
 ## Cleanup
 
-Always run after any outcome:
+Always run after any outcome — stop every container you started:
 ```
 Bash: <SSH_CMD> 'docker stop <name> 2>/dev/null || true'
-Bash: <SSH_CMD> 'docker run --rm -v <WORKSPACE_BASE>/tutorial_agent_runs/<stem>:/workspace alpine \
-  sh -c "rm -rf /workspace/*" 2>/dev/null || true'
-Bash: <SSH_CMD> 'rm -rf <WORKSPACE_BASE>/tutorial_agent_runs/<stem> 2>/dev/null || true'
 ```
+Do **not** delete `<WORKSPACE_BASE>/tutorial_agent_runs/<stem>` or
+`OUTPUT_NOTEBOOK`: the runner collects the executed notebook from it and
+removes the directory afterwards.
 
 ---
 
-## Result Status Values
-
-- `pass` — Phase 1 completed with no errors
-- `fail` — Errors were found (issues array is non-empty)
+## Result
 
 The verification agent does NOT attempt fixes — that is the fixer agent's job.
-Always pass `--fixes '[]'` and `--agent "claude_code_verify"`.
-
-Write the result with `write_result.py`, print the final status, then stop.
+Always pass `--fixes '[]'` and `--agent "claude_code_verify"`. Write the
+diagnosis with `write_result.py`, then stop; the runner sets the verdict.

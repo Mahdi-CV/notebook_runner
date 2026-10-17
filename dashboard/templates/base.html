@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Notebook regression{% endblock %} · Notebook regression</title>
+<style>
+  :root {
+    --bg: #f7f7f8; --fg: #1c1d21; --muted: #6b6f7a; --line: #e2e3e7; --card: #fff;
+    --ok: #1f7a3d; --ok-bg: #e3f4e8; --ok-soft-bg: #eef7e6; --warn: #8a5a00; --warn-bg: #fdf1d8;
+    --bad: #a3222b; --bad-bg: #fbe4e5; --info: #1d4f91; --info-bg: #e2ecf9; --muted-bg: #eceef1;
+    --accent: #c4161c;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--fg); }
+  header { background: #1c1d21; color: #fff; padding: 0 24px; display: flex; align-items: center; gap: 28px; height: 52px; }
+  header .brand { font-weight: 600; letter-spacing: .2px; }
+  header .brand span { color: var(--accent); }
+  header nav a { color: #c9ccd3; text-decoration: none; margin-right: 18px; }
+  header nav a:hover, header nav a.active { color: #fff; }
+  main { max-width: 1280px; margin: 0 auto; padding: 24px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 28px 0 10px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  a { color: var(--info); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 16px 18px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .tile { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+  .tile .n { font-size: 24px; font-weight: 600; }
+  .tile .l { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .4px; }
+  table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: #fafafb; font-weight: 600; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .3px; }
+  tr:last-child td { border-bottom: none; }
+  td.wrap { white-space: pre-wrap; word-break: break-word; }
+  .eyebrow { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; line-height: 1.2; }
+  .nowrap { white-space: nowrap; }
+  .clip { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .col-issue { width: 380px; min-width: 380px; max-width: 380px; }
+  .clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .ok { color: var(--ok); background: var(--ok-bg); }
+  .ok-soft { color: var(--ok); background: var(--ok-soft-bg); }
+  .warn { color: var(--warn); background: var(--warn-bg); }
+  .bad { color: var(--bad); background: var(--bad-bg); }
+  .info { color: var(--info); background: var(--info-bg); }
+  .muted { color: var(--muted); background: var(--muted-bg); }
+  .dim { color: var(--muted); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+  pre { background: #f2f3f5; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; font-size: 12.5px; }
+  dl.kv { display: grid; grid-template-columns: 170px 1fr; gap: 6px 16px; margin: 0; }
+  dl.kv dt { color: var(--muted); }
+  dl.kv dd { margin: 0; word-break: break-word; }
+  .filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .filters a { text-decoration: none; padding: 4px 10px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); color: var(--fg); font-size: 13px; }
+  .filters a.on { background: #1c1d21; color: #fff; border-color: #1c1d21; }
+  .notice { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; }
+  details summary { cursor: pointer; color: var(--info); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } dl.kv { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">Notebook <span>regression</span></div>
+  <nav>
+    <a href="/" class="{{ 'active' if request.url.path == '/' or request.url.path.startswith('/notebook') or request.url.path.startswith('/result') }}">Notebooks</a>
+    <a href="/runs" class="{{ 'active' if request.url.path.startswith('/run') }}">Runs</a>
+    <a href="/targets" class="{{ 'active' if request.url.path == '/targets' }}">Targets</a>
+  </nav>
+</header>
+<main>
+{% if db_missing %}<div class="notice">No results database yet (<span class="mono">results/runs.db</span>). Pages will fill in after the first run.</div>{% endif %}
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>
