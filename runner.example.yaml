@@ -68,6 +68,8 @@ targets:
     model_mount: gpuaidev-ci
     image: <catalog image for the AMD OneClick Base>
     images:
+      # a build with torchvision and torchaudio: without them a notebook's pip
+      # install pulls PyPI's (CUDA) torch in over the ROCm one
       rocm/pytorch: <catalog image built from rocm/pytorch>
       vllm/vllm-openai-rocm: <catalog image with vLLM for Radeon>
     env:
