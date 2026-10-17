@@ -109,14 +109,22 @@ else
   cat > "$VENV/nbr-site/sitecustomize.py" <<PY
 import os, site, sys
 if "$SITE" not in sys.path:
+    # Ahead of the image's packages, as in the kernel: what the notebook
+    # installed must win over the image's own copy.
+    _before = list(sys.path)
     site.addsitedir("$SITE")
+    _new = [p for p in sys.path if p not in _before]
+    _at = next((i for i, p in enumerate(_before)
+                if p.endswith(("site-packages", "dist-packages"))), len(_before))
+    sys.path[:] = _before[:_at] + _new + _before[_at:]
 _here = os.path.dirname(os.path.abspath(__file__))
 sys.path[:] = [p for p in sys.path if os.path.abspath(p or ".") != _here]
-del sys.modules["sitecustomize"]
+_self = sys.modules.pop("sitecustomize", None)
 try:
-    import sitecustomize  # noqa: F401
+    import sitecustomize  # noqa: F401  (the one this file shadows, if any)
 except ImportError:
-    pass
+    if _self is not None:  # the import system looks this module up when it returns
+        sys.modules["sitecustomize"] = _self
 PY
   "$VENV/bin/python" -m ipykernel install --prefix "$VENV" --name nbr \
     --display-name "Python 3 (notebook sandbox)" \
