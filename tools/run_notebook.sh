@@ -144,6 +144,22 @@ if ((${#ASSETS[@]})); then
   PAPERMILL_ARGS+=(--cwd notebook)
 fi
 
-log "running papermill (timeout ${TIMEOUT_MINUTES}m)"
-exec timeout "${TIMEOUT_MINUTES}m" "$PY" -m papermill "$INPUT" "$OUTPUT" \
-  --kernel nbr --execution-timeout 3000 "${PAPERMILL_ARGS[@]}"
+EXECUTION_TIMEOUT=3000  # seconds per cell
+log "running papermill (timeout ${TIMEOUT_MINUTES}m, ${EXECUTION_TIMEOUT}s per cell)"
+set +e
+timeout "${TIMEOUT_MINUTES}m" "$PY" -m papermill "$INPUT" "$OUTPUT" \
+  --kernel nbr --execution-timeout "$EXECUTION_TIMEOUT" "${PAPERMILL_ARGS[@]}"
+rc=$?
+set -e
+# Record how the run ended in the executed notebook: papermill can save a cell
+# that hit the per-cell timeout as "completed", with no error output.
+if [[ -f "$OUTPUT" ]]; then
+  "$PY" - "$OUTPUT" "$rc" "$EXECUTION_TIMEOUT" <<'PY' || log "could not record the exit status"
+import json, sys
+path, rc, limit = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+nb = json.load(open(path, encoding="utf-8"))
+nb.setdefault("metadata", {})["nbr"] = {"papermill_exit": rc, "execution_timeout": limit}
+json.dump(nb, open(path, "w", encoding="utf-8"), indent=1, ensure_ascii=False)
+PY
+fi
+exit "$rc"
