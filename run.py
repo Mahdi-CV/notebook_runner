@@ -456,7 +456,7 @@ WORKSPACE       = {POD_WORKSPACE}  (use this wherever the playbook says <WORKSPA
 SCHEDULE_TIMEOUT = {target.get('schedule_timeout_min', 45)} min (K8S_UP_CMD reports UNSCHEDULABLE after this)
 
 Provision the pod once you have resolved the image (repeat until it prints READY):
-  Bash: {up_cmd} --image <image:tag>
+  Bash: {up_cmd} --image {req.image if _image_is_pinned(req.image or '') else '<image:tag>'}
 
 Use POD_CMD like this (HF_TOKEN and CONTAINER_ENV are already set in the pod environment):
   Bash: {tool} exec --pod {pod} '<your command here>'
@@ -651,9 +651,28 @@ def _requirements_ctx(target: dict, req: routing.Requirements) -> str:
          f"run_notebook.sh gives papermill {_papermill_minutes(req)} of them)"),
     ]
     if req.image:
-        lines.append(f"IMAGE_REPO      = {req.image}  (the notebook declares this repo, or "
-                     f"repo:tag; resolve it with resolve_docker_image.py)")
+        if _image_is_pinned(req.image):
+            lines.append(f"IMAGE_REPO      = {req.image}  (the notebook PINS this exact "
+                         f"image; use it verbatim as the <image> everywhere the playbook "
+                         f"resolves one. Do NOT strip the tag/digest and re-resolve it with "
+                         f"resolve_docker_image.py — the pin is deliberate and re-resolving "
+                         f"would run a different version)")
+        else:
+            lines.append(f"IMAGE_REPO      = {req.image}  (the notebook declares this repo; "
+                         f"resolve the tag with resolve_docker_image.py)")
     return "\n".join(lines)
+
+
+def _image_is_pinned(image: str) -> bool:
+    """True when metadata.ci.image already fixes a tag or digest, not just a repo.
+
+    A bare repo is `org/name`; a pin adds `@sha256:…` or a `:tag` after the last
+    path segment. When pinned the agent must use it as-is: resolve_docker_image.py
+    returns a pinned repo unchanged, but the agent can drop the tag by passing the
+    bare repo, which silently runs the latest tag instead of the pinned one."""
+    if "@" in image:
+        return True
+    return ":" in image.rsplit("/", 1)[-1]
 
 
 def _papermill_minutes(req: routing.Requirements) -> int:
