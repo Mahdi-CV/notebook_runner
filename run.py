@@ -34,6 +34,7 @@ See `python run.py --help` for every option.
 """
 
 import argparse
+import functools
 import json
 import os
 import re
@@ -61,6 +62,7 @@ SHIM_DIR    = (TOOLS_DIR / "http_ssh_shim").resolve()
 sys.path.insert(0, str(TOOLS_DIR))
 import k8s_pod
 import radeon_pod
+import resolve_docker_image
 import results_db
 import routing
 import verdict
@@ -455,8 +457,8 @@ NOTEBOOK_REMOTE = {POD_WORKSPACE}/{notebook_path.name}  (K8S_UP_CMD copies it in
 WORKSPACE       = {POD_WORKSPACE}  (use this wherever the playbook says <WORKSPACE_BASE>/tutorial_agent_runs/<stem>)
 SCHEDULE_TIMEOUT = {target.get('schedule_timeout_min', 45)} min (K8S_UP_CMD reports UNSCHEDULABLE after this)
 
-Provision the pod once you have resolved the image (repeat until it prints READY):
-  Bash: {up_cmd} --image {req.image if _image_is_pinned(req.image or '') else '<image:tag>'}
+Provision the pod with the image below (repeat the identical command until it prints READY):
+  Bash: {up_cmd} --image {_resolved_image(target, req) or '<image:tag>'}
 
 Use POD_CMD like this (HF_TOKEN and CONTAINER_ENV are already set in the pod environment):
   Bash: {tool} exec --pod {pod} '<your command here>'
@@ -650,16 +652,18 @@ def _requirements_ctx(target: dict, req: routing.Requirements) -> str:
         (f"TIMEBOX_MINUTES = {req.timeout_minutes}  (the runner stops you after this; "
          f"run_notebook.sh gives papermill {_papermill_minutes(req)} of them)"),
     ]
-    if req.image:
-        if _image_is_pinned(req.image):
-            lines.append(f"IMAGE_REPO      = {req.image}  (the notebook PINS this exact "
-                         f"image; use it verbatim as the <image> everywhere the playbook "
-                         f"resolves one. Do NOT strip the tag/digest and re-resolve it with "
-                         f"resolve_docker_image.py — the pin is deliberate and re-resolving "
-                         f"would run a different version)")
-        else:
-            lines.append(f"IMAGE_REPO      = {req.image}  (the notebook declares this repo; "
-                         f"resolve the tag with resolve_docker_image.py)")
+    image = _resolved_image(target, req)
+    if image:
+        lines.append(f"DOCKER_IMAGE    = {image}  (the runner already resolved this exact "
+                     f"image; use it verbatim as the <image> in every docker run / pod "
+                     f"provisioning command. Do NOT call resolve_docker_image.py and do NOT "
+                     f"change the tag or digest)")
+    elif req.image:
+        lines.append(f"IMAGE_REPO      = {req.image}  (the runner could not reach Docker Hub "
+                     f"to resolve a tag; resolve it yourself with resolve_docker_image.py)")
+    # When the notebook declares no image, neither line is emitted: the agent
+    # picks the repo from the notebook's imports and resolves it (see the
+    # playbook's image-resolution section).
     return "\n".join(lines)
 
 
@@ -667,12 +671,43 @@ def _image_is_pinned(image: str) -> bool:
     """True when metadata.ci.image already fixes a tag or digest, not just a repo.
 
     A bare repo is `org/name`; a pin adds `@sha256:…` or a `:tag` after the last
-    path segment. When pinned the agent must use it as-is: resolve_docker_image.py
-    returns a pinned repo unchanged, but the agent can drop the tag by passing the
-    bare repo, which silently runs the latest tag instead of the pinned one."""
+    path segment. A pin resolves to itself without a network call, so the runner
+    can hand it to the agent even when Docker Hub is unreachable."""
     if "@" in image:
         return True
     return ":" in image.rsplit("/", 1)[-1]
+
+
+@functools.cache
+def _resolve_image_cached(image: str, hardware: str) -> str:
+    return resolve_docker_image.resolve(image, hardware)
+
+
+def _resolved_image(target: dict, req: routing.Requirements) -> str | None:
+    """The exact image:tag the agent must run, resolved by the runner so the
+    agent never calls resolve_docker_image.py itself (and so cannot drop a
+    pinned tag by passing the bare repo).
+
+    None when the notebook declares no image — then the agent picks the repo
+    from the notebook's imports and resolves it. A pinned image resolves to
+    itself without a network call; a bare repo needs Docker Hub, and if that is
+    unreachable at prep time the agent resolves it instead (IMAGE_REPO)."""
+    if not req.image:
+        return None
+    try:
+        return _resolve_image_cached(req.image, target.get("hardware", "mi300x"))
+    except Exception:  # noqa: BLE001 — Docker Hub unreachable; fall back to the pin or IMAGE_REPO
+        return req.image if _image_is_pinned(req.image) else None
+
+
+def _image_how(target: dict, req: routing.Requirements) -> str:
+    """The resolve_docker_image how-to block, only when the agent must resolve
+    the image itself (the runner did not provide a ready DOCKER_IMAGE)."""
+    if _resolved_image(target, req):
+        return ""  # DOCKER_IMAGE is provided; the agent must not resolve
+    return (f"\nresolve_docker_image (only needed because no DOCKER_IMAGE was provided):\n"
+            f"  Bash: python3 {TOOLS_DIR}/resolve_docker_image.py <repo> "
+            f"{target.get('hardware', 'mi300x')}\n")
 
 
 def _papermill_minutes(req: routing.Requirements) -> int:
@@ -712,10 +747,7 @@ def run_notebook(notebook_path: Path, rel_key: str, target_name: str, target: di
 NOTEBOOK_LOCAL  = {notebook_path}
 TOOLS_DIR       = {TOOLS_DIR}
 RESULTS_DIR     = {RESULTS_DIR}
-
-resolve_docker_image:
-  Bash: python3 {TOOLS_DIR}/resolve_docker_image.py <repo> {target.get('hardware', 'mi300x')}
-
+{_image_how(target, req)}
 write_result (call this when done):
   Bash: python3 {TOOLS_DIR}/write_result.py \\
     --notebook "{notebook_path}" \\
@@ -866,10 +898,7 @@ TOOLS_DIR       = {TOOLS_DIR}
 RESULTS_DIR     = {RESULTS_DIR}
 FIXES_DIR       = {FIXES_DIR}  (retrieve <nb>_fixed.ipynb here as <stem>.ipynb — see CLAUDE_FIX.md Step 4c)
 VERIFICATION_RESULT = {verification_result_path}
-
-resolve_docker_image:
-  Bash: python3 {TOOLS_DIR}/resolve_docker_image.py <repo> {target.get('hardware', 'mi300x')}
-
+{_image_how(target, req)}
 write_result (call this when done):
   Bash: python3 {TOOLS_DIR}/write_result.py \\
     --notebook "{notebook_path}" \\

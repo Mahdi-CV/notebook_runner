@@ -36,7 +36,7 @@ the system prompt appended below.
 | `SSH_CMD`             | Exact SSH prefix for every server command                |
 | `SSH_HF_CMD`          | SSH prefix with HF_TOKEN pre-exported                   |
 | `GPU_HARDWARE`        | Hardware name (e.g. mi300x, rx7900xtx) for Docker image resolution |
-| `MEMORY_LIMIT`, `CONTAINER_ENV`, `RUN_NOTEBOOK`, `IMAGE_REPO` | The notebook's declared requirements and how to run it; use them as in CLAUDE.md |
+| `MEMORY_LIMIT`, `CONTAINER_ENV`, `RUN_NOTEBOOK`, `DOCKER_IMAGE`/`IMAGE_REPO` | The notebook's declared requirements and how to run it; use them as in CLAUDE.md. `DOCKER_IMAGE` is the runner-resolved `image:tag` — use it verbatim; only resolve yourself in the `IMAGE_REPO`/no-image fallback |
 | `OUTPUT_NOTEBOOK`     | Where papermill must write the executed fixed notebook (`<nb>_fixed_out.ipynb`); the runner's verdict comes from it |
 | `NOTEBOOK_LOCAL`      | Local path to the notebook being tested                 |
 | `NOTEBOOK_REMOTE`     | Remote path — already copied, ready to use              |

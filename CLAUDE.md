@@ -38,7 +38,8 @@ appended below the playbook.
 | `MEMORY_LIMIT`    | Host memory for the container: use it as `docker run --memory=<MEMORY_LIMIT>` |
 | `CONTAINER_ENV`   | `-e K=V` flags the notebook declares; add them to `docker run` (`(none)` if empty) |
 | `RUN_NOTEBOOK`    | How to execute the notebook: `bash run_notebook.sh <input> <output>` in its run dir. It installs the notebook's declared system packages and requirements into a sandbox venv, then runs papermill with the notebook's CI parameters and timeout |
-| `IMAGE_REPO`      | Present only when the notebook declares its Docker repo; resolve the tag for that repo |
+| `DOCKER_IMAGE`    | The exact `image:tag` the runner already resolved; use it verbatim as `<image>` in every `docker run` / pod provisioning command. Do NOT call `resolve_docker_image.py` and do NOT change the tag/digest. Present whenever the notebook declares an image and the runner could resolve it |
+| `IMAGE_REPO`      | Fallback, present only when the runner could not reach Docker Hub to resolve the declared repo: resolve the tag yourself with `resolve_docker_image.py`. When neither `DOCKER_IMAGE` nor `IMAGE_REPO` is present the notebook declares no image — pick the repo from its imports and resolve it yourself |
 | `OUTPUT_NOTEBOOK` | Where papermill must write the executed notebook (host path, and its `/workspace/...` path inside the container) |
 | `NOTEBOOK_LOCAL`  | Local path to the notebook being tested                 |
 | `NOTEBOOK_REMOTE` | Remote path — already copied, ready to use              |
@@ -47,7 +48,7 @@ appended below the playbook.
 | `RESULTS_DIR`     | Where to write the result JSON                          |
 | `RUNNER`          | Present only as `k8s` or `radeon` — see "Runner: pod" below |
 | `POD_CMD`         | k8s only: prefix for every command, run inside the pod  |
-| `K8S_UP_CMD`      | Pod runners only: provisions the pod; append `--image <image:tag>` |
+| `K8S_UP_CMD`      | Pod runners only: provisions the pod; append `--image <DOCKER_IMAGE>` (the runner-resolved tag above) |
 | `TIMEBOX_MINUTES` | Wall-clock limit for this run; the runner stops you after it (see Timeouts) |
 
 Everywhere this playbook shows `<WORKSPACE_BASE>/tutorial_agent_runs/<stem>`,
@@ -69,8 +70,9 @@ substitutions:
   `SSH_HF_CMD`. HF_TOKEN is already in the pod environment. Paths:
   `<WORKSPACE_BASE>/tutorial_agent_runs/<stem>` and the container's
   `/workspace` are both just `/workspace`.
-- **Provisioning replaces `docker run`:** after resolving the image, run
-  `K8S_UP_CMD --image <image:tag>`. Repeat the identical command while it
+- **Provisioning replaces `docker run`:** run `K8S_UP_CMD --image <DOCKER_IMAGE>`
+  with the runner-resolved tag from the runtime context (resolve it yourself only
+  in the `IMAGE_REPO`/no-image fallback). Repeat the identical command while it
   prints `Waiting for pod: ...`; continue once it prints `READY` (the notebook
   and `preflight_patch.py` are then in `/workspace`). One pod, one image —
   call it once per notebook run.
@@ -87,7 +89,7 @@ substitutions:
   description "pod runners cannot run nested containers; run this notebook on
   an SSH server" — write the result, and stop (the runner records it as
   `blocked`). Routing normally keeps such notebooks off pod targets.
-- **Pattern D:** provision with the resolved `rocm/pytorch` image and run
+- **Pattern D:** provision with the `DOCKER_IMAGE` (`rocm/pytorch`) and run
   papermill there.
 - **`FAILED:` or `UNSCHEDULABLE:` from K8S_UP_CMD** is an infrastructure
   failure, not a content one: retry once, then record it as an `other` /
@@ -142,10 +144,23 @@ and `source` (array of strings — join them). Read **every cell** before planni
 
 ---
 
-## How to Resolve Docker Images (MANDATORY)
+## How to Resolve Docker Images
 
-You MUST call this tool to get the Docker image tag. Never construct an image
-tag yourself. Never use `:latest`. Never copy a tag from the notebook cells.
+**Prefer `DOCKER_IMAGE` from the runtime context.** When the notebook declares
+an image, the runner resolves the exact `image:tag` for you and injects it as
+`DOCKER_IMAGE`. Use that string verbatim as `<image>` in every `docker run` /
+pod provisioning command. Do NOT call `resolve_docker_image.py`, do NOT change
+the tag or digest, do NOT use `:latest`, and do NOT copy a tag from the notebook
+cells — the runner already did the resolution.
+
+**Resolve it yourself only in the fallback cases**, i.e. when `DOCKER_IMAGE` is
+absent:
+- `IMAGE_REPO` is present (the runner could not reach Docker Hub) — resolve its
+  tag, or
+- neither is present (the notebook declares no image) — pick the repo from the
+  notebook's imports and resolve it.
+
+In those cases, and only those:
 
 ```
 Bash: python3 <TOOLS_DIR>/resolve_docker_image.py <repo> <GPU_HARDWARE>
@@ -189,8 +204,9 @@ Pass `--docker-image-resolved` with the exact `image:tag` string that papermill
 ran inside. For Pattern A and Pattern C, this is the Docker image the notebook
 executed in. For Pattern B (server + client split), pass the **server** image
 tag — that is where the GPU work runs. For Pattern D (host Python, no Docker),
-omit the flag entirely. The value comes from the `resolve_docker_image.py`
-output you already captured in Step 1.
+omit the flag entirely. The value is the `DOCKER_IMAGE` from the runtime context
+(or, in the fallback cases, the `resolve_docker_image.py` output you captured in
+Step 1).
 
 After writing the result, stop. There is no `task_complete` signal —
 finishing naturally ends the run.
@@ -244,10 +260,13 @@ Phase 1 run. Point `run.sh` at `<nb>_patched.ipynb`, not the original.
 If a cell needs a change that `preflight_patch.py` does not handle, that
 change is NOT an allowed pre-flight patch — record it as an issue.
 
-**3. Never use `:latest` — always resolve the Docker image:**
-Before any `docker run`, you MUST call `resolve_docker_image.py` and use
-the exact versioned tag it prints. Using `:latest` or any tag you construct
-yourself is a rule violation. See "How to Resolve Docker Images" above.
+**3. Never use `:latest` — use the resolved Docker image:**
+When the runtime context provides `DOCKER_IMAGE`, use that exact string and do
+NOT call `resolve_docker_image.py`. Only in the fallback cases (`IMAGE_REPO`
+present, or no image declared) must you call `resolve_docker_image.py` and use
+the exact versioned tag it prints. Using `:latest`, a tag you construct
+yourself, or re-resolving a provided `DOCKER_IMAGE` is a rule violation. See
+"How to Resolve Docker Images" above.
 
 **4. Phase 1 is exactly ONE run:**
 After pre-flight patches, run the notebook once. If it fails for a content
@@ -303,17 +322,19 @@ A foreground server cell (no `-d`, no `&`, no `nohup`) that papermill would try
 to execute is **not Pattern B** — it is a content bug. Let Phase 1 hang/timeout
 and record it as `content_error`.
 
-### Resolve Docker image (MANDATORY — do this before any docker run)
+### Get the Docker image (do this before any docker run)
 
-You MUST call `resolve_docker_image.py` and capture its output. Use the
-printed `image:tag` string in your `docker run` command. Do NOT skip this
-step. Do NOT use `:latest`.
+If the runtime context provides `DOCKER_IMAGE`, that is your image — use it
+verbatim in ALL `docker run` commands and do NOT call `resolve_docker_image.py`.
 
-If the runtime context has `IMAGE_REPO`, use that repo. Otherwise pick the
-repo based on what the notebook imports:
-- torch/transformers/diffusers → `rocm/pytorch`
-- vllm → `vllm/vllm-openai-rocm`
-- sglang → `lmsysorg/sglang`
+Only resolve it yourself in the fallback cases, where `DOCKER_IMAGE` is absent.
+Do NOT use `:latest`.
+- `IMAGE_REPO` present (runner could not reach Docker Hub) → resolve that repo.
+- Neither present (notebook declares no image) → pick the repo from the
+  notebook's imports:
+  - torch/transformers/diffusers → `rocm/pytorch`
+  - vllm → `vllm/vllm-openai-rocm`
+  - sglang → `lmsysorg/sglang`
 
 ```
 Bash: python3 <TOOLS_DIR>/resolve_docker_image.py rocm/pytorch <GPU_HARDWARE>
