@@ -10,6 +10,7 @@ Run:
   uvicorn dashboard.app:app --host 0.0.0.0 --port 8080
 Environment:
   NBR_ROOT  repo root to read results/, notebooks/ and runner.yaml from (default: this repo)
+  NBR_AUTHORING_URL  the authoring service (authoring/app.py), linked from the nav if set
 """
 
 import json
@@ -28,6 +29,7 @@ DB_PATH = ROOT / "results" / "runs.db"
 NOTEBOOKS_DIR = ROOT / "notebooks"
 CONFIG_PATH = ROOT / "runner.yaml"
 STALE_AFTER = timedelta(days=7)  # matches tools/status.py --gap
+AUTHORING_URL = os.environ.get("NBR_AUTHORING_URL")  # the authoring service, linked from the nav
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 import results_db
@@ -129,7 +131,8 @@ def notebook_row(key: str, latest: dict | None) -> dict:
 
 
 def render(request: Request, template: str, **ctx) -> HTMLResponse:
-    return templates.TemplateResponse(request, template, {"db_missing": not DB_PATH.exists(), **ctx})
+    return templates.TemplateResponse(request, template, {"db_missing": not DB_PATH.exists(),
+                                                          "authoring_url": AUTHORING_URL, **ctx})
 
 
 # ── routes ───────────────────────────────────────────────────────────────────

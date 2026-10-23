@@ -1,0 +1,244 @@
+"""Self-serve notebook authoring: submit validate and annotate jobs, follow them.
+
+Authors upload a notebook or paste a GitHub URL, then watch the job's stage
+and log until it ends with a summary: pass, or each issue with its fix. The
+Runners page shows how busy each GPU target is and how long the queue is.
+
+There is no login: the author's name identifies their jobs and is remembered
+in a cookie. This app holds no credentials; the worker and the job containers
+do the work (authoring/worker.py).
+
+Run:
+  uvicorn authoring.app:app --host 0.0.0.0 --port 8081
+Environment:
+  NBR_JOBS_DIR       where jobs/ lives (default: this repo's jobs/)
+  NBR_DASHBOARD_URL  the regression dashboard, linked from the nav
+"""
+
+import json
+import os
+import re
+from pathlib import Path
+from urllib.parse import quote
+
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
+from jinja2 import ChoiceLoader, FileSystemLoader
+
+from . import capacity, store
+
+HERE = Path(__file__).resolve().parent
+MAX_UPLOAD_BYTES = int(os.environ.get("NBR_MAX_UPLOAD_MB") or 10) * 1024 * 1024
+CATEGORIES = {"inference": "Inference", "fine_tune": "Fine-tuning", "pretrain": "Training",
+              "gpu_dev_optimize": "GPU development and optimization"}
+DASHBOARD_URL = os.environ.get("NBR_DASHBOARD_URL")
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._@'-]{0,59}$")
+FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.ipynb$")
+
+app = FastAPI(title="Notebook authoring", docs_url=None, redoc_url=None, openapi_url=None)
+templates = Jinja2Templates(directory=str(HERE / "templates"))
+templates.env.loader = ChoiceLoader([FileSystemLoader(str(HERE / "templates")),
+                                     FileSystemLoader(str(HERE.parent / "dashboard" / "templates"))])
+
+
+def db():
+    return store.connect()
+
+
+def render(request: Request, template: str, **ctx) -> HTMLResponse:
+    return templates.TemplateResponse(request, template, {
+        "db_missing": False, "dashboard_url": DASHBOARD_URL, "categories": CATEGORIES,
+        "author": request.cookies.get("author", ""), **ctx})
+
+
+def queue_position(conn, job: dict) -> int | None:
+    """1-based place among GPU jobs waiting ahead of this one."""
+    if job["status"] != "queued" or job["phase"] != "gpu":
+        return None
+    ahead = [j for j in store.active(conn) if j["status"] == "queued" and j["phase"] == "gpu"]
+    ids = [j["id"] for j in ahead]
+    return ids.index(job["id"]) + 1 if job["id"] in ids else None
+
+
+# ── pages ────────────────────────────────────────────────────────────────────
+
+@app.get("/", response_class=HTMLResponse)
+def home(request: Request, error: str = ""):
+    author = request.cookies.get("author", "")
+    conn = db()
+    mine = store.list_jobs(conn, author=author, limit=20) if author else []
+    return render(request, "home.html", mine=mine, error=error,
+                  availability=capacity.read_snapshot())
+
+
+@app.get("/jobs", response_class=HTMLResponse)
+def jobs(request: Request, author: str = ""):
+    return render(request, "jobs.html", jobs=store.list_jobs(db(), author=author or None, limit=200),
+                  filter_author=author)
+
+
+@app.post("/jobs")
+async def submit(request: Request, kind: str = Form(...), author: str = Form(...),
+                 category: str = Form(...), url: str = Form(""),
+                 notebook: UploadFile | None = File(None)):
+    author = author.strip()
+    problem = None
+    if kind not in ("validate", "annotate"):
+        problem = "Choose validate or annotate."
+    elif not NAME_RE.match(author):
+        problem = "Enter your name or email (letters, digits, spaces, . _ @ ' -)."
+    elif category not in CATEGORIES:
+        problem = "Choose the tutorial's category."
+    conn = db()
+    if not problem and store.active_for_author(conn, author, kind):
+        problem = (f"You already have a {kind} job queued or running. Wait for it to finish, "
+                   "or cancel it, before submitting another.")
+    data, name, source = None, None, None
+    if not problem:
+        if notebook is not None and notebook.filename:
+            name = Path(notebook.filename).name
+            data = await notebook.read(MAX_UPLOAD_BYTES + 1)
+            source = "upload"
+            if not FILE_RE.match(name):
+                problem = "Upload a .ipynb file whose name has only letters, digits, . _ -"
+            elif len(data) > MAX_UPLOAD_BYTES:
+                problem = (f"The notebook is larger than {MAX_UPLOAD_BYTES // 1024 // 1024} MB. "
+                           "Clear its outputs and upload it again.")
+            else:
+                try:
+                    assert isinstance(json.loads(data).get("cells"), list)
+                except (ValueError, AssertionError, AttributeError):
+                    problem = "That file is not a Jupyter notebook."
+        elif url.strip():
+            url = url.strip()
+            m = re.match(r"https://github\.com/[^/]+/[^/]+/(?:pull/\d+|blob/.+?/([^/]+\.ipynb))$", url)
+            if not m:
+                problem = ("Paste a GitHub pull request URL (…/pull/123) or a notebook file URL "
+                           "(…/blob/<branch>/docs/notebooks/<category>/<name>.ipynb).")
+            name, source = (m.group(1) if m and m.group(1) else "pending.ipynb"), "pr"
+        else:
+            problem = "Upload a notebook or paste a GitHub URL."
+    if problem:
+        return RedirectResponse(f"/?error={quote(problem)}", status_code=303)
+
+    if source == "pr" and name == "pending.ipynb":
+        name = f"pr-{url.rstrip('/').rsplit('/', 1)[-1]}.ipynb"
+    job_id = store.create(conn, kind, name, author=author, category=category,
+                          source=source, source_url=url or None)
+    if data is not None:
+        (store.job_dir(job_id) / "input.ipynb").write_bytes(data)
+    resp = RedirectResponse(f"/jobs/{job_id}", status_code=303)
+    resp.set_cookie("author", author, max_age=365 * 24 * 3600, samesite="lax")
+    return resp
+
+
+def load_job(job_id: str) -> tuple:
+    if not re.match(r"^[a-z][0-9a-f]+$", job_id):
+        raise HTTPException(404, "No such job")
+    conn = db()
+    job = store.get(conn, job_id)
+    if job is None:
+        raise HTTPException(404, "No such job")
+    return conn, job
+
+
+@app.get("/jobs/{job_id}", response_class=HTMLResponse)
+def job_page(request: Request, job_id: str):
+    conn, job = load_job(job_id)
+    d = store.job_dir(job_id)
+    log_text, log_next = read_log(job_id)
+    return render(request, "job.html", job=job, position=queue_position(conn, job),
+                  log=log_text, log_next=log_next, final=job["status"] in store.FINAL,
+                  has={name: (d / name).exists() for name in
+                       ("annotated.ipynb", "static.json", "CHANGES.md")},
+                  executed=executed_path(job), estimates=(capacity.read_snapshot() or {}).get(
+                      "estimates", {}))
+
+
+@app.get("/api/jobs/{job_id}")
+def job_api(job_id: str, since: int = 0):
+    conn, job = load_job(job_id)
+    try:
+        lines = (store.job_dir(job_id) / "log.txt").read_text(errors="replace").splitlines()
+    except OSError:
+        lines = []
+    return JSONResponse({"status": job["status"], "stage": job["stage"], "target": job["target"],
+                         "final": job["status"] in store.FINAL,
+                         "position": queue_position(conn, job),
+                         "log": lines[since:since + 2000], "next": min(len(lines), since + 2000)})
+
+
+@app.post("/jobs/{job_id}/cancel")
+def cancel(request: Request, job_id: str):
+    conn, job = load_job(job_id)
+    if job["status"] in store.ACTIVE and job["kind"] != "regression":
+        if request.cookies.get("author") != job["author"]:
+            raise HTTPException(403, "Only the author who submitted this job can cancel it.")
+        store.update(conn, job_id, cancel=1)
+        store.log(job_id, f"Cancel requested by {job['author']}")
+    return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+
+
+@app.get("/jobs/{job_id}/annotated.ipynb")
+def annotated(job_id: str):
+    _, job = load_job(job_id)
+    path = store.job_dir(job_id) / "annotated.ipynb"
+    if not path.exists():
+        raise HTTPException(404, "No annotated notebook")
+    return FileResponse(path, media_type="application/x-ipynb+json", filename=job["notebook"])
+
+
+@app.get("/jobs/{job_id}/executed.ipynb")
+def executed(job_id: str):
+    _, job = load_job(job_id)
+    path = executed_path(job)
+    if path is None:
+        raise HTTPException(404, "No executed notebook")
+    return FileResponse(path, media_type="application/x-ipynb+json",
+                        filename=f"{Path(job['notebook']).stem}.executed.ipynb")
+
+
+@app.get("/runners", response_class=HTMLResponse)
+def runners(request: Request):
+    return render(request, "runners.html", availability=capacity.read_snapshot())
+
+
+@app.get("/api/runners")
+def runners_api():
+    return JSONResponse(capacity.read_snapshot() or {})
+
+
+@app.get("/healthz")
+def healthz():
+    return "ok"
+
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+def read_log(job_id: str, max_lines: int = 2000) -> tuple[str, int]:
+    """The last max_lines of the job's log, and how many lines it has."""
+    try:
+        lines = (store.job_dir(job_id) / "log.txt").read_text(errors="replace").splitlines()
+    except OSError:
+        return "", 0
+    return "\n".join(lines[-max_lines:]), len(lines)
+
+
+def executed_path(job: dict) -> Path | None:
+    run = ((job.get("summary") or {}).get("run") or {})
+    name = Path(run.get("executed") or "").name
+    if not name:
+        return None
+    path = store.job_dir(job["id"]) / "results" / "executed" / name
+    return path if path.is_file() else None
+
+
+def severity_badge(sev: str) -> str:
+    return {"error": "bad", "warning": "warn", "info": "muted"}.get(sev, "muted")
+
+
+templates.env.filters["sevclass"] = severity_badge
+templates.env.filters["jobclass"] = lambda s: {
+    "passed": "ok", "done": "ok", "failed": "bad", "error": "bad", "blocked": "warn",
+    "cancelled": "muted", "queued": "muted", "running": "info"}.get(s, "muted")

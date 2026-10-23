@@ -203,6 +203,17 @@ ln -sfn "checkouts/notebooks/$NB_SUBDIR" "$REPO_ROOT/notebooks"
 
 echo "run-ci: starting pass $TS (image=$IMAGE, notebooks=$NB_REPO@$(git -C "$CHECKOUT" rev-parse --short HEAD))"
 
+# Queue mode (NBR_QUEUE=1 in .env): the pass hands its notebooks to the
+# authoring worker (authoring/worker.py), which runs them in parallel on free
+# runner slots after any author jobs, instead of running them here one by one.
+QUEUE_ARGS=()
+if [[ "${NBR_QUEUE:-}" == "1" ]]; then
+  mkdir -p "$REPO_ROOT/jobs"
+  QUEUE_ARGS=(-e NBR_QUEUE=1 -e NBR_JOBS_DIR=/work/jobs
+              -v "$REPO_ROOT/jobs:/work/jobs:rw"
+              -v "$REPO_ROOT/authoring:/work/authoring:ro")
+fi
+
 # --- run ------------------------------------------------------------------
 # Mounts, and why each one:
 #   results/, fixes/, logs/  read-write  — the pass's actual output
@@ -240,6 +251,7 @@ docker run --rm \
   -e AGENT_SECRET \
   -e RADEON_CLOUD_API_TOKEN \
   ${KUBE_ARGS[@]+"${KUBE_ARGS[@]}"} \
+  ${QUEUE_ARGS[@]+"${QUEUE_ARGS[@]}"} \
   -v "$REPO_ROOT/run.py:/work/run.py:ro" \
   -v "$REPO_ROOT/tools:/work/tools:ro" \
   -v "$REPO_ROOT/CLAUDE.md:/work/CLAUDE.md:ro" \

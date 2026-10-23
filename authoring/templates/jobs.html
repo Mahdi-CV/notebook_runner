@@ -1,0 +1,21 @@
+{% extends "layout.html" %}
+{% from "_widgets.html" import job_badge %}
+{% block title %}Jobs{% endblock %}
+{% block content %}
+<h1>Jobs</h1>
+<p class="sub">Validate and annotate jobs from every author, newest first.</p>
+<div class="filters">
+  <a href="/jobs" class="{{ 'on' if not filter_author }}">Everyone</a>
+  {% if author %}<a href="/jobs?author={{ author | urlencode }}" class="{{ 'on' if filter_author == author }}">Mine ({{ author }})</a>{% endif %}
+</div>
+<table>
+  <tr><th>Notebook</th><th>Job</th><th>Author</th><th>Status</th><th>Stage</th><th>Runner</th><th>Submitted</th></tr>
+  {% for j in jobs %}
+  <tr><td><a href="/jobs/{{ j.id }}">{{ j.notebook }}</a></td><td>{{ j.kind }}</td><td>{{ j.author }}</td>
+      <td>{{ job_badge(j.status) }}</td><td>{{ j.stage }}</td><td class="dim">{{ j.target or '' }}</td>
+      <td class="nowrap dim">{{ j.created_at[:16] | replace('T', ' ') }} UTC</td></tr>
+  {% else %}
+  <tr><td colspan="7" class="dim">No jobs yet.</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}

@@ -47,7 +47,7 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
 
 COPY pyproject.toml uv.lock /build/
 RUN cd /build \
-    && uv sync --frozen --no-dev --no-install-project \
+    && uv sync --frozen --no-dev --group web --no-install-project \
     && chown -R "${AGENT_UID}:${AGENT_GID}" /opt/venv
 
 ENV PATH="/opt/venv/bin:/home/agent/.local/bin:${PATH}"

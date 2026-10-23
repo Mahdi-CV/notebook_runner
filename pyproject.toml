@@ -18,6 +18,13 @@ dependencies = [
 dev = [
     "ruff>=0.6",
 ]
+# The authoring web app (authoring/app.py), which runs from the same image.
+web = [
+    "fastapi>=0.143",
+    "uvicorn>=0.54",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.20",
+]
 
 # No build backend / [tool.uv] package stanza: this repo is a set of scripts
 # run in place, not an installable distribution. `uv sync --no-install-project`

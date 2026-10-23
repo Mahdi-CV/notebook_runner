@@ -339,6 +339,58 @@ snapshotted NFS share, so the history survives the host's local disk. The daily
 pass writes the host's `runs.db` directly; runs made elsewhere only appear once
 pushed.
 
+### Authoring service
+
+Self-serve tools for tutorial authors, at **http://xcovdashdbd01:8081**. There
+is no login: an author's name identifies their jobs.
+
+- **Validate**: upload a notebook, or paste a GitHub pull request or notebook
+  file URL. The job runs the static checks (`check_ci_metadata.py`,
+  `check_oneclick_markers.py`, the one-click readability check and the
+  contribution-guideline checks in `authoring/lint.py`), then a verify run on
+  the first runner that fits the notebook's `metadata.ci`. The job page shows
+  the stage and the live log, then a pass or each issue with its cell, cause,
+  proposed fix and fixability, and the executed notebook.
+- **Annotate**: the annotate-notebook-for-ci skill (from the gpuaidev checkout)
+  on the notebook, with no GPU. You get the annotated notebook to download, the
+  agent's list of changes, a cell-by-cell diff and the static checks before and
+  after.
+- **Runners**: each target's slots in use, what runs on it, a live check of its
+  API, the queue, and typical job durations.
+
+`authoring/worker.py` schedules every job that needs a GPU: author jobs and,
+with `NBR_QUEUE=1` in `.env`, the nightly pass, which then hands its notebooks
+to the worker instead of running them one at a time. A k8s target's slots are
+its GPU budget (`max_gpus`, default `gpus`), a radeon target has one (the API
+allows one instance per `user_name`; add targets with other user names for
+more), an SSH target has `max_concurrent` (default 1). Author jobs go first,
+and a target a waiting author job fits is held for it.
+
+Each job phase runs in its own read-only container (`docker/run-job.sh`) and
+reports through files in its job directory; only the worker writes
+`results/runs.db`, merging each nightly job's own database, so the NFS database
+keeps one writer. An annotate job's container gets only the LLM gateway; a run
+gets the gateway, the cluster and Radeon credentials, and `HF_TOKEN`
+(`NBR_AUTHOR_HF_TOKEN` instead for author jobs, if set: give authors a
+read-only token). The worker fetches pull requests on the host with
+`NBR_GITHUB_TOKEN`, so that token never enters a job container.
+
+```bash
+# On the host: the worker (systemd, root: it starts containers) and the web app
+uv venv .venv-worker && UV_PROJECT_ENVIRONMENT=.venv-worker uv sync --frozen --no-dev
+cp authoring/notebook-authoring-worker.service /etc/systemd/system/
+systemctl enable --now notebook-authoring-worker
+NBR_DASHBOARD_URL=http://xcovdashdbd01:8080/ docker/run-authoring-web.sh
+
+# Locally, without containers
+NBR_JOB_LAUNCHER=local python3 -m authoring.worker &
+uv run --group web uvicorn authoring.app:app --port 8081
+```
+
+Set `NBR_AUTHORING_URL` on the dashboard's unit to link to it from the nav.
+Finished jobs' directories are deleted after 30 days (`NBR_JOB_RETENTION_DAYS`),
+nightly ones after 7.
+
 ---
 
 ## How the playbooks work
@@ -438,6 +490,9 @@ notebook-runner-agent/
 ├── fixes/                 # Genuine-fix notebooks retrieved by the fixer (for PRs)
 ├── results/               # JSON result files (gitignored)
 ├── logs/                  # CI run logs (gitignored)
+├── jobs/                  # Authoring and queued nightly jobs (gitignored)
+├── authoring/             # Self-serve validate/annotate service: web app, worker, pipeline, lint
+├── dashboard/             # Read-only results dashboard
 └── tools/
     ├── resolve_docker_image.py  # Queries Docker Hub for the versioned tag matching AMD hardware
     ├── preflight_patch.py       # Applies exactly the 5 allowed pre-flight patches, deterministically

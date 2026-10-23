@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block site %}Notebook authoring{% endblock %}
+{% block brand %}<div class="brand">Notebook <span>authoring</span></div>{% endblock %}
+{% block nav %}
+<a href="/" class="{{ 'active' if request.url.path == '/' }}">Submit</a>
+<a href="/jobs" class="{{ 'active' if request.url.path.startswith('/jobs') }}">Jobs</a>
+<a href="/runners" class="{{ 'active' if request.url.path == '/runners' }}">Runners</a>
+{% if dashboard_url %}<a href="{{ dashboard_url }}">Regression dashboard</a>{% endif %}
+{% endblock %}
+{% block head %}
+<style>
+  form.submit { display: grid; gap: 12px; }
+  form.submit label { display: grid; gap: 4px; font-weight: 600; font-size: 13px; }
+  form.submit label span { font-weight: 400; color: var(--muted); }
+  input[type=text], input[type=url], select { font: inherit; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+  input[type=file] { font: inherit; }
+  .or { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .4px; }
+  button, .button { font: inherit; font-weight: 600; padding: 8px 14px; border-radius: 6px; border: 1px solid #1c1d21; background: #1c1d21; color: #fff; cursor: pointer; text-decoration: none; display: inline-block; }
+  button.secondary, .button.secondary { background: #fff; color: var(--fg); border-color: var(--line); }
+  .error { background: var(--bad-bg); color: var(--bad); border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; }
+  pre.log { max-height: 460px; overflow-y: auto; background: #16171a; color: #d6d8de; border: none; font-size: 12px; line-height: 1.5; }
+  .stage { font-size: 15px; font-weight: 600; }
+  .meter { height: 8px; background: var(--muted-bg); border-radius: 4px; overflow: hidden; min-width: 120px; }
+  .meter > div { height: 100%; background: var(--info); }
+  .meter.full > div { background: var(--warn); }
+  .steps { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 2px; }
+  .steps span { font-size: 12px; padding: 2px 9px; border-radius: 10px; background: var(--muted-bg); color: var(--muted); }
+  .steps span.done { background: var(--ok-bg); color: var(--ok); }
+  .steps span.now { background: var(--info-bg); color: var(--info); font-weight: 600; }
+  .diff { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; white-space: pre-wrap; word-break: break-word; background: #f7f7f8; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; margin: 6px 0 14px; }
+  .diff .add { color: var(--ok); background: var(--ok-bg); display: block; }
+  .diff .del { color: var(--bad); background: var(--bad-bg); display: block; }
+  .diff .hunk { color: var(--muted); display: block; }
+</style>
+{% endblock %}

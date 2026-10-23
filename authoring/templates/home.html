@@ -1,0 +1,35 @@
+{% extends "layout.html" %}
+{% from "_widgets.html" import job_badge, runner_rows, submit_form with context %}
+{% block title %}Submit a notebook{% endblock %}
+{% block content %}
+<h1>Notebook authoring</h1>
+<p class="sub">Check a tutorial notebook against the AI Developer Hub contribution guidelines and run it on AMD GPUs the way CI does, or have the annotate-notebook-for-ci skill prepare it for CI.</p>
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+
+<div class="grid2">
+  <div class="card">
+    <h2 style="margin-top: 0">Validate a notebook</h2>
+    <p class="dim">Static checks (CI metadata, one-click markers, the guidelines), then a full run on a GPU runner that fits the notebook's <span class="mono">metadata.ci</span>. You get a pass, or each issue with the cell, the cause and a fix.</p>
+    {{ submit_form("validate", "Validate") }}
+  </div>
+  <div class="card">
+    <h2 style="margin-top: 0">Annotate a notebook</h2>
+    <p class="dim">The annotate-notebook-for-ci skill adds the CI metadata, starts servers from cells, makes setup fail loudly and fixes readability. No GPU. You get the annotated notebook to download and a cell-by-cell diff to review.</p>
+    {{ submit_form("annotate", "Annotate") }}
+  </div>
+</div>
+
+{% if mine %}
+<h2>Your jobs</h2>
+<table>
+  <tr><th>Notebook</th><th>Job</th><th>Status</th><th>Stage</th><th>Submitted</th></tr>
+  {% for j in mine %}
+  <tr><td><a href="/jobs/{{ j.id }}">{{ j.notebook }}</a></td><td>{{ j.kind }}</td><td>{{ job_badge(j.status) }}</td>
+      <td>{{ j.stage }}</td><td class="nowrap dim">{{ j.created_at[:16] | replace('T', ' ') }} UTC</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<h2>Runners</h2>
+{{ runner_rows(availability) }}
+{% endblock %}

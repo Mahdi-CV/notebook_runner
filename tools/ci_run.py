@@ -38,6 +38,7 @@ import argparse
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -105,6 +106,8 @@ def stream(cmd: list[str], tee: Tee) -> int:
 
 def run_batch(paths: list[Path], base_dir: Path, tee: Tee, dry_run: bool,
               run_id: str, mode: str = "full", target: str | None = None) -> None:
+    if os.environ.get("NBR_QUEUE") == "1":
+        return queue_batch(paths, base_dir, tee, dry_run, run_id, mode, target)
     # --run-id groups Phase A and Phase B under one run in results/runs.db.
     cmd = [sys.executable, str(RUN_PY), "--dir", str(base_dir), "--mode", mode,
            "--run-id", run_id, *(["--target", target] if target else []),
@@ -115,6 +118,58 @@ def run_batch(paths: list[Path], base_dir: Path, tee: Tee, dry_run: bool,
     rc = stream(cmd, tee)
     # run.py exits 1 when any notebook fails — expected, don't abort the pipeline.
     tee.line(f"[batch finished, run.py exit={rc}]")
+
+
+def dependency_waves(paths: list[Path], base_dir: Path) -> list[list[Path]]:
+    """Group notebooks so each runs after the ones in this batch it declares in
+    metadata.ci.depends_on; notebooks within a wave may run in parallel."""
+    sys.path.insert(0, str(HERE))
+    import routing
+    keys = {str(p.relative_to(base_dir)): p for p in paths}
+    deps = {}
+    for key, p in keys.items():
+        req = routing.resolve(p, {})[0]
+        deps[key] = {d for d in (req.depends_on if req else []) if d in keys}
+    waves, done = [], set()
+    while len(done) < len(keys):
+        wave = [k for k in keys if k not in done and deps[k] <= done]
+        if not wave:  # a dependency cycle: run the rest together
+            wave = [k for k in keys if k not in done]
+        waves.append([keys[k] for k in wave])
+        done |= set(wave)
+    return waves
+
+
+def queue_batch(paths: list[Path], base_dir: Path, tee: Tee, dry_run: bool,
+                run_id: str, mode: str, target: str | None) -> None:
+    """Hand the notebooks to the authoring worker as regression jobs and wait.
+    The worker runs them in parallel on free runner slots, after any author
+    jobs, and merges their results into results/runs.db (authoring/worker.py)."""
+    sys.path.insert(0, str(REPO_ROOT))
+    from authoring import store
+    waves = dependency_waves(paths, base_dir)
+    if dry_run:
+        for i, wave in enumerate(waves, 1):
+            tee.line(f"[dry-run] would queue wave {i}: {', '.join(p.name for p in wave)}")
+        return
+    conn = store.connect()
+    for i, wave in enumerate(waves, 1):
+        pending = {}
+        for p in wave:
+            job_id = store.create(conn, "regression", str(p.relative_to(base_dir)),
+                                  source="checkout", mode=mode, run_id=run_id,
+                                  only_target=target)
+            pending[job_id] = p.name
+        tee.line(f"[queued {len(pending)} notebook(s) for the worker"
+                 + (f", wave {i} of {len(waves)}" if len(waves) > 1 else "") + "]")
+        while pending:
+            time.sleep(15)
+            for job_id in list(pending):
+                job = store.get(conn, job_id)
+                if job and job["status"] in store.FINAL:
+                    tee.line(f"  {pending.pop(job_id)}: {job['status']} on "
+                             f"{job.get('target') or '-'} ({job['stage']})")
+    conn.close()
 
 
 def git_push(tee: Tee, dry_run: bool) -> None:

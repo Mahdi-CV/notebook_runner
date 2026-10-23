@@ -27,13 +27,16 @@ Design notes:
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DB = REPO_ROOT / "results" / "runs.db"
+# NBR_RESULTS_DB: a job of the authoring service records into its own database,
+# which the worker merges into this one (authoring/worker.py).
+DEFAULT_DB = Path(os.environ.get("NBR_RESULTS_DB") or REPO_ROOT / "results" / "runs.db")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -126,8 +129,8 @@ def _ensure_latest_view(conn: sqlite3.Connection) -> None:
             raise
 
 
-def connect(db_path: Path | str = DEFAULT_DB) -> sqlite3.Connection:
-    db_path = Path(db_path)
+def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
+    db_path = Path(db_path or DEFAULT_DB)  # read at call time, so DEFAULT_DB can be repointed
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path, timeout=30)
     conn.row_factory = sqlite3.Row
@@ -214,6 +217,38 @@ def record_result(conn: sqlite3.Connection, run_id: str | None, notebook: str,
             ),
         )
     return cur.lastrowid if cur.rowcount else None
+
+
+def merge(conn: sqlite3.Connection, src_path: Path | str) -> int:
+    """Copy one job's database (a run.py invocation with NBR_RESULTS_DB) into
+    this one, then recompute the totals of the runs it touched. Only the
+    authoring worker calls this, so this database keeps a single writer.
+    Returns the number of result rows copied."""
+    src = sqlite3.connect(f"file:{src_path}?mode=ro", uri=True)
+    src.row_factory = sqlite3.Row
+    cols = [c for c in RESULT_COLUMNS]
+    copied, run_ids = 0, set()
+    with conn:
+        for run in src.execute("SELECT * FROM runs"):
+            run_ids.add(run["run_id"])
+            conn.execute(
+                "INSERT OR IGNORE INTO runs (run_id, started_at, mode, host, argv) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (run["run_id"], run["started_at"], run["mode"], run["host"], run["argv"]))
+        for row in src.execute(f"SELECT {', '.join(cols)} FROM results ORDER BY id"):
+            cur = conn.execute(
+                f"INSERT OR IGNORE INTO results ({', '.join(cols)}) "
+                f"VALUES ({', '.join('?' * len(cols))})", [row[c] for c in cols])
+            copied += cur.rowcount
+    src.close()
+    for run_id in run_ids:
+        finish_run(conn, run_id)
+    return copied
+
+
+RESULT_COLUMNS = ("run_id", "notebook", "notebook_path", "phase", "server", "agent", "status",
+                  "summary", "message", "docker_image", "cost_usd", "num_turns",
+                  "result_file", "payload_json", "recorded_at")
 
 
 def run_results(conn: sqlite3.Connection, run_id: str) -> tuple[dict | None, list[dict]]:

@@ -1,0 +1,51 @@
+{% macro job_badge(status) -%}
+<span class="badge {{ status | jobclass }}">{{ status }}</span>
+{%- endmacro %}
+
+{% macro runner_rows(availability) -%}
+{% if not availability %}
+<p class="dim">The worker has not reported yet: runner availability appears once it is running.</p>
+{% else %}
+<table>
+  <tr><th>Runner</th><th>Hardware</th><th>In use</th><th>Running now</th><th>Status</th></tr>
+  {% for t in availability.targets %}
+  <tr>
+    <td class="nowrap"><b>{{ t.name }}</b><div class="eyebrow">{{ t.type }}</div></td>
+    <td class="nowrap">{{ t.hardware }}<div class="eyebrow">up to {{ t.gpus_per_run }} GPU{{ 's' if (t.gpus_per_run or 1) > 1 }} per run</div></td>
+    <td class="nowrap" style="min-width: 150px">
+      <div class="meter {{ 'full' if t.used >= t.total }}"><div style="width: {{ (100 * t.used / t.total) | round }}%"></div></div>
+      <div class="eyebrow" style="margin-top: 4px">{{ t.used }} of {{ t.total }} {{ t.unit }} in use</div>
+    </td>
+    <td>
+      {% for j in t.jobs %}<div><a href="/jobs/{{ j.id }}">{{ j.notebook.split('/')[-1] }}</a> <span class="dim">· {{ 'nightly pass' if j.kind == 'regression' else j.author }} · since {{ j.started_at[11:16] }} UTC</span></div>
+      {% else %}<span class="dim">idle</span>{% endfor %}
+    </td>
+    <td>{% set ok = t.probe.startswith('ok') %}<span class="badge {{ 'ok' if ok else 'warn' if t.probe == 'not checked yet' else 'bad' }}">{{ 'reachable' if ok else t.probe.split(':')[0] }}</span>
+      {% if not ok or t.probe != 'ok' %}<div class="dim" style="font-size: 12px">{{ t.probe }}</div>{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+<p class="dim" style="margin-top: 8px">
+  {{ availability.queue.authors_waiting }} author job(s) and {{ availability.queue.regression_waiting }} nightly-pass notebook(s) waiting for a GPU.
+  {% if availability.nightly %}The nightly pass ({{ availability.nightly.run_id }}) has {{ availability.nightly.remaining }} notebook(s) left; author jobs run first.{% endif %}
+  Updated {{ availability.updated_at[11:19] }} UTC.
+</p>
+{% endif %}
+{%- endmacro %}
+
+{% macro submit_form(kind, label) %}
+<form class="submit" method="post" action="/jobs" enctype="multipart/form-data">
+  <input type="hidden" name="kind" value="{{ kind }}">
+  <label>Your name or email <input type="text" name="author" value="{{ author }}" required maxlength="60"></label>
+  <label>Category
+    <select name="category" required>
+      {% for key, name in categories.items() %}<option value="{{ key }}">{{ name }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>Notebook <input type="file" name="notebook" accept=".ipynb"></label>
+  <div class="or">or</div>
+  <label>GitHub URL <span>a pull request, or a notebook file on a branch</span>
+    <input type="url" name="url" placeholder="https://github.com/AMD-ROCm-Internal/gpuaidev-internal/pull/123"></label>
+  <div><button type="submit">{{ label }}</button></div>
+</form>
+{% endmacro %}

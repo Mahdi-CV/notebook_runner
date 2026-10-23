@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{% block title %}Notebook regression{% endblock %} · Notebook regression</title>
+<title>{% block title %}Notebook regression{% endblock %} · {% block site %}Notebook regression{% endblock %}</title>
 <style>
   :root {
     --bg: #f7f7f8; --fg: #1c1d21; --muted: #6b6f7a; --line: #e2e3e7; --card: #fff;
@@ -59,14 +59,18 @@
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
   @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } dl.kv { grid-template-columns: 1fr; } }
 </style>
+{% block head %}{% endblock %}
 </head>
 <body>
 <header>
-  <div class="brand">Notebook <span>regression</span></div>
+  {% block brand %}<div class="brand">Notebook <span>regression</span></div>{% endblock %}
   <nav>
+    {% block nav %}
     <a href="/" class="{{ 'active' if request.url.path == '/' or request.url.path.startswith('/notebook') or request.url.path.startswith('/result') }}">Notebooks</a>
     <a href="/runs" class="{{ 'active' if request.url.path.startswith('/run') }}">Runs</a>
     <a href="/targets" class="{{ 'active' if request.url.path == '/targets' }}">Targets</a>
+    {% if authoring_url %}<a href="{{ authoring_url }}">Validate a notebook</a>{% endif %}
+    {% endblock %}
   </nav>
 </header>
 <main>

@@ -1,0 +1,142 @@
+{% extends "layout.html" %}
+{% from "_widgets.html" import job_badge %}
+{% from "_macros.html" import fixability_badge %}
+{% block title %}{{ job.notebook }}{% endblock %}
+{% block content %}
+{% set s = job.summary or {} %}
+<div class="eyebrow">{{ {'validate': 'Validate', 'annotate': 'Annotate', 'regression': 'Nightly pass'}[job.kind] }} · {{ categories.get(job.category, job.category or '') }}{% if job.author %} · {{ job.author }}{% endif %}</div>
+<h1>{{ job.notebook }} <span id="status">{{ job_badge(job.status) }}</span></h1>
+<p class="sub">
+  Submitted {{ job.created_at[:16] | replace('T', ' ') }} UTC
+  {% if job.source_url %}· <a href="{{ job.source_url }}">{{ job.source_url }}</a>{% endif %}
+  {% if job.target %}· runs on <b>{{ job.target }}</b>{% endif %}
+  {% if job.finished_at and job.started_at %}· finished {{ job.finished_at[11:16] }} UTC{% endif %}
+</p>
+
+{% set steps = ['Queued', 'Static checks', 'Waiting for a GPU', 'Running', 'Done'] if job.kind == 'validate'
+          else ['Queued', 'Static checks', 'Annotating', 'Checking the result', 'Done'] if job.kind == 'annotate'
+          else ['Queued', 'Waiting for a GPU', 'Running', 'Done'] %}
+{% set st = job.stage or '' %}
+{% set now = 4 if final else
+     (3 if job.kind == 'annotate' and st.startswith('Checking') else
+      2 if job.kind == 'annotate' and st.startswith('Annotating') else
+      3 if job.phase == 'gpu' and job.status == 'running' and job.kind == 'validate' else
+      2 if job.phase == 'gpu' and job.kind == 'validate' else
+      2 if job.phase == 'gpu' and job.status == 'running' else
+      1 if job.phase == 'gpu' else
+      1 if job.status == 'running' else 0) %}
+{% if job.kind == 'regression' and final %}{% set now = 3 %}{% endif %}
+<div class="card">
+  <div class="steps">{% for name in steps %}<span class="{{ 'done' if loop.index0 < now or (final and loop.last) else 'now' if loop.index0 == now else '' }}">{{ name }}</span>{% endfor %}</div>
+  <p class="stage" id="stage" style="margin: 12px 0 4px">{{ job.stage }}</p>
+  <p class="dim" id="position" style="margin: 0">
+    {% if position %}Number {{ position }} in the queue for a GPU.{% if estimates.validate %} Validate jobs usually take about {{ estimates.validate }} minutes once they start.{% endif %} <a href="/runners">See the runners</a>.{% endif %}
+  </p>
+  {% if not final and job.kind != 'regression' %}
+  <form method="post" action="/jobs/{{ job.id }}/cancel" style="margin-top: 12px">
+    <button class="secondary" type="submit" {{ 'disabled title="Only the author can cancel it"' if author != job.author }}>Cancel job</button>
+  </form>
+  {% endif %}
+</div>
+
+{% if final %}
+  {% if s.message %}<h2>What happened</h2><pre>{{ s.message }}</pre>{% endif %}
+
+  {% if job.kind in ('validate', 'regression') and s.run %}
+  <h2>Run on a GPU</h2>
+  <div class="card">
+    <dl class="kv">
+      <dt>Result</dt><dd>{{ job_badge(job.status) }}</dd>
+      {% if s.run.summary %}<dt>Diagnosis</dt><dd>{{ s.run.summary }}</dd>{% endif %}
+      {% if s.run.message %}<dt>Runner message</dt><dd>{{ s.run.message }}</dd>{% endif %}
+      <dt>Runner</dt><dd>{{ s.run.target }} ({{ s.run.minutes }} min)</dd>
+      {% if s.run.docker_image %}<dt>Image</dt><dd class="mono">{{ s.run.docker_image }}</dd>{% endif %}
+      {% if executed %}<dt>Executed notebook</dt><dd><a href="/jobs/{{ job.id }}/executed.ipynb">Download it with every cell's output</a></dd>{% endif %}
+    </dl>
+  </div>
+  {% if s.run.issues %}
+  <h2>Issues to fix ({{ s.run.issues | length }})</h2>
+  <table>
+    <tr><th>Cell</th><th>Type</th><th class="col-issue">What broke</th><th>Proposed fix</th><th>Fixability</th></tr>
+    {% for i in s.run.issues %}
+    <tr><td>{{ i.cell_index if i.cell_index is not none else '—' }}</td><td class="nowrap">{{ (i.error_type or '') | replace('_', ' ') }}</td>
+        <td class="wrap">{{ i.description }}</td><td class="wrap">{{ i.proposed_fix }}</td><td>{{ fixability_badge(i.fixability) }}</td></tr>
+    {% endfor %}
+  </table>
+  {% elif job.status == 'passed' %}
+  <p>Every code cell ran without an error.</p>
+  {% endif %}
+  {% endif %}
+
+  {% if job.kind == 'annotate' and s.diff %}
+  <h2>Annotated notebook</h2>
+  <p><a class="button" href="/jobs/{{ job.id }}/annotated.ipynb">Download the annotated notebook</a>
+     <span class="dim">Review the changes below before committing it.</span></p>
+  {% if s.changes %}<div class="card"><pre style="background: none; border: none; padding: 0; margin: 0">{{ s.changes }}</pre></div>{% endif %}
+  {% if s.diff.metadata_before != s.diff.metadata_after %}
+  <h2>metadata.ci</h2>
+  <div class="grid2">
+    <div><div class="eyebrow">Before</div><pre>{{ s.diff.metadata_before | tojson(indent=2) if s.diff.metadata_before else '(none)' }}</pre></div>
+    <div><div class="eyebrow">After</div><pre>{{ s.diff.metadata_after | tojson(indent=2) if s.diff.metadata_after else '(none)' }}</pre></div>
+  </div>
+  {% endif %}
+  <h2>Cell changes ({{ s.diff.cells | length }})</h2>
+  {% for c in s.diff.cells %}
+  <div class="eyebrow">{{ c.change }} {{ c.cell_type }} cell {{ c.new_index if c.new_index is not none else c.old_index }}
+    {% if c.tags_after != c.tags_before %}· tags {{ c.tags_before | join(', ') or 'none' }} → {{ c.tags_after | join(', ') or 'none' }}{% endif %}</div>
+  <div class="diff">{% for line in c.diff.splitlines()[2:] %}<span class="{{ 'add' if line.startswith('+') else 'del' if line.startswith('-') else 'hunk' if line.startswith('@@') else '' }}">{{ line }}</span>{% if not (line.startswith('+') or line.startswith('-') or line.startswith('@@')) %}
+{% endif %}{% endfor %}</div>
+  {% endfor %}
+  {% endif %}
+
+  {% if s.static %}
+  <h2>Static checks {% if job.kind == 'annotate' %}on the annotated notebook{% endif %}</h2>
+  <p class="dim">{{ s.static.counts.error }} error(s), {{ s.static.counts.warning }} warning(s). Errors must be fixed before the tutorial can be published; warnings need your judgment.</p>
+  {% if s.static.findings %}
+  <table>
+    <tr><th>Severity</th><th>Check</th><th>Cell</th><th class="col-issue">Finding</th><th>How to fix it</th></tr>
+    {% for f in s.static.findings | sort(attribute='severity') %}
+    <tr><td><span class="badge {{ f.severity | sevclass }}">{{ f.severity }}</span></td><td class="nowrap">{{ f.check }}</td>
+        <td>{{ f.cell if f.cell is not none else '—' }}</td><td class="wrap">{{ f.message }}</td><td class="wrap">{{ f.fix }}</td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+  <h2>Repository checks</h2>
+  <table>
+    {% for name, c in s.static.checkers.items() %}
+    <tr><td class="nowrap"><b>{{ name }}</b></td>
+        <td><span class="badge {{ 'ok' if c.ok else 'muted' if c.ok is none else 'bad' }}">{{ 'pass' if c.ok else 'not run' if c.ok is none else 'problems' }}</span></td>
+        <td class="wrap mono">{{ c.output }}</td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+{% endif %}
+
+<h2>Progress log</h2>
+<pre class="log" id="log">{{ log }}</pre>
+
+{% if not final %}
+<script>
+  const log = document.getElementById('log');
+  let next = {{ log_next }};
+  log.scrollTop = log.scrollHeight;
+  async function poll() {
+    try {
+      const r = await fetch('/api/jobs/{{ job.id }}?since=' + next);
+      const d = await r.json();
+      if (d.log.length) {
+        const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
+        log.textContent += (log.textContent ? '\n' : '') + d.log.join('\n');
+        if (atBottom) log.scrollTop = log.scrollHeight;
+      }
+      next = d.next;
+      document.getElementById('stage').textContent = d.stage;
+      document.getElementById('position').textContent = d.position ? 'Number ' + d.position + ' in the queue for a GPU.' : '';
+      if (d.final || d.status !== '{{ job.status }}') { location.reload(); return; }
+    } catch (e) {}
+    setTimeout(poll, 3000);
+  }
+  setTimeout(poll, 3000);
+</script>
+{% endif %}
+{% endblock %}
