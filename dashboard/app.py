@@ -32,6 +32,8 @@ STALE_AFTER = timedelta(days=7)  # matches tools/status.py --gap
 AUTHORING_URL = os.environ.get("NBR_AUTHORING_URL")  # the authoring service, linked from the nav
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from authoring import render as nbrender  # the authoring service's notebook view
 import results_db
 import routing
 from status import category_of, result_reason, verdict_status
@@ -215,6 +217,27 @@ def executed_notebook(result_id: int):
     if path is None:
         raise HTTPException(404, f"No executed notebook for result {result_id}")
     return FileResponse(path, media_type="application/x-ipynb+json", filename=path.name)
+
+
+@app.get("/result/{result_id}/view", response_class=HTMLResponse)
+def executed_notebook_view(result_id: int):
+    """The executed notebook as a page, for the result page's sandboxed frame.
+    Notebooks are authored content, so the page may run no scripts."""
+    conn = db()
+    res = results_db.get_result(conn, result_id) if conn else None
+    payload = json.loads(res.get("payload_json") or "{}") if res else {}
+    path = _executed_path(payload)
+    if path is None:
+        raise HTTPException(404, f"No executed notebook for result {result_id}")
+    try:
+        nb = json.loads(path.read_text())
+    except ValueError:
+        raise HTTPException(422, "The executed notebook is not valid JSON")
+    flagged = {i["cell_index"] for i in payload.get("issues") or []
+               if isinstance(i.get("cell_index"), int)}
+    page = nbrender.notebook_html(nb, f"{res['notebook']} (executed)", flagged)
+    return HTMLResponse(page, headers={"Content-Security-Policy": nbrender.CSP,
+                                       "X-Content-Type-Options": "nosniff"})
 
 
 @app.get("/runs", response_class=HTMLResponse)
