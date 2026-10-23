@@ -14,6 +14,7 @@ Prints ERROR: <message> to stderr and exits 1 on failure.
 """
 
 import json
+import os
 import re
 import sys
 import urllib.error
@@ -35,10 +36,13 @@ def resolve(repo: str, hardware: str) -> str:
     if ":" in repo:
         return repo
     org, name = repo.split("/", 1)
-    url = (
-        f"https://hub.docker.com/v2/repositories/{org}/{name}/tags/"
-        f"?page_size=100&ordering=last_updated"
-    )
+    # NBR_DOCKERHUB_URL: an authoring job, which has no internet, asks the
+    # credential broker (authoring/broker.py) with its job key.
+    base = os.environ.get("NBR_DOCKERHUB_URL") or "https://hub.docker.com"
+    url = urllib.request.Request(
+        f"{base}/v2/repositories/{org}/{name}/tags/?page_size=100&ordering=last_updated",
+        headers={"Authorization": f"Bearer {os.environ['NBR_JOB_KEY']}"}
+        if os.environ.get("NBR_JOB_KEY") else {})
     try:
         with urllib.request.urlopen(url, timeout=20) as r:
             tags = [t["name"] for t in json.loads(r.read()).get("results", [])]

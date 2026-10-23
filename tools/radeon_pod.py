@@ -475,6 +475,9 @@ def load_target(name: str) -> dict:
 
 
 def main() -> int:
+    if os.environ.get("NBR_BROKER_URL"):  # an authoring job: the broker holds the API token
+        import broker_client
+        return broker_client.forward("radeon", sys.argv[1:])
     p = argparse.ArgumentParser(description="Radeon Global instances for the Radeon runner.")
     p.add_argument("--target", required=True, help="runner.yaml target (type: radeon)")
     sub = p.add_subparsers(dest="cmd", required=True)

@@ -484,7 +484,10 @@ Retrieve the genuine-fix notebook (CLAUDE_FIX.md Step 4c) with:
 def pod_down(target_name: str, target: dict, pod: str) -> None:
     """Delete the agent's pod or instance. Called from a finally, so never raises."""
     try:
-        if target["type"] == "radeon":
+        if os.environ.get("NBR_BROKER_URL"):  # an authoring job: through the credential broker
+            subprocess.run([*shlex.split(_pod_tool(target_name, target)), "down", "--pod", pod],
+                           capture_output=True, timeout=600, check=False)
+        elif target["type"] == "radeon":
             radeon_pod.down(target, pod)
         else:
             k8s_pod.down(k8s_pod.Kubectl(target), pod)
@@ -1134,7 +1137,7 @@ def main():
         if target.get("type") == "k8s":
             print(f"  Target     : {target_name} (k8s {target.get('context')}/"
                   f"{target.get('namespace')}, {target.get('hardware')})")
-            if target_name not in gc_done:
+            if target_name not in gc_done and not os.environ.get("NBR_BROKER_URL"):
                 # Clear pods a killed earlier run left behind before adding more.
                 try:
                     k8s_pod.gc(k8s_pod.Kubectl(target))

@@ -50,10 +50,14 @@ def usage(targets: dict, running: list[dict]) -> dict[str, int]:
 
 
 def pick(req: "routing.Requirements", targets: dict, used: dict[str, int],
-         only: str | None = None) -> tuple[str | None, str]:
+         only: str | None = None, allow_ssh: bool = True) -> tuple[str | None, str]:
     """(target, "") for the first fitting target with room; (None, reason)
-    when the fitting targets are all busy ("busy") or none fits at all."""
+    when the fitting targets are all busy ("busy") or none fits at all.
+    Author jobs pass allow_ssh=False: an SSH target gives the notebook the
+    host's Docker daemon and needs AGENT_SECRET in the job."""
     candidates = {only: targets[only]} if only in targets else ({} if only else targets)
+    if not allow_ssh:
+        candidates = {n: t for n, t in candidates.items() if t.get("type", "ssh") != "ssh"}
     fitting, reasons = [], []
     for name, target in candidates.items():
         missing = routing.unmet(req, target)

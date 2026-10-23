@@ -9,14 +9,18 @@
 #   docker/run-job.sh prepare JOB_ID          # static checks, or annotate
 #   docker/run-job.sh run JOB_ID TARGET       # a run on a GPU target
 #
-# Like docker/run-ci.sh, the container is read-only, runs as the image's
-# non-root user, and gets only the secrets its phase needs as -e variables:
-#   prepare   the LLM gateway (an annotate job runs the agent); no GitHub,
-#             Hugging Face or cluster credentials, because the agent reads
-#             author content. Pull requests are fetched by the worker.
-#   run       the gateway, HF_TOKEN (NBR_AUTHOR_HF_TOKEN instead for author
-#             jobs, if set: give authors a read-only token), the cluster and
-#             Radeon credentials, AGENT_SECRET.
+# Like docker/run-ci.sh, the container is read-only and runs as the image's
+# non-root user.
+#
+# An author's job (validate, annotate) is untrusted: its notebook's code runs
+# on our GPUs and the agent reads it. Its container gets no secret at all,
+# only its job key (NBR_JOB_KEY, from the worker's environment), and runs on
+# the internal network nbr-jobs, whose one reachable host is the credential
+# broker (docker/run-broker.sh, authoring/broker.py). The LLM, the pod tools,
+# Hugging Face and Docker Hub lookups all go through the broker.
+#
+# A nightly regression job runs reviewed notebooks from gpuaidev main and
+# gets the secrets its run needs as -e variables, as docker/run-ci.sh does.
 
 set -euo pipefail
 
@@ -48,10 +52,23 @@ set +a
 mkdir -p "$REPO_ROOT/logs/.radeon"
 chown -R "$NBR_AGENT_UID:$NBR_AGENT_UID" "$JOB_DIR" "$REPO_ROOT/logs/.radeon" 2>/dev/null || true
 
-ENV_ARGS=(-e ANTHROPIC_API_KEY -e ANTHROPIC_BASE_URL -e ANTHROPIC_CUSTOM_HEADERS
-          -e ANTHROPIC_MODEL -e ANTHROPIC_DEFAULT_OPUS_MODEL -e ANTHROPIC_DEFAULT_SONNET_MODEL
+ENV_ARGS=(-e ANTHROPIC_MODEL -e ANTHROPIC_DEFAULT_OPUS_MODEL -e ANTHROPIC_DEFAULT_SONNET_MODEL
           -e ANTHROPIC_DEFAULT_HAIKU_MODEL -e CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
           -e NBR_JOBS_DIR=/work/jobs -e NBR_CHECKOUT=/work/checkouts/notebooks)
+NETWORK_ARGS=()
+if [[ "$KIND" == "regression" ]]; then
+  ENV_ARGS+=(-e ANTHROPIC_API_KEY -e ANTHROPIC_BASE_URL -e ANTHROPIC_CUSTOM_HEADERS)
+else
+  [[ -n "${NBR_JOB_KEY:-}" ]] || { echo "run-job: an author job needs NBR_JOB_KEY (from the worker)" >&2; exit 2; }
+  [[ "$(docker inspect -f '{{.State.Running}}' nbr-broker 2>/dev/null)" == "true" ]] \
+    || { echo "run-job: the credential broker is not running (docker/run-broker.sh)" >&2; exit 2; }
+  BROKER=http://nbr-broker:8790
+  ENV_ARGS+=(-e "NBR_JOB_KEY=$NBR_JOB_KEY" -e "NBR_BROKER_URL=$BROKER"
+             -e "ANTHROPIC_BASE_URL=$BROKER/llm" -e "ANTHROPIC_API_KEY=$NBR_JOB_KEY"
+             -e "HF_TOKEN=$NBR_JOB_KEY" -e "HF_ENDPOINT=$BROKER/hf"
+             -e "NBR_DOCKERHUB_URL=$BROKER/dockerhub")
+  NETWORK_ARGS=(--network nbr-jobs)
+fi
 MOUNTS=(-v "$REPO_ROOT/run.py:/work/run.py:ro"
         -v "$REPO_ROOT/tools:/work/tools:ro"
         -v "$REPO_ROOT/authoring:/work/authoring:ro"
@@ -66,16 +83,13 @@ LIMITS=(--cpus 2 --memory 2g)
 if [[ "$PHASE" == "run" ]]; then
   [[ -n "$TARGET" ]] || { echo "run-job: run needs a TARGET" >&2; exit 2; }
   LIMITS=(--cpus 4 --memory 4g)
-  if [[ "$KIND" != "regression" && -n "${NBR_AUTHOR_HF_TOKEN:-}" ]]; then
-    HF_TOKEN="$NBR_AUTHOR_HF_TOKEN"
-  fi
-  ENV_ARGS+=(-e HF_TOKEN -e AGENT_SECRET -e RADEON_CLOUD_API_TOKEN)
-  MOUNTS+=(-v "$REPO_ROOT/logs/.radeon:/work/logs/.radeon:rw")
   if [[ "$KIND" == "regression" ]]; then
+    ENV_ARGS+=(-e HF_TOKEN -e AGENT_SECRET -e RADEON_CLOUD_API_TOKEN)
+    MOUNTS+=(-v "$REPO_ROOT/logs/.radeon:/work/logs/.radeon:rw")
     # The pass's JSON results and the fixer's notebooks go where run-ci.sh puts them.
     MOUNTS+=(-v "$REPO_ROOT/results:/work/results:rw" -v "$REPO_ROOT/fixes:/work/fixes:rw")
   fi
-  if [[ -n "${NBR_KUBECONFIG:-}" ]]; then
+  if [[ "$KIND" == "regression" && -n "${NBR_KUBECONFIG:-}" ]]; then
     KUBE_STAGE="$JOB_DIR/.kubeconfig"
     install -m 600 "$NBR_KUBECONFIG" "$KUBE_STAGE"
     chown "$NBR_AGENT_UID:$NBR_AGENT_UID" "$KUBE_STAGE" 2>/dev/null || chmod 644 "$KUBE_STAGE"
@@ -93,6 +107,7 @@ docker run -d \
   --tmpfs /tmp:rw,size=512m \
   --tmpfs /home/agent:rw,exec,size=1g,uid=$NBR_AGENT_UID,gid=$NBR_AGENT_UID \
   --security-opt no-new-privileges \
+  ${NETWORK_ARGS[@]+"${NETWORK_ARGS[@]}"} \
   "${LIMITS[@]}" \
   "${ENV_ARGS[@]}" \
   "${MOUNTS[@]}" \

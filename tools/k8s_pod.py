@@ -44,6 +44,7 @@ import base64
 import calendar
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -144,6 +145,9 @@ def pod_spec(server: dict, pod: str, image: str, gpus: int, memory_gb: int = 64,
         },
         "spec": {
             "restartPolicy": "Never",
+            # Notebook code runs here and needs no Kubernetes API access.
+            "automountServiceAccountToken": False,
+            "enableServiceLinks": False,
             "terminationGracePeriodSeconds": 5,
             # Backstop for pods leaked by a killed runner: the kubelet stops
             # them (freeing the GPUs) once this elapses; `gc` deletes them.
@@ -174,7 +178,9 @@ def pod_spec(server: dict, pod: str, image: str, gpus: int, memory_gb: int = 64,
                 "env": [{"name": "HF_HOME", "value": f"{WORKSPACE}/hf"},
                         *({"name": k, "value": v} for k, v in (env or {}).items())],
                 # optional: gated-model notebooks fail their own way without it.
-                "envFrom": [{"secretRef": {"name": HF_SECRET, "optional": True}}],
+                # NBR_HF_SECRET: the broker gives authors' pods their own token.
+                "envFrom": [{"secretRef": {"name": os.environ.get("NBR_HF_SECRET") or HF_SECRET,
+                                           "optional": True}}],
                 "resources": {
                     "requests": {gpu: str(gpus), "memory": memory},
                     "limits": {gpu: str(gpus), "memory": memory},
@@ -355,6 +361,9 @@ def cmd_kubeconfig(kc: Kubectl, server: dict) -> int:
 
 
 def main() -> int:
+    if os.environ.get("NBR_BROKER_URL"):  # an authoring job: the broker holds the kubeconfig
+        import broker_client
+        return broker_client.forward("k8s", sys.argv[1:])
     p = argparse.ArgumentParser(description="Per-notebook GPU pods for the k8s runner.")
     p.add_argument("--target", required=True, help="runner.yaml target (type: k8s)")
     sub = p.add_subparsers(dest="cmd", required=True)

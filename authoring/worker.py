@@ -23,8 +23,10 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import os
+import secrets
 import shutil
 import signal
 import statistics
@@ -49,6 +51,10 @@ RETENTION_DAYS = {"regression": 7, "validate": int(os.environ.get("NBR_JOB_RETEN
 PRUNE_SECONDS = 3600
 LAUNCHER = os.environ.get("NBR_JOB_LAUNCHER") or "docker"
 RUN_JOB = store.REPO_ROOT / "docker" / "run-job.sh"
+# Author jobs reach their credentials only through the broker (authoring/broker.py).
+KEYS_FILE = store.JOBS_DIR / ".broker" / "keys.json"
+BROKER_URL = os.environ.get("NBR_BROKER_ADMIN_URL") or "http://127.0.0.1:8790"
+AUTHOR_KINDS = ("validate", "annotate")
 
 
 # ── launching and following phases ───────────────────────────────────────────
@@ -59,11 +65,12 @@ class Local:
     def __init__(self):
         self.procs: dict[str, subprocess.Popen] = {}
 
-    def start(self, job_id: str, phase: str, target: str | None) -> None:
+    def start(self, job_id: str, phase: str, target: str | None, key: str | None = None) -> None:
         cmd = [sys.executable, "-m", "authoring.pipeline", phase, job_id,
                *(["--target", target] if target else [])]
         out = open(store.job_dir(job_id) / f"{phase}.stderr", "w")
-        self.procs[job_id] = subprocess.Popen(cmd, cwd=store.REPO_ROOT, stdout=out,
+        env = {**os.environ, **({"NBR_JOB_KEY": key} if key else {})}
+        self.procs[job_id] = subprocess.Popen(cmd, cwd=store.REPO_ROOT, stdout=out, env=env,
                                               stderr=subprocess.STDOUT, start_new_session=True)
 
     def running(self, job_id: str) -> bool:
@@ -84,9 +91,11 @@ class Local:
 class Docker:
     """Phases as detached containers named nbr-job-<id>, started by run-job.sh."""
 
-    def start(self, job_id: str, phase: str, target: str | None) -> None:
+    def start(self, job_id: str, phase: str, target: str | None, key: str | None = None) -> None:
+        # The key goes through the environment, never argv (visible in ps).
+        env = {**os.environ, **({"NBR_JOB_KEY": key} if key else {})}
         proc = subprocess.run([str(RUN_JOB), phase, job_id, *([target] if target else [])],
-                              capture_output=True, text=True, timeout=120)
+                              capture_output=True, text=True, timeout=120, env=env)
         if proc.returncode != 0:
             raise RuntimeError((proc.stderr or proc.stdout).strip()[-500:])
 
@@ -129,6 +138,7 @@ class Worker:
         self.last_snapshot = 0.0
         self.last_probe = 0.0
         self.last_prune = 0.0
+        self.keys: dict[str, dict] = {}  # sha256(job key) -> what the broker allows it
 
     def tick(self) -> None:
         targets = capacity.load_targets()
@@ -152,6 +162,7 @@ class Worker:
         if self.launcher.running(job["id"]):
             return
         (store.job_dir(job["id"]) / ".kubeconfig").unlink(missing_ok=True)
+        self.revoke(job["id"])
         if "final" in state:
             final = state["final"]
             if job["kind"] == "regression":
@@ -180,7 +191,48 @@ class Worker:
     def cancel(self, job: dict) -> None:
         if job["status"] == "running":
             self.launcher.stop(job["id"])
+            self.revoke(job["id"])
+            if job["phase"] == "gpu" and job["kind"] in AUTHOR_KINDS:
+                self.cleanup_pods(job["id"])
         store.finish(self.conn, job["id"], "cancelled", "Cancelled")
+
+    # job keys ----------------------------------------------------------------
+
+    def issue(self, job: dict, target: str | None, gpus: int) -> str:
+        """A fresh key for one phase of an author job: the broker accepts it,
+        for this job's own pod, target and GPUs, until the phase ends."""
+        key = secrets.token_urlsafe(32)
+        self.keys[hashlib.sha256(key.encode()).hexdigest()] = {
+            "id": job["id"], "kind": job["kind"], "target": target, "gpus": gpus}
+        self.save_keys()
+        return key
+
+    def revoke(self, job_id: str) -> None:
+        before = len(self.keys)
+        self.keys = {h: k for h, k in self.keys.items() if k["id"] != job_id}
+        if len(self.keys) != before:
+            self.save_keys()
+
+    def save_keys(self) -> None:
+        KEYS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = KEYS_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.keys))
+        tmp.chmod(0o644)
+        tmp.replace(KEYS_FILE)
+
+    def cleanup_pods(self, job_id: str) -> None:
+        """Have the broker delete a stopped job's pod (run.py's own cleanup
+        died with its container)."""
+        admin = os.environ.get("NBR_BROKER_ADMIN_KEY")
+        if not admin:
+            return
+        try:
+            import requests
+            r = requests.post(f"{BROKER_URL}/admin/cleanup/{job_id}", timeout=120,
+                              headers={"Authorization": f"Bearer {admin}"})
+            store.log(job_id, f"Cleanup: {r.json().get('done') if r.ok else r.text[:200]}")
+        except Exception as exc:  # noqa: BLE001 — the pod's lifetime limit is the backstop
+            store.log(job_id, f"warning: could not clean up the job's pod: {exc}")
 
     # scheduling --------------------------------------------------------------
 
@@ -204,13 +256,14 @@ class Worker:
                              {"message": str(exc)})
                 continue
             # Could it ever run here, with every slot free?
-            _, never = capacity.pick(req, targets, {}, job.get("only_target"))
+            ssh_ok = job["kind"] == "regression"
+            _, never = capacity.pick(req, targets, {}, job.get("only_target"), allow_ssh=ssh_ok)
             if never:
                 store.finish(self.conn, job["id"], "blocked", "Cannot run: no runner fits",
                              {"message": never})
                 continue
             free = {n: t for n, t in targets.items() if n not in held}
-            target, _ = capacity.pick(req, free, used, job.get("only_target"))
+            target, _ = capacity.pick(req, free, used, job.get("only_target"), allow_ssh=ssh_ok)
             if target:
                 self.start(job, "gpu", target, req.gpus)
                 unit, _ = capacity.slots(targets[target])
@@ -219,6 +272,7 @@ class Worker:
                 # Busy: hold every target this job could use, so later jobs don't take it.
                 held |= {n for n, t in targets.items()
                          if not capacity.routing.unmet(req, t)
+                         and (ssh_ok or t.get("type", "ssh") != "ssh")
                          and (not job.get("only_target") or n == job["only_target"])}
 
     def notebook_path(self, job: dict) -> Path:
@@ -244,10 +298,12 @@ class Worker:
                 store.finish(self.conn, job["id"], stop.status, str(stop).split(". ")[0][:120],
                              {"message": str(stop)})
                 return
+        key = self.issue(job, target, gpus) if job["kind"] in AUTHOR_KINDS else None
         try:
-            self.launcher.start(job["id"], "prepare" if phase == "prepare" else "run", target)
+            self.launcher.start(job["id"], "prepare" if phase == "prepare" else "run", target, key)
             store.log(job["id"], f"Started the {phase} phase" + (f" on {target}" if target else ""))
         except Exception as exc:  # noqa: BLE001 — record it on the job, keep scheduling
+            self.revoke(job["id"])
             store.finish(self.conn, job["id"], "error", "The job could not be started",
                          {"message": str(exc)})
 
@@ -285,7 +341,14 @@ class Worker:
 
     def recover(self) -> None:
         """After a restart: phases still running in containers are followed
-        again; a local phase died with the old worker."""
+        again (keeping their keys); a local phase died with the old worker."""
+        try:
+            self.keys = json.loads(KEYS_FILE.read_text())
+        except (OSError, ValueError):
+            self.keys = {}
+        live = {j["id"] for j in store.active(self.conn) if j["status"] == "running"}
+        self.keys = {h: k for h, k in self.keys.items() if k["id"] in live}
+        self.save_keys()
         for job in store.active(self.conn):
             if job["status"] == "running" and not self.launcher.running(job["id"]):
                 self.follow(job)

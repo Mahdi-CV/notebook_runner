@@ -271,7 +271,7 @@ def prepare(job: Job) -> None:
         job.final("blocked", "Cannot run: metadata.ci is invalid",
                   {"static": static, "message": f"metadata.ci cannot be read: {e}"})
         return
-    target, reason = capacity.pick(req, capacity.load_targets(), {})
+    target, reason = capacity.pick(req, capacity.load_targets(), {}, allow_ssh=False)
     if target is None:
         job.final("blocked", "Cannot run: no runner fits this notebook",
                   {"static": static, "message": reason})

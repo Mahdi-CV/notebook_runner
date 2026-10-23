@@ -17,6 +17,7 @@ import json
 import os
 import secrets
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -70,9 +71,19 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=30, isolation_level=None)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=30000")
-    conn.executescript(SCHEMA)
+    # Switching to WAL takes an exclusive lock and does not wait for one, so two
+    # processes opening a new database at once can collide: retry briefly.
+    for attempt in range(50):
+        try:
+            if conn.execute("PRAGMA journal_mode").fetchone()[0] != "wal":
+                conn.execute("PRAGMA journal_mode=WAL")
+            conn.executescript(SCHEMA)
+            break
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc) or attempt == 49:
+                raise
+            time.sleep(0.1)
     if os.geteuid() == 0:
         # The worker runs as root on the host; the web app, the nightly pass and
         # the job containers write as uid 1001, the owner of jobs/. Keep the

@@ -65,7 +65,8 @@ def hf_check_model(model_id: str, token: str) -> tuple[int | None, str]:
     for models the token cannot download.
     """
     req = urllib.request.Request(
-        f"https://huggingface.co/{model_id}/resolve/main/config.json",
+        # HF_ENDPOINT: an authoring job asks the credential broker (authoring/broker.py).
+        f"{os.environ.get('HF_ENDPOINT') or 'https://huggingface.co'}/{model_id}/resolve/main/config.json",
         headers={
             "Authorization": f"Bearer {token}",
             "User-Agent": USER_AGENT,
