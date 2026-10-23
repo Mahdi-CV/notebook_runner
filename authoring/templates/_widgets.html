@@ -17,7 +17,7 @@
       <div class="eyebrow" style="margin-top: 4px">{{ t.used }} of {{ t.total }} {{ t.unit }} in use</div>
     </td>
     <td>
-      {% for j in t.jobs %}<div><a href="/jobs/{{ j.id }}">{{ j.notebook.split('/')[-1] }}</a> <span class="dim">· {{ 'nightly pass' if j.kind == 'regression' else j.author }} · since {{ j.started_at[11:16] }} UTC</span></div>
+      {% for j in t.jobs %}<div><a href="{{ prefix }}/jobs/{{ j.id }}">{{ j.notebook.split('/')[-1] }}</a> <span class="dim">· {{ 'nightly pass' if j.kind == 'regression' else j.author }} · since {{ j.started_at[11:16] }} UTC</span></div>
       {% else %}<span class="dim">idle</span>{% endfor %}
     </td>
     <td>{% set ok = t.probe.startswith('ok') %}<span class="badge {{ 'ok' if ok else 'warn' if t.probe == 'not checked yet' else 'bad' }}">{{ 'reachable' if ok else t.probe.split(':')[0] }}</span>
@@ -34,7 +34,7 @@
 {%- endmacro %}
 
 {% macro submit_form(kind, label) %}
-<form class="submit" method="post" action="/jobs" enctype="multipart/form-data">
+<form class="submit" method="post" action="{{ prefix }}/jobs" enctype="multipart/form-data">
   <input type="hidden" name="kind" value="{{ kind }}">
   <label>Your name or email <input type="text" name="author" value="{{ author }}" required maxlength="60"></label>
   <label>Category

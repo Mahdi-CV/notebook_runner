@@ -2,9 +2,9 @@
 {% block site %}Notebook authoring{% endblock %}
 {% block brand %}<div class="brand">Notebook <span>authoring</span></div>{% endblock %}
 {% block nav %}
-<a href="/" class="{{ 'active' if request.url.path == '/' }}">Submit</a>
-<a href="/jobs" class="{{ 'active' if request.url.path.startswith('/jobs') }}">Jobs</a>
-<a href="/runners" class="{{ 'active' if request.url.path == '/runners' }}">Runners</a>
+<a href="{{ prefix }}/" class="{{ 'active' if request.url.path in ('/', prefix + '/') }}">Submit</a>
+<a href="{{ prefix }}/jobs" class="{{ 'active' if '/jobs' in request.url.path }}">Jobs</a>
+<a href="{{ prefix }}/runners" class="{{ 'active' if request.url.path.endswith('/runners') }}">Runners</a>
 {% if dashboard_url %}<a href="{{ dashboard_url }}">Regression dashboard</a>{% endif %}
 {% endblock %}
 {% block head %}

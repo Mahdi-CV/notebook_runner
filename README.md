@@ -341,8 +341,10 @@ pushed.
 
 ### Authoring service
 
-Self-serve tools for tutorial authors, at **http://xcovdashdbd01:8081**. There
-is no login: an author's name identifies their jobs.
+Self-serve tools for tutorial authors, at **http://xcovdashdbd01:8080/authoring/**:
+the dashboard relays `/authoring/` to the service (`NBR_AUTHORING_UPSTREAM` on
+its unit), which listens on 127.0.0.1:8081. There is no login: an author's name
+identifies their jobs.
 
 - **Validate**: upload a notebook, or paste a GitHub pull request or notebook
   file URL. The job runs the static checks (`check_ci_metadata.py`,
@@ -369,25 +371,43 @@ and a target a waiting author job fits is held for it.
 Each job phase runs in its own read-only container (`docker/run-job.sh`) and
 reports through files in its job directory; only the worker writes
 `results/runs.db`, merging each nightly job's own database, so the NFS database
-keeps one writer. An annotate job's container gets only the LLM gateway; a run
-gets the gateway, the cluster and Radeon credentials, and `HF_TOKEN`
-(`NBR_AUTHOR_HF_TOKEN` instead for author jobs, if set: give authors a
-read-only token). The worker fetches pull requests on the host with
-`NBR_GITHUB_TOKEN`, so that token never enters a job container.
+keeps one writer.
+
+**Author jobs hold no secrets.** An author's notebook is untrusted: its code
+runs on our GPUs, and the agent that runs or annotates it reads it, so a
+prompt injection could make the agent do anything its shell can. An author
+job's container therefore gets only a random key for the current phase, and
+runs on the internal Docker network `nbr-jobs`, with no internet: its one
+reachable host is the credential broker (`authoring/broker.py`,
+`docker/run-broker.sh`), which holds the secrets and does on the job's behalf
+exactly what it needs: the LLM gateway, `k8s_pod.py`/`radeon_pod.py` on the
+job's own pod and target with at most its GPUs, and read-only Hugging Face and
+Docker Hub lookups. The worker publishes the hashes of running phases' keys
+and removes them when a phase ends. An author's pod mounts no service-account
+token and gets the authors' Hugging Face token (the `NBR_AUTHOR_HF_SECRET`
+Kubernetes secret, default `hf-token-authors`; none if it does not exist),
+never the pass's. Author jobs never use SSH targets. The worker fetches pull
+requests on the host with `NBR_GITHUB_TOKEN`. Nightly regression jobs run
+reviewed notebooks from gpuaidev `main` and keep the pass's own setup.
+
+What a malicious job can still do, by design: use its own pod and the LLM
+until its timebox ends, and read what its pod is given (the authors' Hugging
+Face token, if there is one: make it a read-only token you can rotate).
 
 ```bash
-# On the host: the worker (systemd, root: it starts containers) and the web app
+# On the host: the broker, the worker (systemd, root: it starts containers)
+# and the web app (served by the dashboard under /authoring/)
+docker/run-broker.sh            # needs NBR_BROKER_ADMIN_KEY in .env
 python3 -m venv .venv-worker && .venv-worker/bin/pip install pyyaml requests
 cp authoring/notebook-authoring-worker.service /etc/systemd/system/
 systemctl enable --now notebook-authoring-worker
-NBR_DASHBOARD_URL=http://xcovdashdbd01:8080/ docker/run-authoring-web.sh
+docker/run-authoring-web.sh
 
 # Locally, without containers
 NBR_JOB_LAUNCHER=local python3 -m authoring.worker &
 uv run --group web uvicorn authoring.app:app --port 8081
 ```
 
-Set `NBR_AUTHORING_URL` on the dashboard's unit to link to it from the nav.
 Finished jobs' directories are deleted after 30 days (`NBR_JOB_RETENTION_DAYS`),
 nightly ones after 7.
 

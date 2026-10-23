@@ -24,7 +24,7 @@
 <table>
   <tr><th>Notebook</th><th>Job</th><th>Status</th><th>Stage</th><th>Submitted</th></tr>
   {% for j in mine %}
-  <tr><td><a href="/jobs/{{ j.id }}">{{ j.notebook }}</a></td><td>{{ j.kind }}</td><td>{{ job_badge(j.status) }}</td>
+  <tr><td><a href="{{ prefix }}/jobs/{{ j.id }}">{{ j.notebook }}</a></td><td>{{ j.kind }}</td><td>{{ job_badge(j.status) }}</td>
       <td>{{ j.stage }}</td><td class="nowrap dim">{{ j.created_at[:16] | replace('T', ' ') }} UTC</td></tr>
   {% endfor %}
 </table>

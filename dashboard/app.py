@@ -10,18 +10,22 @@ Run:
   uvicorn dashboard.app:app --host 0.0.0.0 --port 8080
 Environment:
   NBR_ROOT  repo root to read results/, notebooks/ and runner.yaml from (default: this repo)
-  NBR_AUTHORING_URL  the authoring service (authoring/app.py), linked from the nav if set
+  NBR_AUTHORING_UPSTREAM  the authoring service (authoring/app.py), e.g. http://127.0.0.1:8081,
+                     served under /authoring/ here; NBR_AUTHORING_URL links elsewhere instead
 """
 
 import json
 import os
 import sqlite3
 import sys
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, Response
+from starlette.concurrency import run_in_threadpool
 from fastapi.templating import Jinja2Templates
 
 ROOT = Path(os.environ.get("NBR_ROOT") or Path(__file__).resolve().parent.parent)
@@ -29,7 +33,11 @@ DB_PATH = ROOT / "results" / "runs.db"
 NOTEBOOKS_DIR = ROOT / "notebooks"
 CONFIG_PATH = ROOT / "runner.yaml"
 STALE_AFTER = timedelta(days=7)  # matches tools/status.py --gap
-AUTHORING_URL = os.environ.get("NBR_AUTHORING_URL")  # the authoring service, linked from the nav
+# The authoring service (authoring/app.py). With NBR_AUTHORING_UPSTREAM set, this
+# app serves it under /authoring/ on its own port, so both share one address.
+AUTHORING_UPSTREAM = (os.environ.get("NBR_AUTHORING_UPSTREAM") or "").rstrip("/")
+AUTHORING_URL = os.environ.get("NBR_AUTHORING_URL") or ("/authoring/" if AUTHORING_UPSTREAM else None)
+MAX_PROXY_BODY = 12 * 1024 * 1024
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -266,6 +274,56 @@ def targets_page(request: Request):
     for key, nb in sorted(m["notebooks"].items()):
         groups.setdefault(category_of(key), []).append({"key": key, **nb})
     return render(request, "targets.html", targets=m["targets"], groups=groups)
+
+
+# ── the authoring service, on this port ──────────────────────────────────────
+# Its own process keeps the write access and job queue; this one only relays
+# requests to it, so the dashboard stays read-only.
+
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None  # hand redirects to the browser
+
+
+_opener = urllib.request.build_opener(_NoRedirects)
+_PASS_BACK = ("content-type", "location", "content-security-policy", "x-content-type-options",
+              "content-disposition", "cache-control")
+
+
+def _relay(method: str, url: str, body: bytes | None, headers: dict) -> Response:
+    req = urllib.request.Request(url, data=body, method=method, headers=headers)
+    try:
+        resp = _opener.open(req, timeout=120)
+    except urllib.error.HTTPError as e:
+        resp = e
+    except OSError as e:
+        return PlainTextResponse(f"The authoring service is not reachable ({e}).", status_code=502)
+    out = Response(resp.read(), status_code=resp.status if hasattr(resp, "status") else resp.code)
+    for name in _PASS_BACK:
+        if resp.headers.get(name):
+            out.headers[name] = resp.headers[name]
+    for cookie in resp.headers.get_all("set-cookie") or []:
+        out.headers.append("set-cookie", cookie)
+    return out
+
+
+@app.get("/authoring")
+def authoring_root():
+    return RedirectResponse("/authoring/")
+
+
+@app.api_route("/authoring/{path:path}", methods=["GET", "POST"])
+async def authoring(path: str, request: Request):
+    if not AUTHORING_UPSTREAM:
+        raise HTTPException(404, "The authoring service is not configured here")
+    body = await request.body() if request.method == "POST" else None
+    if body is not None and len(body) > MAX_PROXY_BODY:
+        raise HTTPException(413, "Upload too large")
+    query = f"?{request.url.query}" if request.url.query else ""
+    headers = {k: v for k, v in request.headers.items()
+               if k.lower() in ("content-type", "cookie", "accept", "user-agent")}
+    return await run_in_threadpool(_relay, request.method, f"{AUTHORING_UPSTREAM}/{path}{query}",
+                                   body, headers)
 
 
 @app.get("/healthz", response_class=PlainTextResponse)

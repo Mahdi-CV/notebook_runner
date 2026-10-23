@@ -6,6 +6,9 @@ After=network.target
 Type=simple
 WorkingDirectory=/data/notebook_runner
 Environment=NBR_ROOT=/data/notebook_runner
+# Serve the authoring service (docker/run-authoring-web.sh, 127.0.0.1:8081) under
+# /authoring/ on this port. The dashboard only relays requests to it.
+Environment=NBR_AUTHORING_UPSTREAM=http://127.0.0.1:8081
 ExecStart=/data/notebook_runner/.venv-dashboard/bin/uvicorn dashboard.app:app --host 0.0.0.0 --port 8080
 Restart=on-failure
 RestartSec=5

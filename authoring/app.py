@@ -34,6 +34,10 @@ MAX_UPLOAD_BYTES = int(os.environ.get("NBR_MAX_UPLOAD_MB") or 10) * 1024 * 1024
 CATEGORIES = {"inference": "Inference", "fine_tune": "Fine-tuning", "pretrain": "Training",
               "gpu_dev_optimize": "GPU development and optimization"}
 DASHBOARD_URL = os.environ.get("NBR_DASHBOARD_URL")
+# NBR_AUTHORING_PREFIX: the path the regression dashboard serves this app under
+# when it proxies it on its own port (e.g. "/authoring"); links and redirects
+# carry it, the routes do not (the dashboard strips it).
+PREFIX = (os.environ.get("NBR_AUTHORING_PREFIX") or "").rstrip("/")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._@'-]{0,59}$")
 FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.ipynb$")
 
@@ -50,6 +54,7 @@ def db():
 def render(request: Request, template: str, **ctx) -> HTMLResponse:
     return templates.TemplateResponse(request, template, {
         "db_missing": False, "dashboard_url": DASHBOARD_URL, "categories": CATEGORIES,
+        "prefix": PREFIX,
         "author": request.cookies.get("author", ""), **ctx})
 
 
@@ -121,7 +126,7 @@ async def submit(request: Request, kind: str = Form(...), author: str = Form(...
         else:
             problem = "Upload a notebook or paste a GitHub URL."
     if problem:
-        return RedirectResponse(f"/?error={quote(problem)}", status_code=303)
+        return RedirectResponse(f"{PREFIX}/?error={quote(problem)}", status_code=303)
 
     if source == "pr" and name == "pending.ipynb":
         name = f"pr-{url.rstrip('/').rsplit('/', 1)[-1]}.ipynb"
@@ -129,7 +134,7 @@ async def submit(request: Request, kind: str = Form(...), author: str = Form(...
                           source=source, source_url=url or None)
     if data is not None:
         (store.job_dir(job_id) / "input.ipynb").write_bytes(data)
-    resp = RedirectResponse(f"/jobs/{job_id}", status_code=303)
+    resp = RedirectResponse(f"{PREFIX}/jobs/{job_id}", status_code=303)
     resp.set_cookie("author", author, max_age=365 * 24 * 3600, samesite="lax")
     return resp
 
@@ -178,7 +183,7 @@ def cancel(request: Request, job_id: str):
             raise HTTPException(403, "Only the author who submitted this job can cancel it.")
         store.update(conn, job_id, cancel=1)
         store.log(job_id, f"Cancel requested by {job['author']}")
-    return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+    return RedirectResponse(f"{PREFIX}/jobs/{job_id}", status_code=303)
 
 
 @app.get("/jobs/{job_id}/annotated.ipynb")

@@ -5,6 +5,10 @@
 # job containers and the nightly pass write jobs/ as. It holds no credentials;
 # authoring/worker.py does the work.
 #
+# It listens on 127.0.0.1 only: the regression dashboard serves it under
+# /authoring/ on its own port (NBR_AUTHORING_UPSTREAM on the dashboard's unit).
+# NBR_AUTHORING_BIND=0.0.0.0 NBR_AUTHORING_PREFIX= serves it on its own port instead.
+#
 # Usage:
 #   docker/run-authoring-web.sh            # port NBR_AUTHORING_PORT (default 8081)
 
@@ -27,9 +31,10 @@ docker run -d \
   --tmpfs /tmp:rw,size=256m \
   --security-opt no-new-privileges \
   --cpus 1 --memory 1g \
-  -p "$PORT:8081" \
+  -p "${NBR_AUTHORING_BIND:-127.0.0.1}:$PORT:8081" \
   -e NBR_JOBS_DIR=/work/jobs \
-  -e NBR_DASHBOARD_URL="${NBR_DASHBOARD_URL:-}" \
+  -e NBR_DASHBOARD_URL="${NBR_DASHBOARD_URL:-/}" \
+  -e NBR_AUTHORING_PREFIX="${NBR_AUTHORING_PREFIX-/authoring}" \
   -e NBR_MAX_UPLOAD_MB="${NBR_MAX_UPLOAD_MB:-10}" \
   -v "$REPO_ROOT/authoring:/work/authoring:ro" \
   -v "$REPO_ROOT/tools:/work/tools:ro" \
@@ -38,4 +43,4 @@ docker run -d \
   -v "$REPO_ROOT/jobs:/work/jobs:rw" \
   "$IMAGE" \
   uvicorn authoring.app:app --host 0.0.0.0 --port 8081 >/dev/null
-echo "notebook-authoring: http://$(hostname -f):$PORT/"
+echo "notebook-authoring: listening on ${NBR_AUTHORING_BIND:-127.0.0.1}:$PORT (prefix ${NBR_AUTHORING_PREFIX-/authoring})"
