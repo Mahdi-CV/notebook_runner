@@ -59,7 +59,7 @@
   <table>
     <tr><th>Cell</th><th>Type</th><th class="col-issue">What broke</th><th>Proposed fix</th><th>Fixability</th></tr>
     {% for i in s.run.issues %}
-    <tr><td>{{ i.cell_index if i.cell_index is not none else '—' }}</td><td class="nowrap">{{ (i.error_type or '') | replace('_', ' ') }}</td>
+    <tr><td>{% if i.cell_index is not none and 'executed' in views %}<a href="/jobs/{{ job.id }}/view/executed#cell-{{ i.cell_index }}" target="nbview" onclick="document.getElementById('notebook').scrollIntoView()">{{ i.cell_index }}</a>{% else %}{{ i.cell_index if i.cell_index is not none else '—' }}{% endif %}</td><td class="nowrap">{{ (i.error_type or '') | replace('_', ' ') }}</td>
         <td class="wrap">{{ i.description }}</td><td class="wrap">{{ i.proposed_fix }}</td><td>{{ fixability_badge(i.fixability) }}</td></tr>
     {% endfor %}
   </table>
@@ -110,6 +110,16 @@
     {% endfor %}
   </table>
   {% endif %}
+{% endif %}
+
+{% if views %}
+<h2 id="notebook">Notebook</h2>
+<div class="filters">
+  {% for v in views %}<a href="/jobs/{{ job.id }}/view/{{ v }}" target="nbview" class="{{ 'on' if loop.first }}" onclick="for (const a of this.parentNode.children) a.classList.toggle('on', a === this)">{{ view_names[v] }}</a>{% endfor %}
+  {% if 'executed' in views %}<span class="dim" style="align-self: center">Cells with an error or an issue are marked in red.</span>{% endif %}
+</div>
+<iframe name="nbview" src="/jobs/{{ job.id }}/view/{{ views[0] }}" sandbox title="Notebook"
+        style="width: 100%; height: 820px; resize: vertical; border: 1px solid var(--line); border-radius: 8px; background: #fff"></iframe>
 {% endif %}
 
 <h2>Progress log</h2>

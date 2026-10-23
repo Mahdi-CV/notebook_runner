@@ -296,13 +296,13 @@ def run(job: Job, target: str) -> None:
         base = store.NOTEBOOKS_DIR
         nb_path = base / job.request["notebook"]
         mode, run_id = job.request.get("mode") or "verify", job.request["run_id"]
-        env = {"NBR_RESULTS_DB": str(job.dir / "runs.db")}
+        env = {"NBR_RESULTS_DB": str(job.dir / "runs.db"), "NBR_STAGE_DIR": str(job.dir / "stage")}
     else:
         nb_path, base = job.layout_notebook, job.dir / "repo" / NOTEBOOK_SUBDIR
         mode, run_id = "verify", job.id
         (job.dir / "results").mkdir(exist_ok=True)
         env = {"NBR_RESULTS_DIR": str(job.dir / "results"),
-               "NBR_RESULTS_DB": str(job.dir / "runs.db")}
+               "NBR_RESULTS_DB": str(job.dir / "runs.db"), "NBR_STAGE_DIR": str(job.dir / "stage")}
     job.stage(f"Running on {target}")
     cmd = [sys.executable, str(RUN_PY), str(nb_path), "--dir", str(base),
            "--mode", mode, "--target", target, "--run-id", run_id]

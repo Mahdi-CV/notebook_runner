@@ -24,6 +24,7 @@ web = [
     "uvicorn>=0.54",
     "jinja2>=3.1",
     "python-multipart>=0.0.20",
+    "markdown>=3.7",  # authoring/render.py: notebooks on the job page
 ]
 
 # No build backend / [tool.uv] package stanza: this repo is a set of scripts

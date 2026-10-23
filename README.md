@@ -377,7 +377,7 @@ read-only token). The worker fetches pull requests on the host with
 
 ```bash
 # On the host: the worker (systemd, root: it starts containers) and the web app
-uv venv .venv-worker && UV_PROJECT_ENVIRONMENT=.venv-worker uv sync --frozen --no-dev
+python3 -m venv .venv-worker && .venv-worker/bin/pip install pyyaml requests
 cp authoring/notebook-authoring-worker.service /etc/systemd/system/
 systemctl enable --now notebook-authoring-worker
 NBR_DASHBOARD_URL=http://xcovdashdbd01:8080/ docker/run-authoring-web.sh

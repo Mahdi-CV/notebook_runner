@@ -27,6 +27,7 @@ from fastapi.templating import Jinja2Templates
 from jinja2 import ChoiceLoader, FileSystemLoader
 
 from . import capacity, store
+from . import render as nbrender
 
 HERE = Path(__file__).resolve().parent
 MAX_UPLOAD_BYTES = int(os.environ.get("NBR_MAX_UPLOAD_MB") or 10) * 1024 * 1024
@@ -152,8 +153,8 @@ def job_page(request: Request, job_id: str):
                   log=log_text, log_next=log_next, final=job["status"] in store.FINAL,
                   has={name: (d / name).exists() for name in
                        ("annotated.ipynb", "static.json", "CHANGES.md")},
-                  executed=executed_path(job), estimates=(capacity.read_snapshot() or {}).get(
-                      "estimates", {}))
+                  executed=executed_path(job), views=list(notebook_views(job)), view_names=VIEWS,
+                  estimates=(capacity.read_snapshot() or {}).get("estimates", {}))
 
 
 @app.get("/api/jobs/{job_id}")
@@ -197,6 +198,36 @@ def executed(job_id: str):
         raise HTTPException(404, "No executed notebook")
     return FileResponse(path, media_type="application/x-ipynb+json",
                         filename=f"{Path(job['notebook']).stem}.executed.ipynb")
+
+
+VIEWS = {"executed": "Executed", "annotated": "Annotated", "submitted": "Submitted"}
+
+
+def notebook_views(job: dict) -> dict[str, Path]:
+    """The notebooks a job page can show, best first."""
+    d = store.job_dir(job["id"])
+    views = {"executed": executed_path(job), "annotated": d / "annotated.ipynb",
+             "submitted": d / "input.ipynb"}
+    return {k: p for k, p in views.items() if p is not None and p.is_file()}
+
+
+@app.get("/jobs/{job_id}/view/{which}", response_class=HTMLResponse)
+def view_notebook(job_id: str, which: str):
+    _, job = load_job(job_id)
+    path = notebook_views(job).get(which)
+    if path is None:
+        raise HTTPException(404, "No such notebook for this job")
+    try:
+        nb = json.loads(path.read_text())
+    except ValueError:
+        raise HTTPException(422, "The notebook is not valid JSON")
+    issues = ((job.get("summary") or {}).get("run") or {}).get("issues") or []
+    flagged = {i["cell_index"] for i in issues if isinstance(i.get("cell_index"), int)} \
+        if which != "annotated" else set()
+    page = nbrender.notebook_html(nb, f"{job['notebook']} ({VIEWS[which].lower()})", flagged)
+    # Notebooks come from authors: no scripts, no external loads, in a sandboxed frame.
+    return HTMLResponse(page, headers={"Content-Security-Policy": nbrender.CSP,
+                                       "X-Content-Type-Options": "nosniff"})
 
 
 @app.get("/runners", response_class=HTMLResponse)

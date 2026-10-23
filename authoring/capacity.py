@@ -14,6 +14,9 @@ jobs on each target and a live check of the target's API.
 """
 
 import json
+import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -79,9 +82,9 @@ def probe(name: str, target: dict) -> str:
     try:
         if kind == "k8s":
             import k8s_pod
-            proc = k8s_pod.Kubectl(target).run(
-                "get", "pods", "-l", f"{k8s_pod.APP_LABEL}={k8s_pod.APP_NAME}", "-o", "json",
-                check=False, timeout=20)
+            args = [*k8s_pod.Kubectl(target).base[1:], "get", "pods", "-l",
+                    f"{k8s_pod.APP_LABEL}={k8s_pod.APP_NAME}", "-o", "json"]
+            proc = kubectl(args)
             if proc.returncode != 0:
                 return "unreachable: " + (proc.stderr.strip().splitlines() or ["kubectl failed"])[-1]
             pods = json.loads(proc.stdout).get("items", [])
@@ -94,6 +97,21 @@ def probe(name: str, target: dict) -> str:
         return "ok"
     except Exception as exc:  # noqa: BLE001 — a probe never stops the scheduler
         return f"unreachable: {exc}"
+
+
+def kubectl(args: list[str]) -> subprocess.CompletedProcess:
+    """kubectl on this host, or the runner image's when the host has none."""
+    if shutil.which("kubectl"):
+        return subprocess.run(["kubectl", *args], capture_output=True, text=True, timeout=30)
+    config = os.environ.get("KUBECONFIG") or os.environ.get("NBR_KUBECONFIG")
+    if not config or not shutil.which("docker"):
+        return subprocess.CompletedProcess(args, 1, "", "kubectl is not installed on this host")
+    image = os.environ.get("NOTEBOOK_RUNNER_IMAGE") or "notebook-runner:latest"
+    return subprocess.run(
+        ["docker", "run", "--rm", "--network", "host", "-v",
+         f"{os.path.expanduser(config)}:/tmp/kubeconfig:ro", "-e", "KUBECONFIG=/tmp/kubeconfig",
+         "-u", "0", "--entrypoint", "kubectl", image, *args],
+        capture_output=True, text=True, timeout=60)
 
 
 def snapshot(targets: dict, jobs: list[dict], probes: dict[str, str],

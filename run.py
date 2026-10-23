@@ -611,7 +611,8 @@ def support_files(notebook_path: Path, req: routing.Requirements) -> list[Path]:
     run_notebook.sh, its settings (run_notebook.env, from metadata.ci), the
     notebook's requirements file, if it declares one, and the ../assets files
     its code reads."""
-    stage = HERE / "logs" / ".stage" / notebook_path.stem
+    # NBR_STAGE_DIR: an authoring job stages in its own directory (authoring/pipeline.py).
+    stage = Path(os.environ.get("NBR_STAGE_DIR") or HERE / "logs" / ".stage") / notebook_path.stem
     stage.mkdir(parents=True, exist_ok=True)
     files = [TOOLS_DIR / "preflight_patch.py", TOOLS_DIR / "run_notebook.sh",
              stage / "run_notebook.env"]
