@@ -55,7 +55,7 @@ ENV PATH="/opt/venv/bin:/home/agent/.local/bin:${PATH}"
 # Claude Code CLI, pinned: CLI changes can change verdicts, so bump deliberately.
 # Installed as the agent user, then moved to /opt/claude because run-ci.sh
 # mounts a tmpfs over /home/agent, which would hide anything left in ~/.local.
-ARG CLAUDE_VERSION=2.1.226
+ARG CLAUDE_VERSION=2.1.308
 USER agent
 RUN curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_VERSION}" \
     && claude --version
