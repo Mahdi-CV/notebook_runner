@@ -71,8 +71,8 @@
   </label>
   <label>Notebook <span>An .ipynb file.</span> <input type="file" name="notebook" accept=".ipynb"></label>
   <div class="or">or paste a GitHub link</div>
-  <label>GitHub URL <span>A pull request, or a notebook on a branch.</span>
-    <input type="url" name="url" value="{{ values.url or '' }}" placeholder="https://github.com/AMD-ROCm-Internal/gpuaidev-internal/pull/123"></label>
+  <label>GitHub URL <span>A pull request, or a notebook on a branch, in a public repository.</span>
+    <input type="url" name="url" value="{{ values.url or '' }}" placeholder="https://github.com/ROCm/gpuaidev/pull/123"></label>
   <div><button type="submit">{{ label }}</button></div>
 </form>
 {% endmacro %}
