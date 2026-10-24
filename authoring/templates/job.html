@@ -12,7 +12,7 @@
   Submitted {{ job.created_at | ts }}
   {% if job.source_url %}· <a href="{{ job.source_url }}"{% if source %} title="{{ source.title }}">{{ source.label }}{% else %}>{{ job.source_url }}{% endif %}</a>{% endif %}
   {% if job.target %}· {{ 'ran' if final else 'runs' }} on <b>{{ job.target }}</b>{% endif %}
-  {% if parent %}· fixes the issues <a href="{{ prefix }}/jobs/{{ parent.id }}">job {{ parent.id }}</a> found{% endif %}
+  {% if parent %}· fixes the issues found by <a href="{{ prefix }}/jobs/{{ parent.id }}">its validate job</a>{% endif %}
   {% if job.kind == 'regression' and job.run_id and dashboard_url %}· part of <a href="{{ dashboard_url.rstrip('/') }}/run/{{ job.run_id }}">this nightly pass</a>{% endif %}
   {% if job.finished_at and job.started_at %}· {{ 'stopped' if job.status in ('cancelled', 'error') else 'finished' }} {{ job.finished_at | ts }} after {{ job.started_at | elapsed(job.finished_at) | dur }}
   {%- elif job.status == 'running' and job.started_at %}· started {{ job.started_at | ts }}{% endif %}
