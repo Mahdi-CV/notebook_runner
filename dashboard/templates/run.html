@@ -1,10 +1,10 @@
 {% extends "base.html" %}
 {% from "_macros.html" import status_badge, nb_link %}
-{% block title %}Run {{ run.run_id }}{% endblock %}
+{% block title %}{{ run | runname }}{% endblock %}
 {% block content %}
-<p class="crumbs"><a href="/runs">Runs</a> / {{ run.run_id }}</p>
-<h1>Run {{ run.run_id }}</h1>
-<p class="sub">{{ run.mode | kind }} · started {{ run.started_at | ts }}{% if run.finished_at %} · finished {{ run.finished_at | ts }}{% endif %}</p>
+<p class="crumbs"><a href="/runs">Runs</a></p>
+<h1>{{ run | runname }}</h1>
+<p class="sub">Run <span class="mono">{{ run.run_id }}</span> · {{ run.mode | kind }} · started {{ run.started_at | ts }}{% if run.finished_at %} · finished {{ run.finished_at | ts }}{% endif %}</p>
 
 <div class="tiles">
   <div class="tile"><div class="n">{{ counts.pass }}</div><div class="l">Passed</div></div>

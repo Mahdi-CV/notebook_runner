@@ -8,7 +8,7 @@
   <tbody>
   {% for r in runs %}
     <tr>
-      <td class="mono"><a href="/run/{{ r.run_id }}">{{ r.run_id }}</a></td>
+      <td><a href="/run/{{ r.run_id }}">{{ r | runname }}</a><div class="meta mono">{{ r.run_id }}</div></td>
       <td class="ts">{{ r.started_at | ts }}<br><span class="dim">{{ r.started_at | age }}</span></td>
       <td class="ts">{% if r.finished_at %}{{ r.finished_at | ts }}{% else %}<span class="badge warn" title="no finish time recorded: still running, or interrupted">unfinished</span>{% endif %}</td>
       <td>{{ r.mode | kind if r.mode else "—" }}</td>

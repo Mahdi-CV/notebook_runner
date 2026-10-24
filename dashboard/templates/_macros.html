@@ -16,6 +16,14 @@
 {%- if f -%}<span class="badge {{ {'auto_fixable': 'info', 'needs_author': 'warn', 'infra_blocked': 'muted'}.get(f, 'muted') }}">{{ {'auto_fixable': 'Auto-fixable', 'needs_author': 'Needs the author', 'infra_blocked': 'Platform issue'}.get(f, f | replace('_', ' ')) }}</span>{%- endif -%}
 {%- endmacro %}
 
+{# Why no runner fits a notebook: what each runner lacks, one per line, or
+   the reason as given when it isn't about the runners (e.g. bad metadata). #}
+{% macro no_runner(reason, misses) -%}
+{%- if misses -%}
+<ul class="misses">{% for name, missing in misses %}<li><span class="mono">{{ name }}</span>: lacks {{ missing | join("; ") }}</li>{% endfor %}</ul>
+{%- else -%}{{ reason or "—" }}{%- endif -%}
+{%- endmacro %}
+
 {% macro nb_link(key) -%}
 <a href="/notebook/{{ key }}">{{ key.split('/')[-1] }}</a>
 {%- endmacro %}

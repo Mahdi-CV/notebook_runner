@@ -148,6 +148,16 @@ def route(req: Requirements, targets: dict, only: str | None = None
     return None, None, "no target fits: " + " | ".join(reasons)
 
 
+def misses(req: Requirements, targets: dict, only: str | None = None
+           ) -> list[tuple[str, list[str]]]:
+    """[(name, what it lacks)] for each candidate target that does not fit, in
+    config order: the parts of route's "no target fits" reason, for listing
+    one target per line."""
+    candidates = {only: targets[only]} if only in targets else ({} if only else targets)
+    return [(name, missing) for name, target in candidates.items()
+            if (missing := unmet(req, target))]
+
+
 def resolve(nb_path: Path, targets: dict, only: str | None = None
             ) -> tuple[Requirements | None, str | None, dict | None, str]:
     """(requirements, target name, target, reason) for one notebook file. A
