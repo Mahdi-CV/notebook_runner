@@ -245,10 +245,10 @@ def view_notebook(job_id: str, which: str):
         nb = json.loads(path.read_text())
     except ValueError:
         raise HTTPException(422, "The notebook is not valid JSON")
-    issues = ((job.get("summary") or {}).get("run") or {}).get("issues") or []
-    flagged = {i["cell_index"] for i in issues if isinstance(i.get("cell_index"), int)} \
-        if which != "annotated" else set()
-    page = nbrender.notebook_html(nb, f"{job['notebook']} ({VIEWS[which].lower()})", flagged)
+    # The annotated notebook numbers its cells differently: its issues would land on the wrong cells.
+    issues = ((job.get("summary") or {}).get("run") or {}).get("issues") or [] \
+        if which != "annotated" else []
+    page = nbrender.notebook_html(nb, f"{job['notebook']} ({VIEWS[which].lower()})", issues)
     # Notebooks come from authors: no scripts, no external loads, in a sandboxed frame.
     return HTMLResponse(page, headers={"Content-Security-Policy": nbrender.CSP,
                                        "X-Content-Type-Options": "nosniff"})

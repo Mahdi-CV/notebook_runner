@@ -47,10 +47,28 @@ body { margin: 0; padding: 16px 20px; font: 14px/1.5 system-ui, -apple-system, "
 .md pre { background: #f4f5f7; border: 1px solid #e2e3e7; border-radius: 6px; padding: 8px 10px; }
 .md pre code { background: none; padding: 0; font-size: inherit; }
 .out pre { max-height: 26em; overflow: auto; }
+.issue { margin-top: 6px; padding: 8px 12px; border: 1px solid #e2e3e7; border-left: 4px solid #a3222b; border-radius: 8px; background: #fff; max-width: 80ch; overflow-wrap: anywhere; }
+.issue .head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font-weight: 600; color: #a3222b; }
+.issue p { margin: 4px 0 0; }
+.lbl { color: #6b6f7a; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; }
+.issue code { font: .88em ui-monospace, SFMono-Regular, Menlo, monospace; background: #eceef1; padding: 1px 4px; border-radius: 4px; }
+.loose { margin: 0 0 14px; }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.badge.info { color: #1d4f91; background: #e2ecf9; } .badge.warn { color: #8a5a00; background: #fdf1d8; }
+.badge.muted { color: #585c66; background: #eceef1; }
 @media (max-width: 500px) { .cell { grid-template-columns: 32px 1fr; } body { padding: 12px; } }
 """
 
 MAX_OUTPUT_CHARS = 20000
+# Who fixes an issue, in the words of each app: authors on the authoring
+# service, maintainers on the dashboard.
+FIXABILITY = {
+    "authors": {"auto_fixable": "Can be fixed automatically", "needs_author": "Needs your change",
+                "infra_blocked": "Platform issue, not your notebook"},
+    "maintainers": {"auto_fixable": "Auto-fixable", "needs_author": "Needs the author",
+                    "infra_blocked": "Platform issue"},
+}
+FIXABILITY_CLASS = {"auto_fixable": "info", "needs_author": "warn", "infra_blocked": "muted"}
 
 
 def _text(value) -> str:
@@ -96,6 +114,24 @@ def _output(out: dict, cell: int) -> str:
     return ""
 
 
+def _issue(issue: dict, audience: str) -> str:
+    """An issue as a callout under its cell: its type, what broke and the
+    proposed fix. Agents write these from author content: all of it is escaped."""
+    from .labels import ISSUE_TYPES, codespans  # labels imports this module
+
+    kind = str(issue.get("error_type") or "other")
+    fix = issue.get("fixability")
+    who = (f"<span class='badge {FIXABILITY_CLASS.get(fix, 'muted')}'>"
+           f"{html.escape(FIXABILITY[audience].get(fix, fix.replace('_', ' ')))}</span>"
+           if isinstance(fix, str) and fix else "")
+    proposed = issue.get("proposed_fix")
+    return ("<div class=issue role=note><div class=head>"
+            f"<span>{html.escape(ISSUE_TYPES.get(kind, kind.replace('_', ' ')))}</span>{who}</div>"
+            f"<p>{codespans(issue.get('description'))}</p>"
+            + (f"<p><span class=lbl>Proposed fix</span><br>{codespans(proposed)}</p>" if proposed else "")
+            + "</div>")
+
+
 def _coalesce(outputs: list[dict]) -> list[dict]:
     """Merge consecutive stream outputs and apply carriage returns, as Jupyter
     does, so a progress bar shows its final state instead of every update."""
@@ -114,9 +150,16 @@ def _coalesce(outputs: list[dict]) -> list[dict]:
     return merged
 
 
-def notebook_html(nb: dict, title: str, flagged: set[int] = frozenset()) -> str:
-    """The notebook as a page; cells in `flagged` (the issues' cells, and any
-    cell with an error output) are marked, and every cell has an #cell-N anchor."""
+def notebook_html(nb: dict, title: str, issues: list[dict] = (), audience: str = "authors") -> str:
+    """The notebook as a page. Cells with an issue or an error output are
+    marked, each issue is shown under its cell (at the top when it names no
+    cell, or one the notebook does not have), and every cell has an #cell-N
+    anchor. `audience` ("authors" or "maintainers") words who fixes an issue."""
+    callouts: dict[int | None, list[str]] = {}
+    for issue in issues:
+        n = issue.get("cell_index")
+        n = n if isinstance(n, int) and not isinstance(n, bool) else None
+        callouts.setdefault(n, []).append(_issue(issue, audience))
     parts = []
     i = -1
     for cell in nb.get("cells", []):
@@ -125,20 +168,24 @@ def notebook_html(nb: dict, title: str, flagged: set[int] = frozenset()) -> str:
         i += 1
         src = _text(cell.get("source"))
         outputs = _coalesce(cell.get("outputs") or [])
-        flag = i in flagged or any(o.get("output_type") == "error" for o in outputs)
+        notes = "".join(callouts.pop(i, []))
+        flag = bool(notes) or any(o.get("output_type") == "error" for o in outputs)
         tags = (cell.get("metadata") or {}).get("tags") or []
         tag_line = f"<div class=tags>tags: {html.escape(', '.join(tags))}</div>" if tags else ""
         if cell.get("cell_type") == "markdown":
-            body = f"<div class=md>{tag_line}{_markdown_html(src)}</div>"
+            body = f"<div><div class=md>{tag_line}{_markdown_html(src)}</div>{notes}</div>"
             label = ""
         else:
             count = cell.get("execution_count")
             label = f"[{count if count is not None else ' '}]"
             body = (f"<div>{tag_line}<pre class=src>{html.escape(src)}</pre>"
-                    + "".join(_output(o, i) for o in outputs) + "</div>")
+                    + "".join(_output(o, i) for o in outputs) + notes + "</div>")
         mark = "<span class=warn-mark title='error or issue'>⚠</span>" if flag else ""
         parts.append(f"<div class='cell{' flag' if flag else ''}' id=cell-{i}>"
                      f"<div class=n>{i}<br>{label}{mark}</div>{body}</div>")
+    loose = "".join(c for n in sorted(callouts, key=lambda n: (n is not None, n or 0)) for c in callouts[n])
+    if loose:  # issues with no cell of their own in this notebook
+        parts.insert(0, f"<div class=loose><div class=lbl>Not tied to a cell</div>{loose}</div>")
     return (f"<!doctype html><html lang=en><head><meta charset=utf-8>"
             f"<meta name=viewport content='width=device-width, initial-scale=1'>"
             f"<title>{html.escape(title)}</title>"

@@ -25,14 +25,18 @@
 {%- endmacro %}
 
 {# One issues table for both apps: cell (linked into the notebook view when
-   cell_href is given), type, what broke, the fix, and who fixes it. #}
+   cell_href is given), type, what broke, the fix, and who fixes it; in cell
+   order, issues without a cell (no index, or the agents' -1) last. #}
 {% macro issues_table(issues, cell_href=None) -%}
+{%- set numbered = issues | selectattr('cell_index', 'integer') | selectattr('cell_index', 'ge', 0)
+                          | sort(attribute='cell_index') | list -%}
+{%- set issues = numbered + (issues | reject('in', numbered) | list) -%}
 <div class="table-wrap"><table>
   <thead><tr><th scope="col">Cell</th><th scope="col">Type</th><th scope="col" class="col-issue">What broke</th><th scope="col">Proposed fix</th><th scope="col">Who fixes it</th></tr></thead>
   <tbody>
   {% for i in issues %}
     <tr>
-      <td>{% if i.cell_index is not none and cell_href %}<a href="{{ cell_href }}#cell-{{ i.cell_index }}" target="nbview" onclick="document.getElementById('notebook').scrollIntoView()">{{ i.cell_index }}</a>{% else %}{{ i.cell_index if i.cell_index is not none else "—" }}{% endif %}</td>
+      <td>{% if i in numbered and cell_href %}<a href="{{ cell_href }}#cell-{{ i.cell_index }}" target="nbview" onclick="document.getElementById('notebook').scrollIntoView()">{{ i.cell_index }}</a>{% else %}{{ i.cell_index if i in numbered else "—" }}{% endif %}</td>
       <td class="nowrap">{{ i.error_type | issue_type }}</td>
       <td class="wrap">{{ i.description | codespans }}</td>
       <td class="wrap">{{ i.proposed_fix | codespans }}</td>
