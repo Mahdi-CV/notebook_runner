@@ -43,6 +43,9 @@ STRIP_SETUP = Path(os.environ.get("STRIP_SETUP") or "~/projects/jupyterServer/se
 ANNOTATE_MINUTES = int(os.environ.get("NBR_ANNOTATE_MINUTES") or 30)
 RUN_PY = Path(os.environ.get("NBR_RUN_PY") or REPO_ROOT / "run.py")  # overridable for tests
 GITHUB_API = "https://api.github.com"
+# Public files without a token: the API allows 60 such requests an hour per
+# address, which a shared office address can use up; raw files have no such limit.
+GITHUB_RAW = "https://raw.githubusercontent.com"
 
 
 def plural(n: int, word: str) -> str:
@@ -107,9 +110,26 @@ def github_get(path: str, accept: str = "application/vnd.github+json") -> bytes:
         with urllib.request.urlopen(req, timeout=60) as r:
             return r.read()
     except urllib.error.HTTPError as e:
-        hint = (" The service's GitHub token cannot see this repository."
+        if e.headers.get("x-ratelimit-remaining") == "0":
+            reset = time.strftime("%H:%M UTC", time.gmtime(int(e.headers.get("x-ratelimit-reset") or 0)))
+            raise Stop("blocked", f"GitHub's hourly limit for requests without a token is used up "
+                                  f"on this network until {reset}. Try again then, or upload the "
+                                  f"notebook instead.") from e
+        hint = ((" The service's GitHub token cannot see this repository." if token else
+                 " The service has no GitHub token, so it can only read public repositories.")
                 if e.code in (401, 403, 404) else "")
         raise Stop("blocked", f"GitHub answered {e.code} for {path}.{hint}") from e
+
+
+def github_raw(owner: str, repo: str, ref: str, path: str) -> bytes:
+    url = f"{GITHUB_RAW}/{owner}/{repo}/{urllib.parse.quote(ref)}/{urllib.parse.quote(path)}"
+    try:
+        with urllib.request.urlopen(urllib.request.Request(
+                url, headers={"User-Agent": "notebook-runner-authoring"}), timeout=60) as r:
+            return r.read()
+    except urllib.error.HTTPError as e:
+        raise Stop("blocked", f"GitHub answered {e.code} for {path} at {ref}. The service has no "
+                              f"GitHub token, so it can only read public repositories.") from e
 
 
 def parse_github_url(url: str) -> dict:
@@ -148,8 +168,11 @@ def download(job: Job) -> None:
         job.log(f"Pull request #{ref['pr']}: {pr['title']} (head {head[:8]})")
     else:
         path, head = ref["path"], ref["ref"]
-    raw = github_get(f"{repo}/contents/{urllib.parse.quote(path)}?ref={head}",
-                     accept="application/vnd.github.raw")
+    if os.environ.get("NBR_GITHUB_TOKEN"):
+        raw = github_get(f"{repo}/contents/{urllib.parse.quote(path)}?ref={head}",
+                         accept="application/vnd.github.raw")
+    else:
+        raw = github_raw(ref["owner"], ref["repo"], head, path)
     job.log(f"Fetched {path} at {head[:12]}")
     (job.dir / "input.ipynb").write_bytes(raw)
     (job.dir / "pr.json").write_text(json.dumps({"path": path, "ref": head,
