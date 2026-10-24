@@ -26,7 +26,7 @@
   <tbody>
   {% for j in mine %}
   <tr><td><a href="{{ prefix }}/jobs/{{ j.id }}">{{ j.notebook }}</a></td><td>{{ j.kind | capitalize }}</td><td>{{ job_badge(j.status) }}</td>
-      <td>{% if j.status in ('queued', 'running') %}{{ j.stage }}{% endif %}</td><td class="nowrap dim">{{ j.created_at[:16] | replace('T', ' ') }} UTC</td></tr>
+      <td>{% if j.status in ('queued', 'running') %}{{ j.stage }}{% endif %}</td><td class="nowrap dim">{{ j.created_at | ts }}</td></tr>
   {% endfor %}
   </tbody>
 </table></div>

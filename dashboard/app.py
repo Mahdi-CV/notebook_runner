@@ -78,35 +78,8 @@ def catalog() -> dict:
 
 # ── formatting ───────────────────────────────────────────────────────────────
 
-def parse_ts(ts: str | None) -> datetime | None:
-    """Parse stored timestamps (naive UTC, or ISO with offset) to naive UTC."""
-    if not ts:
-        return None
-    try:
-        dt = datetime.fromisoformat(ts)
-    except ValueError:
-        return None
-    if dt.tzinfo is not None:
-        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
-    return dt
-
-
-def fmt_ts(ts: str | None) -> str:
-    dt = parse_ts(ts)
-    return dt.strftime("%Y-%m-%d %H:%M UTC") if dt else "—"
-
-
-def fmt_age(ts: str | None) -> str:
-    dt = parse_ts(ts)
-    if not dt:
-        return ""
-    secs = (datetime.now(timezone.utc).replace(tzinfo=None) - dt).total_seconds()
-    if secs < 3600:
-        return f"{max(int(secs // 60), 0)}m ago"
-    if secs < 86400:
-        return f"{int(secs // 3600)}h ago"
-    return f"{int(secs // 86400)}d ago"
-
+# Timestamps and durations (ts, age, dur) are labels filters, shared with the
+# authoring service.
 
 def fmt_cost(v) -> str:
     return f"${v:.2f}" if v else "—"
@@ -133,7 +106,7 @@ def why(result: dict | None) -> str:
     return reason
 
 
-for name, fn in {"ts": fmt_ts, "age": fmt_age, "cost": fmt_cost, "why": why,
+for name, fn in {"cost": fmt_cost, "why": why,
                  "verdict": verdict_status}.items():
     templates.env.filters[name] = fn
 labels.register(templates.env)
@@ -141,7 +114,7 @@ labels.register(templates.env)
 
 def notebook_row(key: str, latest: dict | None) -> dict:
     status = verdict_status(latest["status"] if latest else None)
-    ts = parse_ts(latest["recorded_at"]) if latest else None
+    ts = labels.parse_ts(latest["recorded_at"]) if latest else None
     stale = bool(latest) and (
         ts is None or ts < datetime.now(timezone.utc).replace(tzinfo=None) - STALE_AFTER)
     return {

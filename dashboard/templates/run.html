@@ -4,7 +4,7 @@
 {% block content %}
 <p class="crumbs"><a href="/runs">Runs</a> / {{ run.run_id }}</p>
 <h1>Run {{ run.run_id }}</h1>
-<p class="sub">{{ run.mode | kind }} · started {{ run.started_at | ts }}{% if run.finished_at %} · finished {{ run.finished_at | ts }}{% endif %}</p>
+<p class="sub">{{ run.mode | kind }} · started {{ run.started_at | ts }}{% if run.finished_at %} · finished {{ run.finished_at | ts }} after {{ run.started_at | elapsed(run.finished_at) | dur }}{% endif %}</p>
 
 <div class="tiles">
   <div class="tile"><div class="n">{{ counts.pass }}</div><div class="l">Passed</div></div>

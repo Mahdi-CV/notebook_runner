@@ -9,10 +9,11 @@
 <div class="meta">{{ {'validate': 'Validate', 'annotate': 'Annotate', 'regression': 'Nightly pass'}[job.kind] }} · {{ categories.get(job.category, job.category or '') }}{% if job.author %} · {{ job.author }}{% endif %}</div>
 <h1>{{ job.notebook }} <span id="status">{{ job_badge(job.status) }}</span></h1>
 <p class="sub">
-  Submitted {{ job.created_at[:16] | replace('T', ' ') }} UTC
+  Submitted {{ job.created_at | ts }}
   {% if job.source_url %}· <a href="{{ job.source_url }}">{{ job.source_url }}</a>{% endif %}
   {% if job.target %}· {{ 'ran' if final else 'runs' }} on <b>{{ job.target }}</b>{% endif %}
-  {% if job.finished_at and job.started_at %}· finished {{ job.finished_at[11:16] }} UTC{% endif %}
+  {% if job.finished_at and job.started_at %}· {{ 'stopped' if job.status in ('cancelled', 'error') else 'finished' }} {{ job.finished_at | ts }} after {{ job.started_at | elapsed(job.finished_at) | dur }}
+  {%- elif job.status == 'running' and job.started_at %}· started {{ job.started_at | ts }}{% endif %}
 </p>
 
 <div class="card">
@@ -30,7 +31,7 @@
   {% endif %}
   <p class="dim" id="position" role="status" aria-live="polite" style="margin: 0"{% if not position %} hidden{% endif %}>
     <span id="posn">{% if position %}Number {{ position }} in the queue for a GPU.{% endif %}</span>
-    {% if estimates.validate %}Validate jobs usually take about {{ estimates.validate }} minutes once they start.{% endif %}
+    {% if estimates.validate %}Validate jobs usually take about {{ estimates.validate | dur('min') }} once they start.{% endif %}
     <a href="{{ prefix }}/runners">See the runners</a>.
   </p>
   {% if not final and job.kind != 'regression' %}
@@ -48,7 +49,7 @@
   <div class="card">
     <dl class="kv">
       {% if s.run.message %}<dt>Message</dt><dd>{{ s.run.message }}</dd>{% endif %}
-      <dt>Runner</dt><dd>{{ s.run.target }} ({{ s.run.minutes }} min)</dd>
+      <dt>Runner</dt><dd>{{ s.run.target }} ({{ s.run.minutes | dur('min') }})</dd>
       {% if s.run.docker_image %}<dt>Image</dt><dd class="mono">{{ s.run.docker_image }}</dd>{% endif %}
       {% if executed %}<dt>Executed notebook</dt><dd><a href="{{ prefix }}/jobs/{{ job.id }}/executed.ipynb">Download it with every cell's output</a></dd>{% endif %}
     </dl>

@@ -19,7 +19,7 @@
       <div class="meta" style="margin-top: 4px">{{ t.used }} of {{ t.total | plural('GPU' if t.unit == 'gpus' else 'slot') }} busy</div>
     </td>
     <td>
-      {% for j in t.jobs %}<div><a href="{{ prefix }}/jobs/{{ j.id }}">{{ j.notebook.split('/')[-1] }}</a> <span class="dim">· {{ 'nightly pass' if j.kind == 'regression' else j.author }} · since {{ j.started_at[11:16] }} UTC</span></div>
+      {% for j in t.jobs %}<div><a href="{{ prefix }}/jobs/{{ j.id }}">{{ j.notebook.split('/')[-1] }}</a> <span class="dim">· {{ 'nightly pass' if j.kind == 'regression' else j.author }} · since {{ j.started_at | ts }} (for {{ j.started_at | elapsed | dur }})</span></div>
       {% else %}<span class="dim">idle</span>{% endfor %}
     </td>
     <td>{% set ok = t.probe.startswith('ok') %}<span class="badge {{ 'ok' if ok else 'warn' if t.probe == 'not checked yet' else 'bad' }}">{{ 'reachable' if ok else t.probe.split(':')[0] }}</span>
@@ -31,7 +31,7 @@
 <p class="dim" style="margin-top: 8px" aria-live="polite">
   Waiting for a GPU: {{ availability.queue.authors_waiting | plural('author job') }} and {{ availability.queue.regression_waiting | plural('nightly notebook') }}.
   {% if availability.nightly %}The nightly pass has {{ availability.nightly.remaining | plural('notebook') }} left; author jobs always go first.{% endif %}
-  Updated {{ availability.updated_at[11:19] }} UTC.
+  Updated {{ availability.updated_at | ts }}.
 </p>
 {% endif %}
 {%- endmacro %}

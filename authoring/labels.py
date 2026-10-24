@@ -6,6 +6,7 @@ no snake_case key reaches the page.
 """
 
 import re
+from datetime import datetime, timezone
 
 from markupsafe import Markup, escape
 
@@ -47,6 +48,71 @@ def markdown(text) -> Markup:
     return Markup(_IMG.sub("", _UNSAFE_HREF.sub('href="#"', html)))
 
 
+def parse_ts(ts) -> datetime | None:
+    """Stored timestamps (naive UTC, `Z`, or ISO with an offset) as naive UTC."""
+    if not ts:
+        return None
+    try:
+        dt = ts if isinstance(ts, datetime) else datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def when(ts) -> Markup:
+    """One format for a moment everywhere: "today 14:05 UTC", or "Oct 23, 14:05 UTC"
+    on other days (with the year when it is not this one); the full time is the
+    tooltip and the <time> element's datetime."""
+    dt = parse_ts(ts)
+    if not dt:
+        return Markup("—")
+    now = _now()
+    day = ("today" if dt.date() == now.date() else f"{dt:%b} {dt.day}," if dt.year == now.year
+           else f"{dt:%b} {dt.day}, {dt.year},")
+    iso = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return Markup('<time datetime="{0}" title="{0}">{1} {2} UTC</time>').format(iso, day, f"{dt:%H:%M}")
+
+
+def age(ts) -> str:
+    """How long ago, as "5m ago", "3h ago" or "2d ago"."""
+    dt = parse_ts(ts)
+    if not dt:
+        return ""
+    secs = (_now() - dt).total_seconds()
+    if secs < 60:
+        return "just now"
+    if secs < 3600:
+        return f"{int(secs // 60)}m ago"
+    if secs < 86400:
+        return f"{int(secs // 3600)}h ago"
+    return f"{int(secs // 86400)}d ago"
+
+
+def elapsed(start, end=None) -> float | None:
+    """Seconds from one timestamp to another, or to now: feed it to `dur`."""
+    a, b = parse_ts(start), parse_ts(end) if end else _now()
+    return max((b - a).total_seconds(), 0) if a and b else None
+
+
+def dur(value, unit: str = "s") -> str:
+    """A duration in seconds (or minutes, with unit="min") as "45 s", "12 min"
+    or "1 h 05 min"."""
+    try:
+        secs = max(float(value) * (60 if unit == "min" else 1), 0)
+    except (TypeError, ValueError):
+        return "—"
+    if secs < 59.5:
+        return f"{int(secs + 0.5)} s"
+    mins = int(secs / 60 + 0.5)  # half up: 12.5 min reads as 13
+    return f"{mins} min" if mins < 60 else f"{mins // 60} h {mins % 60:02d} min"
+
+
 def register(env) -> None:
     env.filters["category"] = lambda k: CATEGORIES.get(k, k)
     env.filters["issue_type"] = lambda k: ISSUE_TYPES.get(k, (k or "").replace("_", " "))
@@ -55,3 +121,7 @@ def register(env) -> None:
     env.filters["plural"] = plural
     env.filters["codespans"] = codespans
     env.filters["md"] = markdown
+    env.filters["ts"] = when
+    env.filters["age"] = age
+    env.filters["elapsed"] = elapsed
+    env.filters["dur"] = dur

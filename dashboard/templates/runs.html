@@ -10,7 +10,7 @@
     <tr>
       <td class="mono"><a href="/run/{{ r.run_id }}">{{ r.run_id }}</a></td>
       <td class="ts">{{ r.started_at | ts }}<br><span class="dim">{{ r.started_at | age }}</span></td>
-      <td class="ts">{% if r.finished_at %}{{ r.finished_at | ts }}{% else %}<span class="badge warn" title="no finish time recorded: still running, or interrupted">unfinished</span>{% endif %}</td>
+      <td class="ts">{% if r.finished_at %}{{ r.finished_at | ts }}<br><span class="dim">after {{ r.started_at | elapsed(r.finished_at) | dur }}</span>{% else %}<span class="badge warn" title="no finish time recorded: still running, or interrupted">unfinished</span>{% endif %}</td>
       <td>{{ r.mode | kind if r.mode else "—" }}</td>
       <td class="mono">{{ r.host or "—" }}</td>
       <td class="num">{{ r.counts.pass }}</td>

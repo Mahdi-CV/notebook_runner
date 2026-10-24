@@ -14,7 +14,7 @@
   {% for j in jobs %}
   <tr><td><a href="{{ prefix }}/jobs/{{ j.id }}">{{ j.notebook }}</a></td><td>{{ j.kind | capitalize }}</td><td>{{ j.author }}</td>
       <td>{{ job_badge(j.status) }}</td><td>{% if j.status in ('queued', 'running') %}{{ j.stage }}{% endif %}</td><td class="dim">{{ j.target or '—' }}</td>
-      <td class="nowrap dim">{{ j.created_at[:16] | replace('T', ' ') }} UTC</td></tr>
+      <td class="nowrap dim">{{ j.created_at | ts }}</td></tr>
   {% else %}
   <tr><td colspan="7" class="dim">No jobs yet.</td></tr>
   {% endfor %}
