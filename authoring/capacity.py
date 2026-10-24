@@ -278,7 +278,7 @@ def load_targets() -> dict:
 
 
 def holds(job: dict) -> dict[str, str]:
-    """The targets runner.yaml's known_issues hold a nightly notebook off."""
+    """The targets a hold keeps a nightly notebook off (routing.holds_for)."""
     return routing.holds_for(job["notebook"], routing.load_config()) if job["kind"] == "regression" else {}
 
 

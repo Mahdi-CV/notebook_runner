@@ -74,20 +74,19 @@ def db() -> sqlite3.Connection | None:
 def catalog() -> dict:
     """Targets, and for every notebook its requirements and route. When no
     target fits, "misses" lists what each one lacks, one target per entry;
-    "held" is runner.yaml's known issue holding it off some targets
-    ({reason, since, targets}), whether or not another target still runs it."""
+    "held" is the hold keeping it off some targets ({reason, since, targets,
+    by}), whether or not another target still runs it."""
     config = routing.load_config(CONFIG_PATH)
     notebooks = {}
     for key, (target, reason) in routing.routes(NOTEBOOKS_DIR, config).items():
         req = routing.resolve(NOTEBOOKS_DIR / key, {})[0]
         fits_none = req is not None and reason.startswith("no target fits")
         holds = routing.holds_for(key, config)
-        entry = config["known_issues"].get(key) or {}
+        entry = config["holds"].get(key) or {}
         notebooks[key] = {"req": req, "target": target, "reason": reason,
                           "misses": routing.misses(req, config["targets"]) if fits_none else [],
                           "held": {"reason": entry.get("reason"), "since": entry.get("since"),
-                                   "targets": list(holds), "source": entry.get("source"),
-                                   "by": entry.get("by")} if holds else None}
+                                   "targets": list(holds), "by": entry.get("by")} if holds else None}
     return {"targets": config["targets"], "notebooks": notebooks}
 
 

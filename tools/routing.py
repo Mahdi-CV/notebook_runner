@@ -5,11 +5,10 @@ A notebook declares its needs in its own metadata (`metadata.ci`, documented
 upstream in ROCm/gpuaidev .github/CI_METADATA.md); the targets are this
 deployment's private runner.yaml (see runner.example.yaml). Neither knows about
 the other: a notebook never names a machine, and a target never names a
-notebook. The one exception is known issues: notebooks held off targets
-where a known infrastructure problem stops them, with the reason, so the
-nightly pass does not spend a run rediscovering it. They come from runner.yaml
-(known_issues) and from the holds people set on the dashboard
-(jobs/holds.json, written by the authoring service).
+notebook. The one exception is holds: notebooks held off targets where a
+known infrastructure problem stops them, with the reason, so the nightly pass
+does not spend a run rediscovering it. People set them on the dashboard; the
+authoring service keeps them in jobs/holds.json (authoring/holds.py).
 
 Usage:
   python3 tools/routing.py [--dir notebooks/] [--target NAME]   # print every route
@@ -105,40 +104,29 @@ def requirements(nb_path: Path) -> Requirements:
 
 
 def load_config(path: Path = CONFIG_PATH) -> dict:
-    """runner.yaml as {"targets": {name: target}, "timebox_minutes": N,
-    "known_issues": {key: {reason, targets?, since?, source, ...}}}; no targets
-    if it is missing. known_issues adds the dashboard's holds (holds_path) to
-    runner.yaml's own, which win for a notebook in both."""
+    """runner.yaml as {"targets": {name: target}, "timebox_minutes": N}, with
+    the dashboard's holds (holds_path) as "holds": {notebook key: {reason,
+    targets, since, by, at}}; no targets if runner.yaml is missing."""
     data = (yaml.safe_load(path.read_text()) or {}) if path.exists() else {}
-    known = {}
-    for key, entry in (data.get("known_issues") or {}).items():
-        if not isinstance(entry, dict) or not entry.get("reason"):
-            raise ValueError(f"{path}: known_issues.{key} needs a reason")
-        known[key] = {**entry, "source": "runner.yaml"}
     try:
-        dashboard = json.loads(holds_path(path).read_text())
+        holds = json.loads(holds_path(path).read_text())
     except (OSError, ValueError):
-        dashboard = {}
-    for key, entry in dashboard.items():
-        if isinstance(entry, dict) and entry.get("reason") and key not in known:
-            known[key] = {**entry, "source": "dashboard"}
+        holds = {}
     return {"targets": data.get("targets") or {},
             "timebox_minutes": int(data.get("timebox_minutes") or DEFAULT_TIMEBOX_MINUTES),
-            "known_issues": known}
+            "holds": {k: e for k, e in holds.items() if isinstance(e, dict) and e.get("reason")}}
 
 
 def holds_path(config_path: Path = CONFIG_PATH) -> Path:
-    """The holds set on the dashboard: jobs/holds.json beside runner.yaml (or in
-    NBR_JOBS_DIR)."""
+    """jobs/holds.json beside runner.yaml (or in NBR_JOBS_DIR)."""
     jobs = os.environ.get("NBR_JOBS_DIR")
     return (Path(jobs) if jobs else Path(config_path).parent / "jobs") / "holds.json"
 
 
 def holds_for(key: str, config: dict) -> dict[str, str]:
-    """{target name: reason} for the targets a known infrastructure issue holds
-    this notebook (its key under the notebook root) off. An entry without
-    `targets` holds it off every target."""
-    entry = (config.get("known_issues") or {}).get(key)
+    """{target name: reason} for the targets a hold keeps this notebook (its key
+    under the notebook root) off. A hold without `targets` covers every target."""
+    entry = (config.get("holds") or {}).get(key)
     if not entry:
         return {}
     return {name: str(entry["reason"]) for name in (entry.get("targets") or config["targets"])}

@@ -342,7 +342,7 @@ def set_hold(notebook: str = Form(...), author: str = Form(...), reason: str = F
     if not 10 <= len(reason) <= 500:
         raise HTTPException(400, "Say what the infrastructure problem is (10 to 500 characters).")
     config = routing.load_config()
-    if notebook in config["known_issues"]:
+    if notebook in config["holds"]:
         raise HTTPException(409, f"{notebook} is already held.")
     path = store.NOTEBOOKS_DIR / notebook
     if not path.is_file() or ".." in Path(notebook).parts:
@@ -364,8 +364,7 @@ def lift_hold(notebook: str = Form(...), author: str = Form(...)):
     if not NAME_RE.match(author):
         raise HTTPException(400, "Enter your name or email (letters, digits, spaces, . _ @ ' -).")
     if holds.lift(notebook, author) is None:
-        raise HTTPException(409, f"{notebook} has no hold set on the dashboard; one in "
-                                 "runner.yaml is lifted by editing it.")
+        raise HTTPException(409, f"{notebook} is not held.")
     return back_to_notebook(notebook, author)
 
 

@@ -47,7 +47,7 @@
 
 {% if held %}
 <h2 id="held">Held for known infrastructure issues ({{ held | length }})</h2>
-<p class="sub">Not run until the problem is fixed and the hold is lifted in <code>runner.yaml</code> (<code>known_issues</code>). Each result below is the last run before the hold.</p>
+<p class="sub">Not run until someone lifts the hold on the notebook's page, once the problem is fixed. Each result below is the last run before the hold.</p>
 <div class="table-wrap"><table>
   <thead><tr><th scope="col">Notebook</th><th scope="col">Category</th><th scope="col" class="col-issue">Why</th><th scope="col">Last result</th></tr></thead>
   <tbody>

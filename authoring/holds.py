@@ -1,10 +1,9 @@
 """Holds set on the dashboard: notebooks kept off runners for a known
-infrastructure problem, without editing runner.yaml.
+infrastructure problem.
 
 jobs/holds.json is {notebook key: {reason, targets, since, by, at}}; routing
-(tools/routing.py) adds it to runner.yaml's known_issues, which win for a
-notebook in both and can only be changed in runner.yaml. Every hold and lift
-is appended to jobs/holds-log.jsonl, which the notebook's page shows.
+(tools/routing.py) reads it with runner.yaml. Every hold and lift is appended
+to jobs/holds-log.jsonl, which the notebook's page shows.
 
 There is no login, so a hold may only be set on a notebook whose latest result
 is blocked (it could not be evaluated), never on one that fails on its own

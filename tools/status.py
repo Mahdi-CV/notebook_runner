@@ -3,7 +3,7 @@ Aggregate per-notebook regression results into a status dashboard.
 
 Reads results/*.json for every notebook in notebooks/ and prints a markdown
 summary + table. Notebooks no configured target can run, or held off them for
-a known infrastructure issue (runner.yaml known_issues), are listed apart (see
+a known infrastructure issue (set on the dashboard), are listed apart (see
 tools/routing.py). Supports --gap (work-order list), --json
 (machine-readable), --write (also write STATUS.md), --results-dir PATH.
 """
@@ -263,8 +263,8 @@ def render_markdown(rows: list[dict], summary: dict, no_target: dict[str, str]) 
     unroutable = {k: why for k, why in no_target.items() if k not in held}
     if held:
         lines += ["", "## Held", "",
-                  "Notebooks runner.yaml's known_issues hold off the targets that fit them, "
-                  "for a known infrastructure problem; they are not run until it is lifted.", "",
+                  "Notebooks held off the targets that fit them for a known infrastructure "
+                  "problem; they are not run until the hold is lifted on the dashboard.", "",
                   "| Notebook | Why |", "|---|---|"]
         lines += [f"| {k} | {why.removeprefix('held: ').replace('|', chr(92) + '|')} |"
                   for k, why in sorted(held.items())]

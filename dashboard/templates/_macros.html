@@ -34,9 +34,9 @@
 {%- else -%}{{ reason or "—" }}{%- endif -%}
 {%- endmacro %}
 
-{# runner.yaml's known issue holding a notebook off some runners: {reason, since, targets}. #}
+{# The hold keeping a notebook off some runners: {reason, since, targets, by}. #}
 {% macro held_note(held) -%}
-<span class="badge warn" title="{{ 'held from the dashboard' ~ (' by ' ~ held.by if held.by else '') if held.source == 'dashboard' else 'runner.yaml known_issues' }}">held</span> off <span class="mono">{{ held.targets | join(", ") }}</span>{% if held.since %} since {{ held.since }}{% endif %}: {{ held.reason }}
+<span class="badge warn">held</span> off <span class="mono">{{ held.targets | join(", ") }}</span>{% if held.since %} since {{ held.since }}{% endif %}: {{ held.reason }}{% if held.by %} <span class="dim">(held by {{ held.by }})</span>{% endif %}
 {%- endmacro %}
 
 {% macro nb_link(key) -%}

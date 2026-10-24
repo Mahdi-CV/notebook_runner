@@ -80,14 +80,3 @@ targets:
       PIP_EXTRA_INDEX_URL: https://pypi.org/simple
       UV_EXTRA_INDEX_URL: https://pypi.org/simple
 
-# Optional: notebooks held off targets for a known infrastructure problem, so
-# the nightly pass does not spend a run rediscovering it. Keyed by the
-# notebook's path under docs/notebooks. A held notebook runs on another target
-# that fits it; with none left it is not run, and the dashboard and STATUS.md
-# list it as held with the reason. `targets` defaults to every target. Remove
-# the entry once the problem is fixed (`run.py --include-held` checks first).
-known_issues:
-  inference/example_notebook.ipynb:
-    targets: [radeon-global]
-    reason: the egress proxy downloads at about 20 KB/s; the 6 GB of models cannot finish in the timebox
-    since: 2026-10-24

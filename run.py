@@ -1022,7 +1022,7 @@ def parse_args():
                         "(ci_run.py uses this so its batches form one run). "
                         "Default: a fresh UTC timestamp.")
     p.add_argument("--include-held", action="store_true",
-                   help="Run notebooks runner.yaml's known_issues hold off a target anyway "
+                   help="Run notebooks a hold (set on the dashboard) keeps off a target anyway "
                         "(to check whether the problem is gone).")
     p.add_argument("--notify", action="store_true",
                    help="After the run, post a summary of it to Teams "
