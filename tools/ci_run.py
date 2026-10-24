@@ -9,8 +9,10 @@ One command that runs an automated regression pass and updates the dashboard:
                         in --mode full. Deduped against Phase A so nothing that
                         already ran this pass runs twice.
   Phase C — Dashboard : regenerate STATUS.md from the fresh results.
-  Phase D — Commit    : auto-commit STATUS.md + manifest.yaml (results/ is a
+  Phase D — Commit    : auto-commit STATUS.md (results/ is a
                         gitignored local cache) (skip with --no-commit).
+  Phase E — Notify    : post this pass's card to Teams (skip with --no-notify;
+                        also skipped when TEAMS_WEBHOOK_URL is unset).
 
 Everything is tee'd to logs/ci_<timestamp>.log.
 
@@ -19,32 +21,24 @@ Usage:
   python3 tools/ci_run.py --category inference  # one category only
   python3 tools/ci_run.py --no-commit           # update files, don't commit
   python3 tools/ci_run.py --skip-gap            # only attack current failures
+  python3 tools/ci_run.py --verify-only         # diagnose only, never auto-fix
+  python3 tools/ci_run.py --target NAME         # only use this runner.yaml target
   python3 tools/ci_run.py --dry-run             # print the plan, run nothing
 
 Scheduling:
-  The weekly trigger runs this script via the tools/ci_cron.sh wrapper (flock so
-  passes never overlap, output tee'd to logs/). Install the schedule with
-  `crontab -e` and add:
+  docker/notebook-runner-cron.sh runs this daily in the CI container via
+  docker/run-ci.sh (flock so passes never overlap, output tee'd to logs/).
+  See docker/README.md.
 
-      # weekly notebook regression — Sundays 03:17 local
-      17 3 * * 0  /mnt/c/Users/karchaka/notebook_runner/tools/ci_cron.sh
-
-  The wrapper calls `ci_run.py --push`, so results (STATUS.md + manifest.yaml)
-  are committed and pushed to origin automatically.
-
-  WSL caveat: Linux cron only fires while WSL is running. If the machine is off
-  at the scheduled time the run is silently missed (no catch-up). For a host
-  that sleeps/reboots, drive the wrapper from Windows Task Scheduler instead:
-      wsl.exe bash -lc '/mnt/c/Users/karchaka/notebook_runner/tools/ci_cron.sh'
-
-  Future: a self-hosted GitHub Actions runner (SSH to the GPU box + HF_TOKEN/
-  GPU_HOST/GPU_USER secrets) — required for the PR trigger, optional here.
+  Future: a self-hosted GitHub Actions runner (SSH to the GPU box + HF_TOKEN
+  secret) — required for the PR trigger, optional here.
 """
 
 import argparse
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -52,6 +46,7 @@ HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent
 RUN_PY = REPO_ROOT / "run.py"
 STATUS_PY = HERE / "status.py"
+TEAMS_PY = HERE / "report_teams.py"
 LOGS_DIR = REPO_ROOT / "logs"
 
 
@@ -109,8 +104,13 @@ def stream(cmd: list[str], tee: Tee) -> int:
     return proc.returncode
 
 
-def run_batch(paths: list[Path], base_dir: Path, tee: Tee, dry_run: bool) -> None:
-    cmd = [sys.executable, str(RUN_PY), "--dir", str(base_dir), "--mode", "full",
+def run_batch(paths: list[Path], base_dir: Path, tee: Tee, dry_run: bool,
+              run_id: str, mode: str = "full", target: str | None = None) -> None:
+    if os.environ.get("NBR_QUEUE") == "1":
+        return queue_batch(paths, base_dir, tee, dry_run, run_id, mode, target)
+    # --run-id groups Phase A and Phase B under one run in results/runs.db.
+    cmd = [sys.executable, str(RUN_PY), "--dir", str(base_dir), "--mode", mode,
+           "--run-id", run_id, *(["--target", target] if target else []),
            *[str(p) for p in paths]]
     if dry_run:
         tee.line(f"[dry-run] would run: {' '.join(cmd)}")
@@ -118,6 +118,58 @@ def run_batch(paths: list[Path], base_dir: Path, tee: Tee, dry_run: bool) -> Non
     rc = stream(cmd, tee)
     # run.py exits 1 when any notebook fails — expected, don't abort the pipeline.
     tee.line(f"[batch finished, run.py exit={rc}]")
+
+
+def dependency_waves(paths: list[Path], base_dir: Path) -> list[list[Path]]:
+    """Group notebooks so each runs after the ones in this batch it declares in
+    metadata.ci.depends_on; notebooks within a wave may run in parallel."""
+    sys.path.insert(0, str(HERE))
+    import routing
+    keys = {str(p.relative_to(base_dir)): p for p in paths}
+    deps = {}
+    for key, p in keys.items():
+        req = routing.resolve(p, {})[0]
+        deps[key] = {d for d in (req.depends_on if req else []) if d in keys}
+    waves, done = [], set()
+    while len(done) < len(keys):
+        wave = [k for k in keys if k not in done and deps[k] <= done]
+        if not wave:  # a dependency cycle: run the rest together
+            wave = [k for k in keys if k not in done]
+        waves.append([keys[k] for k in wave])
+        done |= set(wave)
+    return waves
+
+
+def queue_batch(paths: list[Path], base_dir: Path, tee: Tee, dry_run: bool,
+                run_id: str, mode: str, target: str | None) -> None:
+    """Hand the notebooks to the authoring worker as regression jobs and wait.
+    The worker runs them in parallel on free runner slots, after any author
+    jobs, and merges their results into results/runs.db (authoring/worker.py)."""
+    sys.path.insert(0, str(REPO_ROOT))
+    from authoring import store
+    waves = dependency_waves(paths, base_dir)
+    if dry_run:
+        for i, wave in enumerate(waves, 1):
+            tee.line(f"[dry-run] would queue wave {i}: {', '.join(p.name for p in wave)}")
+        return
+    conn = store.connect()
+    for i, wave in enumerate(waves, 1):
+        pending = {}
+        for p in wave:
+            job_id = store.create(conn, "regression", str(p.relative_to(base_dir)),
+                                  source="checkout", mode=mode, run_id=run_id,
+                                  only_target=target)
+            pending[job_id] = p.name
+        tee.line(f"[queued {len(pending)} notebook(s) for the worker"
+                 + (f", wave {i} of {len(waves)}" if len(waves) > 1 else "") + "]")
+        while pending:
+            time.sleep(15)
+            for job_id in list(pending):
+                job = store.get(conn, job_id)
+                if job and job["status"] in store.FINAL:
+                    tee.line(f"  {pending.pop(job_id)}: {job['status']} on "
+                             f"{job.get('target') or '-'} ({job['stage']})")
+    conn.close()
 
 
 def git_push(tee: Tee, dry_run: bool) -> None:
@@ -138,9 +190,9 @@ def git_push(tee: Tee, dry_run: bool) -> None:
 
 def git_commit(tee: Tee, ts: str, dry_run: bool, push: bool) -> None:
     # results/*.json is gitignored (local cache that feeds STATUS.md). The
-    # committed record is the dashboard + manifest; detailed evidence for authors
-    # lives in upstream_prs/ and GitHub issues/PRs, not raw JSON in git history.
-    paths = ["STATUS.md", "manifest.yaml"]
+    # committed record is the dashboard; detailed evidence for authors lives in
+    # upstream_prs/ and GitHub issues/PRs, not raw JSON in git history.
+    paths = ["STATUS.md"]
     if dry_run:
         tee.line(f"[dry-run] would: git add {' '.join(paths)} && git commit")
         if push:
@@ -175,12 +227,19 @@ def main() -> int:
                    choices=["inference", "fine_tune", "pretrain", "gpu_dev_optimize"])
     p.add_argument("--skip-gap", action="store_true",
                    help="Skip Phase A (freshness); only re-attempt current failures.")
+    p.add_argument("--verify-only", action="store_true",
+                   help="Run --mode verify instead of --mode full: diagnose only, "
+                        "never auto-fix. Intended for unattended/scheduled passes.")
+    p.add_argument("--target", default=None,
+                   help="Only use this runner.yaml target (passed to run.py --target).")
     p.add_argument("--no-commit", action="store_true",
                    help="Update STATUS.md/results but do not git commit.")
     p.add_argument("--push", action="store_true",
                    help="After committing, push the branch to origin (BatchMode SSH, "
                         "non-interactive). Intended for the cron trigger; off by default "
                         "so manual runs stay local.")
+    p.add_argument("--no-notify", action="store_true",
+                   help="Skip the Teams notification (Phase E).")
     p.add_argument("--dry-run", action="store_true",
                    help="Print the plan and the batches that would run; execute nothing.")
     args = p.parse_args()
@@ -189,6 +248,8 @@ def main() -> int:
     if not base_dir.exists():
         print(f"Error: notebook dir not found: {base_dir}", file=sys.stderr)
         return 2
+
+    batch_mode = "verify" if args.verify_only else "full"
 
     ts = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%S")
     LOGS_DIR.mkdir(exist_ok=True)
@@ -211,7 +272,8 @@ def main() -> int:
             for p in gap_paths:
                 tee.line(f"    {p.name}")
             if gap_paths:
-                run_batch(gap_paths, base_dir, tee, args.dry_run)
+                run_batch(gap_paths, base_dir, tee, args.dry_run, ts, mode=batch_mode,
+                          target=args.target)
 
         # ── Phase B — Failures (deduped against Phase A) ────────────────────
         failing_paths = selector_paths("--failing", base_dir, args.category)
@@ -221,7 +283,8 @@ def main() -> int:
         for p in failing_paths:
             tee.line(f"    {p.name}")
         if failing_paths:
-            run_batch(failing_paths, base_dir, tee, args.dry_run)
+            run_batch(failing_paths, base_dir, tee, args.dry_run, ts, mode=batch_mode,
+                      target=args.target)
 
         # ── Phase C — Dashboard ─────────────────────────────────────────────
         tee.line("\n── Phase C — Regenerating STATUS.md ──")
@@ -236,6 +299,18 @@ def main() -> int:
             tee.line("[commit] skipped (--no-commit)")
         else:
             git_commit(tee, ts, args.dry_run, args.push)
+
+        # ── Phase E — Notify ────────────────────────────────────────────────
+        # Never fatal: a Teams outage must not fail a pass.
+        tee.line("\n── Phase E — Notify ──")
+        if args.no_notify:
+            tee.line("[teams] skipped (--no-notify)")
+        else:
+            notify_cmd = [sys.executable, str(TEAMS_PY), "--run-id", ts,
+                          "--log-name", logpath.name]
+            if args.dry_run:
+                notify_cmd.append("--dry-run")
+            stream(notify_cmd, tee)
 
         tee.line(f"\nCI pass complete. Log: {logpath}")
 

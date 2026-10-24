@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% from "_macros.html" import status_badge, requirements, no_runner, held_note %}
+{% block title %}{{ row.name }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/">Notebooks</a> / {{ row.category | category }}</p>
+<h1>{{ row.name }} {{ status_badge(row.status) }}</h1>
+<p class="sub mono">{{ key }}</p>
+{% if check_url %}<p><a class="button secondary" href="{{ check_url }}">Check this notebook</a> <span class="meta">opens the submit form, filled in</span></p>{% endif %}
+
+<div class="grid2">
+  <div class="card">
+    <dl class="kv">
+      <dt>Latest result</dt><dd>{% if row.latest %}<a href="/result/{{ row.latest.id }}">{{ row.latest.recorded_at | ts }}</a> ({{ row.latest.recorded_at | age }}){% else %}never tested{% endif %}</dd>
+      <dt>Results recorded</dt><dd>{{ history | length }}</dd>
+    </dl>
+  </div>
+  <div class="card">
+    <dl class="kv">
+      {% if nb %}
+      <dt>Needs</dt><dd>{{ requirements(nb.req) if nb.req else "—" }}</dd>
+      <dt>Runner</dt><dd>{% if nb.target %}<span class="mono">{{ nb.target }}</span>{% if nb.held %}<div class="meta">{{ held_note(nb.held) }}</div>{% endif %}{% elif nb.reason.startswith('held:') %}{{ held_note(nb.held) }}{% elif nb.reason %}<span class="badge muted">no runner fits</span><div class="meta">{{ no_runner(nb.reason, nb.misses) }}</div>{% else %}—{% endif %}</dd>
+      {% if nb.req and nb.req.image %}<dt>Image</dt><dd class="mono">{{ nb.req.image }}</dd>{% endif %}
+      {% if nb.req and nb.req.parameters %}<dt>CI parameters</dt><dd class="mono">{% for k, v in nb.req.parameters.items() %}{{ k }}={{ v }} {% endfor %}</dd>{% endif %}
+      {% else %}
+      <dt>Notebook</dt><dd class="dim">no longer in the notebook tree</dd>
+      {% endif %}
+    </dl>
+  </div>
+</div>
+
+{% if (nb and nb.held) or can_hold or hold_log %}
+<div class="card hold" id="hold">
+  {% if nb and nb.held %}
+  <h2 style="margin-top: 0">Held</h2>
+  <p>{{ held_note(nb.held) }}</p>
+  <p class="meta">Lift it once the problem is fixed; the next nightly pass runs it again.</p>
+  {% if authoring_url %}
+  <form method="post" action="{{ authoring_url }}holds/lift" class="inline-form">
+    <input type="hidden" name="notebook" value="{{ key }}">
+    <label>Your name or email <input type="text" name="author" value="{{ author }}" required maxlength="60"></label>
+    <button type="submit" class="secondary">Lift the hold</button>
+  </form>
+  {% endif %}
+  {% elif can_hold %}
+  <h2 style="margin-top: 0">Hold this notebook</h2>
+  <p>Its latest result is blocked: it could not be evaluated. If that is a known infrastructure problem, hold it off the runners it hits, so the nightly pass stops spending a run on it. It runs on another runner that fits, or not at all, and stays listed as held with your reason until someone lifts the hold.</p>
+  <form method="post" action="{{ authoring_url }}holds" class="hold-form">
+    <input type="hidden" name="notebook" value="{{ key }}">
+    <fieldset><legend>Runners to hold it off</legend>
+      {% for t in fits %}<label class="check"><input type="checkbox" name="targets" value="{{ t }}"{% if t == hold_server or fits | length == 1 %} checked{% endif %}> <span class="mono">{{ t }}</span></label>{% endfor %}
+    </fieldset>
+    <label>The infrastructure problem <textarea name="reason" required minlength="10" maxlength="500" rows="3">{{ row.latest | why }}</textarea></label>
+    <div class="inline-form">
+      <label>Your name or email <input type="text" name="author" value="{{ author }}" required maxlength="60"></label>
+      <button type="submit">Hold this notebook</button>
+    </div>
+  </form>
+  {% endif %}
+  {% if hold_log %}
+  <details{% if not (nb and nb.held) and not can_hold %} open{% endif %}><summary class="meta">Hold history ({{ hold_log | length }})</summary>
+    <ul class="hold-log">{% for e in hold_log %}<li>{{ e.at | ts }}: {{ e.by }} {{ 'held it off' if e.action == 'hold' else 'lifted the hold on' }} <span class="mono">{{ (e.targets or []) | join(', ') }}</span>{% if e.action == 'hold' %}: {{ e.reason }}{% endif %}</li>{% endfor %}</ul>
+  </details>
+  {% endif %}
+</div>
+{% endif %}
+
+<h2>History</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Status</th><th scope="col">Runner</th><th scope="col">Image</th><th scope="col" class="col-issue">Why</th><th scope="col" class="num">Agent turns</th><th scope="col" class="num">Cost</th><th scope="col">Run</th></tr></thead>
+  <tbody>
+  {% for h in history %}
+    <tr>
+      <td class="ts"><a href="/result/{{ h.id }}">{{ h.recorded_at | ts }}</a><br><span class="dim">{{ h.recorded_at | age }}</span></td>
+      <td>{{ h.phase | kind }}</td>
+      <td>{{ status_badge(h.status | verdict) }}</td>
+      <td class="mono">{{ h.server or "—" }}</td>
+      <td class="mono dim"><div class="clip" title="{{ h.docker_image or '' }}">{{ h.docker_image or "—" }}</div></td>
+      <td class="col-issue">{% if (h.status | verdict) != 'pass' %}<div class="clamp">{{ h | why | codespans }}</div>{% endif %}{% if h.issues %}<span class="dim">{{ h.issues | length }} issue{{ 's' if h.issues | length > 1 }}</span>{% endif %}</td>
+      <td class="num">{{ h.num_turns or "—" }}</td>
+      <td class="num">{{ h.cost_usd | cost }}</td>
+      <td class="mono">{% if h.run_id %}<a href="/run/{{ h.run_id }}">{{ h.run_id }}</a>{% else %}<span class="dim" title="imported from a result file; not tied to a recorded batch">imported</span>{% endif %}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="9" class="dim">No results recorded for this notebook.</td></tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% endblock %}

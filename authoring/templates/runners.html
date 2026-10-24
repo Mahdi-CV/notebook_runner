@@ -1,0 +1,67 @@
+{% extends "layout.html" %}
+{% from "_widgets.html" import about, runner_rows with context %}
+{% block title %}Runners{% endblock %}
+{% block content %}
+<h1>Runners</h1>
+<p class="sub">The GPU machines (runners) notebooks run on, in preference order, how busy each one is, and the queue. Author jobs run before the nightly pass.{% if dashboard_url %} <a href="{{ dashboard_url.rstrip('/') }}/targets">Routing</a> shows which runner each notebook goes to.{% endif %}</p>
+{% if availability %}
+{% set q = availability.queue %}
+<div class="tiles" aria-live="polite">
+  <div class="tile"><div class="n">{{ q.running }}</div><div class="l">Running</div></div>
+  <div class="tile"><div class="n">{{ q.authors_waiting }}</div><div class="l">Author jobs waiting</div></div>
+  <div class="tile"><div class="n">{{ q.regression_waiting }}</div><div class="l">Nightly notebooks waiting</div>
+    {% if availability.nightly %}<div class="meta">{{ availability.nightly.remaining | plural('notebook') }} left in {% if dashboard_url and availability.nightly.run_id %}<a href="{{ dashboard_url.rstrip('/') }}/run/{{ availability.nightly.run_id }}">the pass</a>{% else %}the pass{% endif %}</div>{% endif %}</div>
+</div>
+{% endif %}
+{{ runner_rows(availability, summary=False) }}
+{% if availability %}
+<p class="meta" style="margin-top: 8px">Updated {{ availability.updated_at | ts }}.</p>
+
+<h2>Waiting for a GPU</h2>
+{% if availability.waiting is not defined %}
+<p class="dim">The queue appears with the worker's next report.</p>
+{% elif not availability.waiting %}
+<p class="dim">No job is waiting for a GPU.</p>
+{% else %}
+{# Every author job, then the first nightly notebooks; the rest as a count. #}
+{% set nightly_shown = 10 %}
+{% set ns = namespace(nightly=0) %}
+<div class="table-wrap"><table class="stack queue">
+  <thead><tr><th scope="col" class="num">#</th><th scope="col">Notebook</th><th scope="col">Job</th><th scope="col" class="num">GPUs</th><th scope="col">Estimated wait</th></tr></thead>
+  <tbody>
+  {% for j in availability.waiting %}
+  {% if j.kind == 'regression' %}{% set ns.nightly = ns.nightly + 1 %}{% endif %}
+  {% if j.kind != 'regression' or ns.nightly <= nightly_shown %}
+  <tr>
+    <td class="num dim pos">{{ loop.index }}</td>
+    <td data-label="Notebook"><a href="{{ prefix }}/jobs/{{ j.id }}">{{ j.notebook.split('/')[-1] }}</a></td>
+    <td data-label="Job">{% if j.kind == 'regression' %}Nightly pass{% else %}{{ j.kind | jobkind }} <span class="dim">· {{ j.author }}</span>{% endif %}</td>
+    <td class="num" data-label="GPUs">{{ j.gpus }}</td>
+    <td class="nowrap" data-label="Estimated wait">{{ about(j.start_in) }}</td>
+  </tr>
+  {% endif %}
+  {% endfor %}
+  </tbody>
+</table></div>
+{% if ns.nightly > nightly_shown %}<p class="dim" style="margin-top: 8px">and {{ (ns.nightly - nightly_shown) | plural('more nightly notebook') }}, which start after these.</p>{% endif %}
+<p class="meta" style="margin-top: 8px">Waits are estimates: they assume each running job takes its kind's typical duration (below) and that the queue keeps this order.</p>
+{% endif %}
+{% endif %}
+{% if availability and availability.estimates %}
+<h2>Typical durations</h2>
+<div class="table-wrap" style="max-width: 520px"><table>
+  <thead><tr><th scope="col">Job</th><th scope="col" class="num">Median of recent jobs</th></tr></thead>
+  <tbody>
+  {% for kind, minutes in availability.estimates.items() %}
+  <tr><td>{{ 'Nightly notebook' if kind == 'regression' else kind | jobkind }}</td><td class="num">{{ minutes | dur('min') }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% endif %}
+<script>
+  // Refresh the figures, but never while someone is reading further down or using the page.
+  setInterval(() => {
+    if (!document.hidden && document.activeElement === document.body && window.scrollY === 0) location.reload();
+  }, 20000);
+</script>
+{% endblock %}

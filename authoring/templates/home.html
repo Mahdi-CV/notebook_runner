@@ -1,0 +1,36 @@
+{% extends "layout.html" %}
+{% from "_widgets.html" import job_badge, runner_rows, submit_form with context %}
+{% block title %}Submit a notebook{% endblock %}
+{% block content %}
+<h1>Check a notebook before you publish</h1>
+<p class="sub">Run a tutorial notebook against the AI Developer Hub contribution guidelines and on AMD GPUs, the way CI does, or have it prepared for CI first.</p>
+<div class="grid2">
+  <div class="card" id="validate">
+    <h2 style="margin-top: 0">Validate a notebook</h2>
+    <p class="dim">Use this when your notebook is ready. We check it against the guidelines, then run every cell on a GPU that matches its <code>metadata.ci</code>. You get a pass, or each issue with the cell, the cause and a fix.</p>
+    {{ submit_form("validate", "Validate notebook", values.validate or {}, error if error and error.kind == "validate") }}
+  </div>
+  <div class="card" id="annotate">
+    <h2 style="margin-top: 0">Annotate a notebook</h2>
+    <p class="dim">Use this first if your notebook has never run in CI. An AI assistant adds the CI settings, starts servers in the background and tidies the text. No GPU needed. You download the result and review a cell-by-cell diff.</p>
+    {{ submit_form("annotate", "Annotate notebook", values.annotate or {}, error if error and error.kind == "annotate") }}
+  </div>
+</div>
+
+{% if mine %}
+<h2>Your jobs</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th scope="col">Notebook</th><th scope="col">Type</th><th scope="col">Status</th><th scope="col">Stage</th><th scope="col">Submitted</th></tr></thead>
+  <tbody>
+  {% for j in mine %}
+  <tr><td><a href="{{ prefix }}/jobs/{{ j.id }}">{{ j.notebook }}</a></td><td>{{ j.kind | jobkind }}</td><td>{{ job_badge(j.status) }}</td>
+      <td>{% if j.status in ('queued', 'running') %}{{ j.stage }}{% endif %}</td><td class="nowrap dim">{{ j.created_at | ts }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% endif %}
+
+<h2>Runners</h2>
+{{ runner_rows(availability) }}
+{% if error %}<script>document.getElementById("{{ error.kind }}-error").focus()</script>{% endif %}
+{% endblock %}

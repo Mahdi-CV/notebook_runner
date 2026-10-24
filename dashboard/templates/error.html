@@ -1,0 +1,7 @@
+{% extends layout or "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+<h1>{{ title }}</h1>
+<p class="sub">{{ detail }}</p>
+<p><a class="button secondary" href="{{ back_url }}">Go to {{ back_label }}</a>{% if also %} <a class="button secondary" href="{{ also[0] }}">Go to {{ also[1] }}</a>{% endif %}</p>
+{% endblock %}

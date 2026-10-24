@@ -1,0 +1,35 @@
+[project]
+name = "notebook-runner"
+version = "0.1.0"
+description = "Regression agent for AMD ROCm GPU tutorial notebooks (verify + fix)"
+requires-python = ">=3.10"
+
+# Deliberately tiny. The heavy lifting (papermill, torch, vllm) happens inside
+# the ROCm Docker images on the GPU node, not in this process — run.py only
+# reads notebooks, resolves config, and shells out.
+dependencies = [
+    "pyyaml>=6.0",      # runner.yaml (tools/routing.py)
+    "python-dotenv>=1.0",  # run.py load_dotenv() for HF_TOKEN, AGENT_SECRET, ...
+    "requests>=2.31",   # tools/radeon_pod.py: Radeon Global Service API + Jupyter REST
+    "websocket-client>=1.7",  # tools/radeon_pod.py: Jupyter kernel WebSocket
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.6",
+]
+# The authoring web app (authoring/app.py), which runs from the same image.
+web = [
+    "fastapi>=0.143",
+    "uvicorn>=0.54",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.20",
+    "markdown>=3.7",  # authoring/render.py: notebooks on the job page
+    "pymdown-extensions>=10.0",  # authoring/render.py: code blocks inside lists
+]
+
+# No build backend / [tool.uv] package stanza: this repo is a set of scripts
+# run in place, not an installable distribution. `uv sync --no-install-project`
+# in the Dockerfile matches that.
+[tool.uv]
+package = false

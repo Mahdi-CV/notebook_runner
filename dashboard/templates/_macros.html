@@ -1,0 +1,72 @@
+{% macro status_badge(status) -%}
+{%- set cls = {"pass": "ok", "blocked": "warn", "fail": "bad",
+               "never-tested": "muted", "skip": "muted"}.get(status, "bad") -%}
+<span class="badge {{ cls }}">{{ status | statuslabel }}</span>
+{%- endmacro %}
+
+{% macro requirements(req) -%}
+{{ req.hardware | join("/") }} · {{ req.gpus }} GPU{{ "s" if req.gpus > 1 }}
+{%- if req.gpu_memory_gb %} · {{ req.gpu_memory_gb }} GB/GPU{% endif %}
+{%- if req.memory_gb != 64 %} · {{ req.memory_gb }} GB RAM{% endif %}
+{%- if req.disk_gb != 100 %} · {{ req.disk_gb }} GB disk{% endif %}
+{%- if req.capabilities %} · needs {{ req.capabilities | sort | join(", ") }}{% endif %}
+{%- endmacro %}
+
+{# Who fixes an issue. Authors read it about their own notebook; maintainers
+   (the dashboard) keep the short triage words. #}
+{% macro fixability_badge(f, audience="maintainer") -%}
+{%- set words = {"auto_fixable": "Can be fixed automatically", "needs_author": "Needs your change",
+                 "infra_blocked": "Platform issue, not your notebook"} if audience == "author" else
+                {"auto_fixable": "Auto-fixable", "needs_author": "Needs the author", "infra_blocked": "Platform issue"} -%}
+{%- if f -%}<span class="badge {{ {'auto_fixable': 'info', 'needs_author': 'warn', 'infra_blocked': 'muted'}.get(f, 'muted') }}">{{ words.get(f, f | replace('_', ' ')) }}</span>{%- endif -%}
+{%- endmacro %}
+
+{# A notebook download, the same secondary button with a download glyph in both apps. #}
+{% macro download_button(href, label) -%}
+<a class="button secondary download" href="{{ href }}"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 2.5v8M4.5 7 8 10.5 11.5 7M3 13.5h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>{{ label }}</a>
+{%- endmacro %}
+
+{# Why no runner fits a notebook: what each runner lacks, one per line, or
+   the reason as given when it isn't about the runners (e.g. bad metadata). #}
+{% macro no_runner(reason, misses) -%}
+{%- if misses -%}
+<ul class="misses">{% for name, missing in misses %}<li><span class="mono">{{ name }}</span>: lacks {{ missing | join("; ") }}</li>{% endfor %}</ul>
+{%- else -%}{{ reason or "—" }}{%- endif -%}
+{%- endmacro %}
+
+{# The hold keeping a notebook off some runners: {reason, since, targets, by}. #}
+{% macro held_note(held) -%}
+<span class="badge warn">held</span> off <span class="mono">{{ held.targets | join(", ") }}</span>{% if held.since %} since {{ held.since }}{% endif %}: {{ held.reason }}{% if held.by %} <span class="dim">(held by {{ held.by }})</span>{% endif %}
+{%- endmacro %}
+
+{% macro nb_link(key) -%}
+<a href="/notebook/{{ key }}">{{ key.split('/')[-1] }}</a>
+{%- endmacro %}
+
+{% macro target_type(t) -%}
+{{ {"k8s": "Kubernetes pod", "radeon": "Radeon Global instance"}.get(t, "SSH host") }}
+{%- endmacro %}
+
+{# One issues table for both apps: cell (linked into the notebook view when
+   cell_href is given), type, what broke, the fix, and who fixes it (worded
+   for the audience, see fixability_badge); in cell order, issues without a
+   cell (no index, or the agents' -1) last. #}
+{% macro issues_table(issues, cell_href=None, audience="maintainer") -%}
+{%- set numbered = issues | selectattr('cell_index', 'integer') | selectattr('cell_index', 'ge', 0)
+                          | sort(attribute='cell_index') | list -%}
+{%- set issues = numbered + (issues | reject('in', numbered) | list) -%}
+<div class="table-wrap"><table>
+  <thead><tr><th scope="col">Cell</th><th scope="col">Type</th><th scope="col" class="col-issue">What broke</th><th scope="col">Proposed fix</th><th scope="col">Who fixes it</th></tr></thead>
+  <tbody>
+  {% for i in issues %}
+    <tr>
+      <td>{% if i in numbered and cell_href %}<a href="{{ cell_href }}#cell-{{ i.cell_index }}" target="nbview" onclick="document.getElementById('notebook').scrollIntoView()">{{ i.cell_index }}</a>{% else %}{{ i.cell_index if i in numbered else "—" }}{% endif %}</td>
+      <td class="nowrap">{{ i.error_type | issue_type }}</td>
+      <td class="wrap">{{ i.description | codespans }}</td>
+      <td class="wrap">{{ i.proposed_fix | codespans }}</td>
+      <td>{{ fixability_badge(i.fixability, audience) }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{%- endmacro %}

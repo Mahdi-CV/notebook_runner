@@ -1,0 +1,269 @@
+{% extends "layout.html" %}
+{% from "_widgets.html" import job_badge with context %}
+{% from "_macros.html" import fixability_badge, issues_table, download_button %}
+{% block title %}{{ job.notebook }}{% endblock %}
+{% block content %}
+{% set s = job.summary or {} %}
+{% set nbview = (prefix ~ '/jobs/' ~ job.id ~ '/view/' ~ views[0]) if views else None %}
+<p class="crumbs"><a href="{{ prefix }}/jobs">Jobs</a> / {{ job.notebook }}</p>
+<div class="meta">{{ job.kind | jobkind }} · {{ categories.get(job.category, job.category or '') }}{% if job.author %} · {{ job.author }}{% endif %}</div>
+<h1>{{ job.notebook }} <span id="status">{{ job_badge(job.status) }}</span></h1>
+<p class="sub">
+  Submitted {{ job.created_at | ts }}
+  {% if job.source_url %}· <a href="{{ job.source_url }}"{% if source %} title="{{ source.title }}">{{ source.label }}{% else %}>{{ job.source_url }}{% endif %}</a>{% endif %}
+  {% if job.target %}· {{ 'ran' if final else 'runs' }} on <b>{{ job.target }}</b>{% endif %}
+  {% if parent %}· fixes the issues found by <a href="{{ prefix }}/jobs/{{ parent.id }}">its validate job</a>{% endif %}
+  {% if nightly_url %}· fixes the issues found by <a href="{{ nightly_url }}">the nightly check</a>{% endif %}
+  {% if job.kind == 'regression' and job.run_id and dashboard_url %}· part of <a href="{{ dashboard_url.rstrip('/') }}/run/{{ job.run_id }}">this nightly pass</a>{% endif %}
+  {% if job.finished_at and job.started_at %}· {{ 'stopped' if job.status in ('cancelled', 'error') else 'finished' }} {{ job.finished_at | ts }} after {{ job.started_at | elapsed(job.finished_at) | dur }}
+  {%- elif job.status == 'running' and job.started_at %}· started {{ job.started_at | ts }}{% endif %}
+</p>
+
+<div class="card">
+  {# A connected sequence: a ticked dot per finished step, the current one
+     ringed, the one a job stopped at coloured by its outcome. #}
+  <ol class="steps" aria-label="Progress">
+    {% for step in steps %}<li class="{{ step.state }}"{% if step.state == 'now' or (final and step.state not in ('done', '') and not loop.last) %} aria-current="step"{% endif %}>
+      <span class="dot" aria-hidden="true">{{ '✓' if step.state == 'done' else {'bad': '✕', 'warn': '!', 'muted': '–'}.get(step.state, loop.index) }}</span>
+      <span class="name">{{ step.name }}{% if step.state == 'done' %}<span class="vh"> (done)</span>{% elif step.state in ('bad', 'warn', 'muted') %}<span class="vh"> (stopped here)</span>{% endif %}</span>
+    </li>{% endfor %}
+  </ol>
+  {% if final %}
+  <div class="outcome {{ job.status | jobclass }}" style="margin: 14px 0 0">
+    <div class="head" id="stage">{{ job.stage }}</div>
+    {% if s.run and s.run.summary %}<p>{{ s.run.summary | codespans }}</p>
+    {% elif s.message %}<p>{{ s.message | replace('no target fits:', 'No runner fits this notebook:') | replace(' | ', '; ') }}</p>{% endif %}
+  </div>
+  {% if job.kind != 'regression' %}
+  {% set from_github = job.source != 'upload' %}
+  {% set submit_again = prefix ~ '/?category=' ~ (job.category | urlencode) ~ '#' ~ ('validate' if job.kind == 'fix' else job.kind) %}
+  <div class="next-step">
+    <p>
+    {%- if job.kind == 'fix' and job.status in ('passed', 'failed') and s.diff -%}
+      Next: download the fixed notebook and review each change below; they are suggestions, so keep only what you agree with.
+      {% if open_issues %}Then fix the {{ open_issues | length | plural('issue') }} still open yourself. {% endif %}
+      {%- if job.source == 'checkout' %}Then open a pull request to <span class="mono">ROCm/gpuaidev</span> with it; the nightly pass checks it again once it is merged.
+      {%- elif from_github %}Push the result to {{ 'the pull request' if '/pull/' in job.source_url else 'the branch' }} and validate it again.{% else %}<a href="{{ submit_again }}">Validate</a> the result again.{% endif %}
+    {%- elif job.kind == 'fix' and job.status in ('passed', 'failed') -%}
+      Next: none of the fixes worked, so there is no fixed notebook. Fix the issues below yourself, then validate the notebook again.
+    {%- elif job.status == 'passed' -%}
+      Next: {% if from_github %}your pull request is ready for review{% else %}open a pull request with this notebook{% endif %}
+      {%- if static and static.counts.error %}, once you fix the static-check errors below{% endif %}. CI runs these same checks.
+    {%- elif job.status == 'failed' -%}
+      Next: fix the issues below in your notebook,
+      {% if from_github %}push the fixes to {{ 'the pull request' if '/pull/' in job.source_url else 'the branch' }}, then run it again (Run again fetches the latest version).
+      {%- else %}then <a href="{{ submit_again }}">submit the fixed notebook</a>.{% endif %}
+    {%- elif job.status == 'done' -%}
+      Next: {% if s.diff and s.diff.cells %}download the annotated notebook, review the cell changes below, then {% endif %}<a href="{{ prefix }}/?category={{ job.category | urlencode }}#validate">validate it</a> on a GPU.
+    {%- elif job.kind == 'fix' and job.status in ('error', 'cancelled') and (parent or nightly_url) -%}
+      {{ 'This is a fault in Notebook CI, not in your notebook. ' if job.status == 'error' }}You can try the fixes again from {% if parent %}<a href="{{ prefix }}/jobs/{{ parent.id }}">the validate job</a>{% else %}<a href="{{ nightly_url }}">the nightly result</a>{% endif %}.
+    {%- elif job.status == 'error' -%}
+      This is a fault in Notebook CI, not in your notebook. Run it again; if it crashes again, tell the Notebook CI maintainers and quote job <span class="mono">{{ job.id }}</span>.
+    {%- elif job.status == 'cancelled' -%}
+      Run it again when you are ready.
+    {%- elif blocked_by == 'no_runner' -%}
+      Next: no runner has the hardware your <code>metadata.ci</code> asks for. Change it to hardware listed on the <a href="{{ prefix }}/runners">Runners</a> page, then {% if from_github %}run again{% else %}<a href="{{ submit_again }}">submit the fixed notebook</a>{% endif %}; or ask the Notebook CI maintainers for a runner with that hardware, and run again once it is added.
+    {%- elif blocked_by == 'metadata' -%}
+      Next: fix <code>metadata.ci</code> so it reads as the hardware list and GPU count that gpuaidev's <span class="mono">.github/CI_METADATA.md</span> describes, then {% if from_github %}run again{% else %}<a href="{{ submit_again }}">submit the fixed notebook</a>{% endif %}.
+    {%- elif blocked_by == 'fetch' -%}
+      Next: {% if from_github %}check that the URL is a pull request changing one notebook, or a notebook file, in a repository the service can read, then <a href="{{ submit_again }}">submit it again</a>{% else %}check that the file is a Jupyter notebook, then <a href="{{ submit_again }}">submit it again</a>{% endif %}.
+    {%- elif blocked_by == 'run' -%}
+      Next: read the summary above and the progress log. If the cause is in your notebook, fix it and {% if from_github %}run again{% else %}<a href="{{ submit_again }}">submit it again</a>{% endif %}; if it is a platform problem, run again later.
+    {%- endif -%}
+    </p>
+    {% if fix %}
+    <form method="post" action="{{ prefix }}/jobs/{{ job.id }}/fix" class="fix-offer">
+      <p>The fixer agent can try the {{ fix.count | plural('fix', 'fixes') }} marked <i>Can be fixed automatically</i>: it changes only those cells, runs the notebook again on a GPU, and gives you the fixed notebook with each change to review. It takes about as long as this run.</p>
+      {% set why = 'Only ' ~ job.author ~ ' can ask for fixes.' if fix.not_author else '' %}
+      <button type="submit"{% if why or fix.blocking %} disabled aria-describedby="fix-why"{% endif %}>Try the automatic fixes</button>
+      {% if why %}<span id="fix-why" class="dim"> {{ why }}</span>
+      {% elif fix.blocking %}<span id="fix-why" class="dim"> Your fix job <a href="{{ prefix }}/jobs/{{ fix.blocking.id }}">{{ fix.blocking.notebook }}</a> is {{ fix.blocking.status | joblabel | lower }}; one at a time.</span>{% endif %}
+    </form>
+    {% endif %}
+    {% if fix_jobs %}
+    <p class="meta">Fix jobs for this run: {% for f in fix_jobs %}<a href="{{ prefix }}/jobs/{{ f.id }}">{{ f.created_at | ts }}</a> ({{ f.status | joblabel | lower }}){{ ', ' if not loop.last }}{% endfor %}.</p>
+    {% endif %}
+    {% if again %}
+    <form method="post" action="{{ prefix }}/jobs/{{ job.id }}/again">
+      {% set why = 'Only ' ~ job.author ~ ' can run this job again.' if again.not_author else '' %}
+      <button{% if job.status not in ('error', 'cancelled') %} class="secondary"{% endif %} type="submit"
+              {%- if why or again.blocking %} disabled aria-describedby="again-why"{% endif %}
+              title="{{ 'Fetches the latest version from GitHub' if from_github else 'Runs the same file again' }}">Run again</button>
+      {% if why %}<span id="again-why" class="dim"> {{ why }}</span>
+      {% elif again.blocking %}<span id="again-why" class="dim"> Your {{ job.kind }} job <a href="{{ prefix }}/jobs/{{ again.blocking.id }}">{{ again.blocking.notebook }}</a> is {{ again.blocking.status | joblabel | lower }}; one at a time.</span>{% endif %}
+    </form>
+    {% endif %}
+  </div>
+  {% endif %}
+  {% else %}
+  <p class="stage" id="stage" role="status" aria-live="polite" style="margin: 12px 0 4px">{{ job.stage }}</p>
+  {% endif %}
+  <p class="dim" id="position" role="status" aria-live="polite" style="margin: 0"{% if not position %} hidden{% endif %}>
+    <span id="posn">{% if position %}Number {{ position }} in the queue for a GPU.{% endif %}</span>
+    {% if estimates[job.kind] %}{{ 'Nightly notebooks' if job.kind == 'regression' else (job.kind | jobkind) ~ ' jobs' }} usually take about {{ estimates[job.kind] | dur('min') }} once they start.{% endif %}
+    <a href="{{ prefix }}/runners">See the runners</a>.
+  </p>
+  {% if not final and job.kind != 'regression' %}
+  <form method="post" action="{{ prefix }}/jobs/{{ job.id }}/cancel" style="margin-top: 12px">
+    <button class="secondary" type="submit"{% if author != job.author %} disabled aria-describedby="cancel-why"{% endif %}>Cancel job</button>
+    {% if author != job.author %}<span id="cancel-why" class="dim"> Only {{ job.author }} can cancel this job.</span>{% endif %}
+  </form>
+  {% endif %}
+  {% if not final %}<pre class="log" id="log" role="log" tabindex="0" aria-label="Progress log">{{ log }}</pre>{% endif %}
+</div>
+
+{% if final %}
+  {% if job.kind in ('validate', 'regression', 'fix') and s.run %}
+  <h2>{{ 'Run with the fixes' if job.kind == 'fix' else 'Run on a GPU' }}</h2>
+  <div class="card">
+    <dl class="kv">
+      {% if s.run.message %}<dt>Message</dt><dd>{{ s.run.message }}</dd>{% endif %}
+      <dt>Runner</dt><dd>{{ s.run.target }} ({{ s.run.minutes | dur('min') }})</dd>
+      {% if s.run.docker_image %}<dt>Image</dt><dd class="mono">{{ s.run.docker_image }}</dd>{% endif %}
+      {% if executed %}<dt>Executed notebook</dt><dd>{{ download_button(prefix ~ '/jobs/' ~ job.id ~ '/executed.ipynb', 'Download executed notebook') }}<div class="meta" style="margin-top: 4px">Every cell's output from this run.</div></dd>{% endif %}
+    </dl>
+  </div>
+  {% if job.kind == 'fix' %}
+  {% if s.run.fixes %}
+  <h2>Fixes tried ({{ s.run.fixes | length }})</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th scope="col">Cell</th><th scope="col" class="col-issue">Change</th><th scope="col">Result</th></tr></thead>
+    <tbody>
+    {% for f in s.run.fixes | sort(attribute='cell_index') %}
+    <tr><td class="num">{{ f.cell_index if f.cell_index is not none else '—' }}</td>
+        <td class="wrap">{{ (f.description or f.fix_description or '') | codespans }}</td>
+        <td>{% if f.validated %}<span class="badge ok">Worked</span>{% else %}<span class="badge bad">Did not work</span>{% endif %}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% endif %}
+  {% if open_issues %}
+  <h2>Issues still open ({{ open_issues | length }})</h2>
+  {{ issues_table(open_issues, (prefix ~ '/jobs/' ~ job.id ~ '/view/executed') if 'executed' in views else None, audience='author') }}
+  {% endif %}
+  {% elif s.run.issues %}
+  <h2>Issues to fix ({{ s.run.issues | length }})</h2>
+  {{ issues_table(s.run.issues, (prefix ~ '/jobs/' ~ job.id ~ '/view/executed') if 'executed' in views else None, audience='author') }}
+  {% elif job.status == 'passed' %}
+  <p>Every code cell ran without an error.</p>
+  {% endif %}
+  {% endif %}
+
+  {% if job.kind in ('annotate', 'fix') and s.diff %}
+  {% if job.kind == 'fix' %}
+  <h2>Fixed notebook</h2>
+  <p>{{ download_button(prefix ~ '/jobs/' ~ job.id ~ '/fixed.ipynb', 'Download fixed notebook') }}
+     <span class="dim">Your notebook with the fixes that worked. Review the changes below before committing it.</span></p>
+  {% else %}
+  <h2>Annotated notebook</h2>
+  <p>{{ download_button(prefix ~ '/jobs/' ~ job.id ~ '/annotated.ipynb', 'Download annotated notebook') }}
+     <span class="dim">Review the changes below before committing it.</span></p>
+  {% endif %}
+  {% if s.changes %}<div class="card prose">{{ s.changes | md }}</div>{% endif %}
+  {% if s.diff.metadata_before != s.diff.metadata_after %}
+  <h2>metadata.ci</h2>
+  <div class="grid2">
+    <div><div class="eyebrow">Before</div><pre>{{ s.diff.metadata_before | tojson(indent=2) if s.diff.metadata_before else '(none)' }}</pre></div>
+    <div><div class="eyebrow">After</div><pre>{{ s.diff.metadata_after | tojson(indent=2) if s.diff.metadata_after else '(none)' }}</pre></div>
+  </div>
+  {% endif %}
+  <h2>Cell changes ({{ s.diff.cells | length }})</h2>
+  {# The first three are open; the rest are collapsed, so a long review stays scannable. #}
+  {% for c in s.diff.cells %}
+  {% set d = c.diff | diffrows %}
+  <details class="cell-change"{% if loop.index <= 3 %} open{% endif %}><summary class="meta">{{ c.change | capitalize }} {{ c.cell_type }} cell
+    {%- if c.change == 'changed' and c.old_index != c.new_index %} {{ c.old_index }} → {{ c.new_index }}
+    {%- else %} {{ c.new_index if c.new_index is not none else c.old_index }}{% endif %}
+    {% if d.added or d.removed %}· <span class="num diff-size"><span class="plus">+{{ d.added }}</span> <span class="minus">−{{ d.removed }}</span> lines</span>{% endif %}
+    {% if c.tags_after != c.tags_before %}· tags {{ c.tags_before | join(', ') or 'none' }} → {{ c.tags_after | join(', ') or 'none' }}{% endif %}</summary>
+  {% if d.rows %}
+  {# Old and new line numbers in the gutter; the sign and the numbers are not selected when copying code. #}
+  <div class="diff">
+    {%- for r in d.rows %}
+    <div class="{{ r.kind }}">
+      {%- if r.kind == 'gap' -%}
+      <span class="ln">⋯</span><span class="ln">⋯</span><span class="sign"></span><span class="code" title="{{ r.text }}">unchanged lines not shown</span>
+      {%- elif r.kind == 'note' -%}
+      <span class="ln"></span><span class="ln"></span><span class="sign"></span><span class="code">{{ r.text }}</span>
+      {%- else -%}
+      <span class="ln">{{ r.old if r.old is not none }}</span><span class="ln">{{ r.new if r.new is not none }}</span><span class="sign">{{ '+' if r.kind == 'add' else '−' if r.kind == 'del' }}</span><span class="code">{{ r.text }}</span>
+      {%- endif -%}
+    </div>
+    {%- endfor %}
+  </div>
+  {% endif %}</details>
+  {% endfor %}
+  {% endif %}
+{% endif %}
+
+{% if static and job.kind != 'fix' %}
+<h2>Static checks {% if job.kind == 'annotate' and final %}on the annotated notebook{% endif %}</h2>
+<p class="dim">{{ static.counts.error | plural('error') }}, {{ static.counts.warning | plural('warning') }}. Errors must be fixed before the tutorial can be published; warnings need your judgment.{% if not final and job.kind == 'validate' %} You can start fixing these now; the GPU run continues.{% endif %}</p>
+{% if static.findings %}
+<div class="table-wrap"><table>
+  <thead><tr><th scope="col">Severity</th><th scope="col">Check</th><th scope="col">Cell</th><th scope="col" class="col-issue">Finding</th><th scope="col">How to fix it</th></tr></thead>
+  <tbody>
+  {% for f in static.findings | sort(attribute='severity') %}
+  <tr><td><span class="badge {{ f.severity | sevclass }}">{{ f.severity }}</span></td><td class="nowrap">{{ f.check }}</td>
+      <td>{% if f.cell is not none and nbview %}<a href="{{ nbview }}#cell-{{ f.cell }}" target="nbview" onclick="document.getElementById('notebook').scrollIntoView()">{{ f.cell }}</a>{% else %}{{ f.cell if f.cell is not none else '—' }}{% endif %}</td>
+      <td class="wrap">{{ f.message | codespans }}</td><td class="wrap">{{ f.fix | codespans }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% endif %}
+<h2>Repository checks</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th scope="col">Check</th><th scope="col">Result</th><th scope="col">Output</th></tr></thead>
+  <tbody>
+  {% for name, c in static.checkers.items() %}
+  <tr><td class="nowrap"><b>{{ name }}</b></td>
+      <td><span class="badge {{ 'ok' if c.ok else 'muted' if c.ok is none else 'bad' }}">{{ 'Passed' if c.ok else 'Not run' if c.ok is none else 'Problems' }}</span></td>
+      <td class="wrap mono">{{ c.output }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% endif %}
+
+{% if views %}
+<h2 id="notebook">Notebook</h2>
+<div class="filters">
+  {% for v in views %}<a href="{{ prefix }}/jobs/{{ job.id }}/view/{{ v }}" target="nbview" class="{{ 'on' if loop.first }}"{% if loop.first %} aria-current="true"{% endif %}
+     onclick="for (const a of this.parentNode.querySelectorAll('a')) { a.classList.toggle('on', a === this); a === this ? a.setAttribute('aria-current', 'true') : a.removeAttribute('aria-current'); } document.querySelector('iframe[name=nbview]').title = '{{ view_names[v] }} notebook: {{ job.notebook }}'">{{ view_names[v] }}</a>{% endfor %}
+  {% if 'executed' in views %}<span class="dim" style="align-self: center">Cells with an error or an issue are marked in red with ⚠, each issue under its cell.</span>{% endif %}
+</div>
+<iframe name="nbview" src="{{ nbview }}" sandbox title="{{ view_names[views[0]] }} notebook: {{ job.notebook }}"
+        style="width: 100%; height: min(820px, 75vh); resize: vertical; border: 1px solid var(--line); border-radius: 8px; background: #fff"></iframe>
+{% endif %}
+
+{% if final %}
+<details class="log-wrap"><summary>Progress log</summary>
+<pre class="log" id="log" role="log" tabindex="0" aria-label="Progress log">{{ log }}</pre>
+</details>
+{% endif %}
+
+{% if not final %}
+<script>
+  const log = document.getElementById('log');
+  let next = {{ log_next }};
+  log.scrollTop = log.scrollHeight;
+  async function poll() {
+    try {
+      const r = await fetch('{{ prefix }}/api/jobs/{{ job.id }}?since=' + next);
+      const d = await r.json();
+      if (d.log.length) {
+        const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
+        log.textContent += (log.textContent ? '\n' : '') + d.log.join('\n');
+        if (atBottom) log.scrollTop = log.scrollHeight;
+      }
+      next = d.next;
+      document.getElementById('stage').textContent = d.stage;
+      document.getElementById('posn').textContent = d.position ? 'Number ' + d.position + ' in the queue for a GPU.' : '';
+      document.getElementById('position').hidden = !d.position;
+      if (d.final || d.status !== '{{ job.status }}' || d.phase !== '{{ job.phase }}') { location.reload(); return; }
+    } catch (e) {}
+    setTimeout(poll, 3000);
+  }
+  setTimeout(poll, 3000);
+</script>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block site %}Notebook CI · Authoring{% endblock %}
+{% block brand %}<div class="brand">Notebook <span>CI</span></div>{% endblock %}
+{% block nav %}
+{% set here = 'submit' if request.url.path in ('/', prefix + '/') else 'jobs' if '/jobs' in request.url.path else 'runners' if request.url.path.endswith('/runners') else '' %}
+<a href="{{ prefix }}/" class="{{ 'active' if here == 'submit' }}"{% if here == 'submit' %} aria-current="page"{% endif %}>Submit</a>
+<a href="{{ prefix }}/jobs" class="{{ 'active' if here == 'jobs' }}"{% if here == 'jobs' %} aria-current="page"{% endif %}>Jobs</a>
+<a href="{{ prefix }}/runners" class="{{ 'active' if here == 'runners' }}"{% if here == 'runners' %} aria-current="page"{% endif %}>Runners</a>
+{% if dashboard_url %}<a href="{{ dashboard_url }}">Nightly results</a>{% endif %}
+{% endblock %}
+{% block head %}
+<style>
+  form.submit { display: grid; gap: 12px; }
+  form.submit label { display: grid; gap: 4px; font-weight: 600; font-size: 13px; }
+  form.submit label span { font-weight: 400; color: var(--muted); }
+  input[type=file] { font: inherit; width: 100%; padding: 10px; border: 1px dashed #8a8f99; border-radius: 6px; background: #fff; color: var(--muted); }
+  input[type=file]::file-selector-button { font: inherit; font-weight: 600; margin-right: 10px; padding: 5px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); cursor: pointer; }
+  .or { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; }
+  .or::before, .or::after { content: ''; flex: 1; border-top: 1px solid var(--line); }
+  .grid2 > .card { display: flex; flex-direction: column; } .grid2 > .card form { margin-top: auto; }
+  .card pre.log { max-height: 320px; margin: 12px 0 0; }
+  details.log-wrap > summary, details.cell-change > summary { cursor: pointer; }
+  details.log-wrap > summary { font-weight: 600; margin: 24px 0 8px; }
+  .error { background: var(--bad-bg); color: var(--bad); border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; }
+  form.submit .error { margin: 0; } form.submit .error .meta { color: inherit; margin-top: 4px; }
+  .next-step { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 12px; }
+  .next-step p { margin: 0; flex: 1 1 32ch; max-width: 80ch; }
+  .next-step form { margin: 0; }
+  /* The fix offer: its own row under the next step, explained before the button. */
+  .next-step form.fix-offer, .next-step > p.meta { flex: 1 1 100%; }
+  .next-step form.fix-offer { padding-top: 10px; border-top: 1px solid var(--line); }
+  .next-step form.fix-offer p { margin: 0 0 8px; }
+  pre.log { max-height: 460px; overflow-y: auto; background: #16171a; color: #d6d8de; border: none; font-size: 12px; line-height: 1.5; }
+  .stage { font-size: 15px; font-weight: 600; }
+  .meter { height: 8px; background: var(--muted-bg); border-radius: 4px; overflow: hidden; min-width: 120px; }
+  .meter > div { height: 100%; background: var(--info); }
+  .meter.full > div { background: var(--warn); }
+  /* Progress stepper: dots joined by a line, labels under them; stacked
+     vertically on narrow screens. The line into a step turns green once the
+     step before it is done. */
+  .steps { display: flex; margin: 6px 0 2px; list-style: none; padding: 0; }
+  .steps li { flex: 1 1 0; min-width: 0; position: relative; background: none; display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; font-size: 12px; color: var(--muted); }
+  .steps li + li::before { content: ''; position: absolute; top: 11px; left: calc(-50% + 16px); right: calc(50% + 16px); height: 2px; background: var(--line); }
+  .steps li.done + li::before { background: var(--ok); }
+  .steps .dot { width: 24px; height: 24px; flex: none; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 600; background: var(--card); border: 2px solid var(--line); color: var(--muted); font-variant-numeric: tabular-nums; }
+  .steps li.done .dot { background: var(--ok); border-color: var(--ok); color: #fff; }
+  .steps li.done { color: var(--fg); }
+  .steps li.now .dot { border-color: var(--info); color: var(--info); background: var(--info-bg); box-shadow: 0 0 0 4px var(--info-bg); }
+  .steps li.now { color: var(--info); font-weight: 600; }
+  .steps li.bad .dot { background: var(--bad); border-color: var(--bad); color: #fff; } .steps li.bad { color: var(--bad); font-weight: 600; }
+  .steps li.warn .dot { background: var(--warn); border-color: var(--warn); color: #fff; } .steps li.warn { color: var(--warn); font-weight: 600; }
+  .steps li.muted .dot { background: #585c66; border-color: #585c66; color: #fff; } .steps li.muted { color: #585c66; font-weight: 600; }
+  @media (max-width: 600px) {
+    .steps { flex-direction: column; gap: 12px; }
+    .steps li { flex-direction: row; gap: 10px; text-align: left; }
+    .steps li + li::before { top: -12px; left: 11px; right: auto; width: 2px; height: 12px; }
+  }
+  .vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  /* Runner and queue tables: below 600px wide each row becomes a card, its
+     first cell the title and every other cell labelled from data-label. */
+  @media (max-width: 600px) {
+    table.stack thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+    table.stack, table.stack tbody, table.stack tr, table.stack td { display: block; }
+    table.stack tr { padding: 10px 12px; border-bottom: 1px solid var(--line); }
+    table.stack tr:last-child { border-bottom: 0; }
+    table.stack td { position: relative; border: 0; padding: 3px 0 3px 7.5rem; white-space: normal; text-align: left; }
+    table.stack td:first-child { padding: 0 0 4px; }
+    table.stack td[data-label]::before { content: attr(data-label); position: absolute; left: 0; top: 4px; width: 7rem; font-size: 12px; color: var(--muted); }
+    table.stack td.pos, table.stack td.pos + td { display: inline; padding: 0 6px 0 0; }
+    table.stack td.pos::before { content: "#"; }
+    table.stack td.pos + td::before { content: none; }
+  }
+  /* One grid for the whole diff, so the old/new gutters line up across rows and wrapped lines. */
+  .diff { display: grid; grid-template-columns: auto auto auto minmax(0, 1fr); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.5; background: #f7f7f8; border: 1px solid var(--line); border-radius: 6px; padding: 6px 0; margin: 6px 0 14px; }
+  .diff > div { display: contents; }
+  .diff > div > span { padding: 0 6px; min-height: 1.5em; }
+  .diff .ln { min-width: 2ch; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); user-select: none; }
+  .diff .ln + .ln { border-right: 1px solid var(--line); }
+  .diff .sign { padding-right: 0; user-select: none; }
+  .diff .code { white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4; padding-right: 10px; }
+  .diff .add > span { color: var(--ok); background: var(--ok-bg); }
+  .diff .del > span { color: var(--bad); background: var(--bad-bg); }
+  .diff .add > .ln, .diff .del > .ln { color: inherit; }
+  .diff .gap > span, .diff .note > span { color: var(--muted); font-family: system-ui, -apple-system, "Segoe UI", sans-serif; font-style: italic; }
+  .diff .gap > .ln { font-style: normal; }
+  .diff-size .plus { color: var(--ok); } .diff-size .minus { color: var(--bad); }
+</style>
+{% endblock %}

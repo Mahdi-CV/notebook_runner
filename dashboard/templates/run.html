@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% from "_macros.html" import status_badge, nb_link %}
+{% block title %}{{ run | runname }}{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/runs">Runs</a></p>
+<h1>{{ run | runname }}</h1>
+<p class="sub">Run <span class="mono">{{ run.run_id }}</span> · {{ run.mode | kind }} · started {{ run.started_at | ts }}{% if run.finished_at and not live %} · finished {{ run.finished_at | ts }} after {{ run.started_at | elapsed(run.finished_at) | dur }}{% endif %}</p>
+
+<div class="tiles">
+  <div class="tile"><div class="n">{{ counts.pass }}</div><div class="l">Passed</div></div>
+  <div class="tile{{ ' is-bad' if counts.fail }}"><div class="n">{{ counts.fail }}</div><div class="l">Failed</div></div>
+  <div class="tile{{ ' is-warn' if counts.blocked }}"><div class="n">{{ counts.blocked }}</div><div class="l">Blocked</div></div>
+  <div class="tile"><div class="n">{{ counts.skipped }}</div><div class="l">No runner fits</div></div>
+  <div class="tile"><div class="n">{{ run.total_cost_usd | cost }}</div><div class="l">Cost</div></div>
+</div>
+
+<div class="card">
+  <dl class="kv">
+    {% if live %}<dt>Progress</dt><dd><span class="badge pending">in progress</span> {{ live.remaining | plural('notebook') }} still queued or running: see <a href="{{ authoring_url }}runners">Runners</a>. Results appear here as each one finishes.</dd>
+    {% elif not run.finished_at %}<dt>Finished</dt><dd><span class="badge warn">unfinished</span> <span class="dim">still running, or interrupted before it recorded a finish time</span></dd>{% endif %}
+    <dt>Runners</dt><dd class="mono">{{ run.host or "—" }}</dd>
+    <dt>Command</dt><dd class="mono dim">{{ argv or "—" }}</dd>
+  </dl>
+</div>
+
+<h2>Notebooks in this run ({{ results | length }})</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th scope="col">Notebook</th><th scope="col">Kind</th><th scope="col">Status</th><th scope="col">Runner</th><th scope="col">Recorded</th><th scope="col" class="num">Agent turns</th><th scope="col" class="num">Cost</th><th scope="col">Top issue</th></tr></thead>
+  <tbody>
+  {% for r in results %}
+    <tr>
+      <td>{{ nb_link(r.notebook) }}</td>
+      <td>{{ r.phase | kind }}</td>
+      <td><a href="/result/{{ r.id }}">{{ status_badge(r.status | verdict) }}</a></td>
+      <td class="mono">{{ r.server or "—" }}</td>
+      <td class="ts">{{ r.recorded_at | ts }}</td>
+      <td class="num">{{ r.num_turns or "—" }}</td>
+      <td class="num">{{ r.cost_usd | cost }}</td>
+      <td class="wrap">{% if (r.status | verdict) != "pass" %}{{ r | why | codespans }}{% endif %}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="8" class="dim">No notebook results recorded for this run.</td></tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% endblock %}

@@ -1,0 +1,20 @@
+[Unit]
+Description=notebook-runner job scheduler (authoring jobs and the nightly pass)
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/data/notebook_runner
+# The worker starts each job phase in its own container (docker/run-job.sh), so
+# it needs the Docker daemon and runs as root; it never runs an agent itself.
+# From .env it uses NBR_GITHUB_TOKEN (fetching pull requests on the host, so the
+# token never enters a job container), NBR_KUBECONFIG and RADEON_CLOUD_API_TOKEN
+# (the Runners page's live checks) and passes the rest to run-job.sh.
+EnvironmentFile=/data/notebook_runner/.env
+ExecStart=/data/notebook_runner/.venv-worker/bin/python -m authoring.worker
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
