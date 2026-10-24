@@ -22,6 +22,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, Response
@@ -40,6 +41,9 @@ STALE_AFTER = timedelta(days=7)  # matches tools/status.py --gap
 AUTHORING_UPSTREAM = (os.environ.get("NBR_AUTHORING_UPSTREAM") or "").rstrip("/")
 AUTHORING_URL = os.environ.get("NBR_AUTHORING_URL") or ("/authoring/" if AUTHORING_UPSTREAM else None)
 MAX_PROXY_BODY = 12 * 1024 * 1024
+# Where a notebook key is published; the notebook page's "Check this notebook"
+# hands this URL to the authoring service's submit form.
+PUBLISHED_NOTEBOOKS = "https://github.com/ROCm/gpuaidev/blob/main/docs/notebooks/"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -67,12 +71,15 @@ def db() -> sqlite3.Connection | None:
 
 
 def catalog() -> dict:
-    """Targets, and for every notebook its requirements and route."""
+    """Targets, and for every notebook its requirements and route. When no
+    target fits, "misses" lists what each one lacks, one target per entry."""
     config = routing.load_config(CONFIG_PATH)
     notebooks = {}
     for key, (target, reason) in routing.routes(NOTEBOOKS_DIR, config).items():
-        notebooks[key] = {"req": routing.resolve(NOTEBOOKS_DIR / key, {})[0],
-                          "target": target, "reason": reason}
+        req = routing.resolve(NOTEBOOKS_DIR / key, {})[0]
+        fits_none = req is not None and reason.startswith("no target fits")
+        notebooks[key] = {"req": req, "target": target, "reason": reason,
+                          "misses": routing.misses(req, config["targets"]) if fits_none else []}
     return {"targets": config["targets"], "notebooks": notebooks}
 
 
@@ -143,8 +150,8 @@ def overview(request: Request, category: str = "", status: str = ""):
     rows, no_target = [], []
     for key, nb in sorted(m["notebooks"].items()):
         if nb["reason"]:
-            no_target.append({"key": key, "category": category_of(key),
-                              "reason": nb["reason"], "latest": latest.get(key)})
+            no_target.append({"key": key, "category": category_of(key), "reason": nb["reason"],
+                              "misses": nb["misses"], "latest": latest.get(key)})
             continue
         rows.append({**notebook_row(key, latest.get(key)), "target": nb["target"]})
     # What needs attention first: failures, then blocked, untested and stale results.
@@ -179,9 +186,14 @@ def notebook(request: Request, key: str):
     conn = db()
     history = results_db.notebook_history(conn, key) if conn else []
     if nb is None and not history:
-        raise HTTPException(404, f"Unknown notebook {key}")
+        raise HTTPException(404, f"There is no notebook {key} in the notebook tree, "
+                                 "and no result was ever recorded for it.")
     row = notebook_row(key, history[0] if history else None)
-    return render(request, "notebook.html", key=key, nb=nb, row=row, history=history)
+    check_url = (f"{AUTHORING_URL}?" + urlencode({"url": PUBLISHED_NOTEBOOKS + key,
+                                                  "category": row["category"]})
+                 if AUTHORING_URL and nb else None)
+    return render(request, "notebook.html", key=key, nb=nb, row=row, history=history,
+                  check_url=check_url)
 
 
 @app.get("/result/{result_id}", response_class=HTMLResponse)
@@ -189,7 +201,7 @@ def result(request: Request, result_id: int):
     conn = db()
     res = results_db.get_result(conn, result_id) if conn else None
     if res is None:
-        raise HTTPException(404, f"No result {result_id}")
+        raise HTTPException(404, f"There is no result {result_id}.")
     try:
         payload = json.loads(res.get("payload_json") or "{}")
     except json.JSONDecodeError:
@@ -255,6 +267,38 @@ def run_counts(results: list[dict]) -> dict:
     return counts
 
 
+def run_name(run: dict) -> str:
+    """A run as people say it: "Nightly pass, Oct 23" for the scheduled pass,
+    else its kind, what it ran and its date ("Check of mtp, Oct 10").
+    tools/ci_run.py hands run.py a timestamp --run-id; run.py started by hand
+    makes up its own or takes a named one."""
+    try:
+        argv = json.loads(run.get("argv") or "[]")
+    except json.JSONDecodeError:
+        argv = []
+    run_id = run.get("run_id") or ""
+    scheduled = "--run-id" in argv and len(run_id) == 15 and run_id[8] == "T" \
+        and run_id.replace("T", "", 1).isdigit()
+    dt = labels.parse_ts(run.get("started_at"))
+    day = "date unknown"
+    if dt:
+        day = f"{dt:%b} {dt.day}"
+        if dt.year != datetime.now(timezone.utc).year:
+            day += f", {dt.year}"
+    if scheduled:
+        return f"Nightly pass, {day}"
+    kind = labels.KINDS.get(run.get("mode"), run.get("mode") or "Run")
+    named = [Path(a).stem for a in argv if isinstance(a, str) and a.endswith(".ipynb")]
+    if len(named) == 1:
+        kind += f" of {named[0]}"
+    elif named:
+        kind += f" of {len(named)} notebooks"
+    return f"{kind}, {day}"
+
+
+templates.env.filters["runname"] = run_name
+
+
 @app.get("/runs", response_class=HTMLResponse)
 def runs(request: Request):
     conn = db()
@@ -275,7 +319,7 @@ def run(request: Request, run_id: str):
     conn = db()
     run_row, results = results_db.run_results(conn, run_id) if conn else (None, [])
     if run_row is None:
-        raise HTTPException(404, f"No run {run_id}")
+        raise HTTPException(404, f"There is no run {run_id}.")
     try:
         argv = " ".join(json.loads(run_row.get("argv") or "[]"))
     except json.JSONDecodeError:
@@ -349,10 +393,22 @@ async def authoring(path: str, request: Request):
 async def html_errors(request: Request, exc: StarletteHTTPException):
     """A page for people, JSON for scripts."""
     if "text/html" in request.headers.get("accept", ""):
-        title = {404: "Not found", 403: "Not allowed"}.get(exc.status_code, "Something went wrong")
+        path = request.url.path
+        title = {403: "Not allowed"}.get(exc.status_code, "Something went wrong")
+        detail = exc.detail
+        if exc.status_code == 404:
+            # Say what was missing, by the kind of page asked for.
+            what = next((w for prefix, w in (("/notebook/", "Notebook"), ("/result/", "Result"),
+                                             ("/run/", "Run")) if path.startswith(prefix)), "Page")
+            if what == "Result" and path.endswith(("/notebook", "/view")):
+                what = "Executed notebook"
+            title = f"{what} not found"
+            if detail == "Not Found":  # no such route: Starlette's default detail
+                detail = f"There is no page at {path}."
         return templates.TemplateResponse(request, "error.html", {
             "db_missing": False, "authoring_url": AUTHORING_URL, "title": title,
-            "detail": exc.detail, "back_url": "/", "back_label": "Back to the notebooks"},
+            "detail": detail, "back_url": "/", "back_label": "Notebooks",
+            "also": ("/runs", "Runs") if path.startswith("/run") else None},
             status_code=exc.status_code)
     return await http_exception_handler(request, exc)
 

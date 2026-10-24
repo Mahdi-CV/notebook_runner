@@ -15,7 +15,7 @@
 {% endif %}
 {{ runner_rows(availability, summary=False) }}
 {% if availability %}
-<p class="meta" style="margin-top: 8px">Updated {{ availability.updated_at[11:19] }} UTC.</p>
+<p class="meta" style="margin-top: 8px">Updated {{ availability.updated_at | ts }}.</p>
 
 <h2>Waiting for a GPU</h2>
 {% if availability.waiting is not defined %}

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import status_badge, nb_link %}
+{% from "_macros.html" import status_badge, nb_link, no_runner %}
 {% block title %}Notebooks{% endblock %}
 {% block content %}
 <h1>Notebooks</h1>
@@ -54,7 +54,7 @@
     <tr>
       <td>{{ nb_link(s.key) }}</td>
       <td class="dim">{{ s.category | category }}</td>
-      <td class="wrap">{{ (s.reason or "—") | replace('no target fits: ', '') | replace(' | ', '; ') }}</td>
+      <td>{{ no_runner(s.reason, s.misses) }}</td>
       <td class="ts">{% if s.latest %}<a href="/result/{{ s.latest.id }}">{{ s.latest.recorded_at | ts }}</a> · {{ s.latest.status | verdict | statuslabel }}{% else %}<span class="dim">—</span>{% endif %}</td>
     </tr>
   {% endfor %}

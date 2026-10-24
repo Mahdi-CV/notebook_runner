@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import nb_link, requirements, target_type %}
+{% from "_macros.html" import nb_link, requirements, target_type, no_runner %}
 {% block title %}Routing{% endblock %}
 {% block content %}
 <h1>Routing</h1>
@@ -31,14 +31,16 @@
 
 {% for category, items in groups.items() %}
 <h2>{{ category | category }} ({{ items | length }})</h2>
-<div class="table-wrap"><table>
+{# Fixed widths, so the columns line up from one category's table to the next. #}
+<div class="table-wrap"><table class="fixed">
+  <colgroup><col style="width: 36%"><col style="width: 30%"><col style="width: 34%"></colgroup>
   <thead><tr><th scope="col">Notebook</th><th scope="col">Needs</th><th scope="col">Runner</th></tr></thead>
   <tbody>
   {% for n in items %}
     <tr>
       <td>{{ nb_link(n.key) }}</td>
       <td>{{ requirements(n.req) if n.req else "—" }}</td>
-      <td class="mono">{% if n.target %}{{ n.target }}{% elif n.reason %}<span class="badge muted">no runner fits</span> <span class="dim wrap">{{ n.reason | replace('no target fits: ', '') | replace(' | ', '; ') }}</span>{% else %}—{% endif %}</td>
+      <td>{% if n.target %}<span class="mono">{{ n.target }}</span>{% elif n.reason %}<span class="badge muted">no runner fits</span><div class="meta">{{ no_runner(n.reason, n.misses) }}</div>{% else %}—{% endif %}</td>
     </tr>
   {% endfor %}
   </tbody>

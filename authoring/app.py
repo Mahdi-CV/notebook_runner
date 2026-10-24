@@ -439,9 +439,15 @@ async def html_errors(request: Request, exc: StarletteHTTPException):
     """A page for people, JSON for the live API and scripts."""
     if "text/html" in request.headers.get("accept", "") and "/api/" not in request.url.path:
         title = {404: "Not found", 403: "Not allowed"}.get(exc.status_code, "Something went wrong")
+        detail, path = exc.detail, request.url.path
+        # Say what was missing: a job, or a page (Starlette's default "Not Found").
+        if exc.status_code == 404 and detail == "No such job":
+            title, detail = "Job not found", f"There is no job {path.split('/')[2]}."
+        elif exc.status_code == 404 and detail == "Not Found":
+            title, detail = "Page not found", f"There is no page at {PREFIX}{path}."
         return templates.TemplateResponse(request, "error.html", {
             "db_missing": False, "dashboard_url": DASHBOARD_URL, "prefix": PREFIX,
-            "author": request.cookies.get("author", ""), "title": title, "detail": exc.detail,
-            "back_url": f"{PREFIX}/jobs", "back_label": "Back to the jobs", "layout": "layout.html"},
+            "author": request.cookies.get("author", ""), "title": title, "detail": detail,
+            "back_url": f"{PREFIX}/jobs", "back_label": "Jobs", "layout": "layout.html"},
             status_code=exc.status_code)
     return await http_exception_handler(request, exc)
