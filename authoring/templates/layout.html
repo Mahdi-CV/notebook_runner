@@ -24,6 +24,10 @@
   details.log-wrap > summary, details.cell-change > summary { cursor: pointer; }
   details.log-wrap > summary { font-weight: 600; margin: 24px 0 8px; }
   .error { background: var(--bad-bg); color: var(--bad); border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; }
+  form.submit .error { margin: 0; } form.submit .error .meta { color: inherit; margin-top: 4px; }
+  .next-step { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 12px; }
+  .next-step p { margin: 0; flex: 1 1 32ch; max-width: 80ch; }
+  .next-step form { margin: 0; }
   pre.log { max-height: 460px; overflow-y: auto; background: #16171a; color: #d6d8de; border: none; font-size: 12px; line-height: 1.5; }
   .stage { font-size: 15px; font-weight: 600; }
   .meter { height: 8px; background: var(--muted-bg); border-radius: 4px; overflow: hidden; min-width: 120px; }

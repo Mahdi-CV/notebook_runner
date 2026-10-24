@@ -19,7 +19,6 @@ import json
 import os
 import re
 from pathlib import Path
-from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
@@ -52,11 +51,11 @@ def db():
     return store.connect()
 
 
-def render(request: Request, template: str, **ctx) -> HTMLResponse:
+def render(request: Request, template: str, status_code: int = 200, **ctx) -> HTMLResponse:
     return templates.TemplateResponse(request, template, {
         "db_missing": False, "dashboard_url": DASHBOARD_URL, "categories": CATEGORIES,
         "prefix": PREFIX,
-        "author": request.cookies.get("author", ""), **ctx})
+        "author": request.cookies.get("author", ""), **ctx}, status_code=status_code)
 
 
 def queue_position(conn, job: dict) -> int | None:
@@ -71,12 +70,20 @@ def queue_position(conn, job: dict) -> int | None:
 # ── pages ────────────────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
-def home(request: Request, error: str = ""):
+def home(request: Request, url: str = "", category: str = ""):
+    # Other pages (the dashboard's notebook page) link here with both forms pre-filled.
+    prefill = {"url": url.strip()[:500], "category": category if category in CATEGORIES else ""}
+    return home_page(request, {"validate": prefill, "annotate": prefill})
+
+
+def home_page(request: Request, values: dict, error: dict | None = None) -> HTMLResponse:
+    """The submit page. values: what each form shows ({kind: {author, category,
+    url}}); error: a rejected submission ({kind, text, blocking, file}), shown
+    next to its form, with status 400."""
     author = request.cookies.get("author", "")
-    conn = db()
-    mine = store.list_jobs(conn, author=author, limit=20) if author else []
-    return render(request, "home.html", mine=mine, error=error,
-                  availability=capacity.read_snapshot())
+    mine = store.list_jobs(db(), author=author, limit=20) if author else []
+    return render(request, "home.html", status_code=400 if error else 200, mine=mine,
+                  values=values, error=error, availability=capacity.read_snapshot())
 
 
 @app.get("/jobs", response_class=HTMLResponse)
@@ -90,7 +97,7 @@ async def submit(request: Request, kind: str = Form(...), author: str = Form(...
                  category: str = Form(...), url: str = Form(""),
                  notebook: UploadFile | None = File(None)):
     author = author.strip()
-    problem = None
+    problem, blocking = None, None
     if kind not in ("validate", "annotate"):
         problem = "Choose validate or annotate."
     elif not NAME_RE.match(author):
@@ -98,9 +105,10 @@ async def submit(request: Request, kind: str = Form(...), author: str = Form(...
     elif category not in CATEGORIES:
         problem = "Choose the tutorial's category."
     conn = db()
-    if not problem and store.active_for_author(conn, author, kind):
-        problem = (f"You already have a {kind} job queued or running. Wait for it to finish, "
-                   "or cancel it, before submitting another.")
+    if not problem:
+        blocking = active_job(conn, author, kind)
+        if blocking:
+            problem = one_at_a_time(kind)
     data, name, source = None, None, None
     if not problem:
         if notebook is not None and notebook.filename:
@@ -127,17 +135,39 @@ async def submit(request: Request, kind: str = Form(...), author: str = Form(...
         else:
             problem = "Upload a notebook or paste a GitHub URL."
     if problem:
-        return RedirectResponse(f"{PREFIX}/?error={quote(problem)}", status_code=303)
+        # Back to the same form with what the author typed; a browser cannot
+        # refill a file input, so say which file to choose again.
+        form = kind if kind in ("validate", "annotate") else "validate"
+        return home_page(request, {form: {"author": author, "category": category, "url": url}},
+                         {"kind": form, "text": problem, "blocking": blocking,
+                          "file": notebook.filename if notebook is not None else None})
 
     if source == "pr" and name == "pending.ipynb":
         name = f"pr-{url.rstrip('/').rsplit('/', 1)[-1]}.ipynb"
-    job_id = store.create(conn, kind, name, author=author, category=category,
-                          source=source, source_url=url or None)
-    if data is not None:
-        (store.job_dir(job_id) / "input.ipynb").write_bytes(data)
+    job_id = create_job(conn, kind, name, author, category, source, url or None, data)
     resp = RedirectResponse(f"{PREFIX}/jobs/{job_id}", status_code=303)
     resp.set_cookie("author", author, max_age=365 * 24 * 3600, samesite="lax")
     return resp
+
+
+def create_job(conn, kind: str, name: str, author: str, category: str, source: str,
+               url: str | None, data: bytes | None) -> str:
+    job_id = store.create(conn, kind, name, author=author, category=category,
+                          source=source, source_url=url)
+    if data is not None:
+        (store.job_dir(job_id) / "input.ipynb").write_bytes(data)
+    return job_id
+
+
+def one_at_a_time(kind: str) -> str:
+    return (f"You already have {'an' if kind == 'annotate' else 'a'} {kind} job queued or running. Wait for it to finish, "
+            "or cancel it, before submitting another.")
+
+
+def active_job(conn, author: str, kind: str) -> dict | None:
+    """The author's queued or running job of this kind: one at a time per kind."""
+    return next((j for j in store.active(conn) if j["author"] == author and j["kind"] == kind),
+                None)
 
 
 def load_job(job_id: str) -> tuple:
@@ -177,7 +207,9 @@ def job_page(request: Request, job_id: str):
                   has={name: (d / name).exists() for name in
                        ("annotated.ipynb", "static.json", "CHANGES.md")},
                   executed=executed_path(job), views=list(notebook_views(job)), view_names=VIEWS,
-                  estimates=(capacity.read_snapshot() or {}).get("estimates", {}))
+                  estimates=(capacity.read_snapshot() or {}).get("estimates", {}),
+                  source=github_source(job.get("source_url")), blocked_by=blocked_reason(job),
+                  again=again_state(conn, job, request.cookies.get("author", "")) if final else None)
 
 
 @app.get("/api/jobs/{job_id}")
@@ -203,6 +235,29 @@ def cancel(request: Request, job_id: str):
         store.update(conn, job_id, cancel=1)
         store.log(job_id, f"Cancel requested by {job['author']}")
     return RedirectResponse(f"{PREFIX}/jobs/{job_id}", status_code=303)
+
+
+@app.post("/jobs/{job_id}/again")
+def run_again(request: Request, job_id: str):
+    """A new job of the same kind on the same input: the same uploaded file, or
+    the same GitHub URL fetched again (so it picks up new commits)."""
+    conn, job = load_job(job_id)
+    state = again_state(conn, job, request.cookies.get("author", ""))
+    if state is None:
+        raise HTTPException(409, "This job cannot be run again.")
+    if state["not_author"]:
+        raise HTTPException(403, "Only the author who submitted this job can run it again.")
+    if state["blocking"]:
+        kind = job["kind"]
+        return home_page(request, {kind: {"author": job["author"], "category": job["category"],
+                                          "url": job["source_url"] or ""}},
+                         {"kind": kind, "text": one_at_a_time(kind),
+                          "blocking": state["blocking"], "file": None})
+    data = (store.job_dir(job_id) / "input.ipynb").read_bytes() if job["source"] == "upload" else None
+    new_id = create_job(conn, job["kind"], job["notebook"], job["author"], job["category"],
+                        job["source"], job["source_url"], data)
+    store.log(new_id, f"Runs job {job_id} again")
+    return RedirectResponse(f"{PREFIX}/jobs/{new_id}", status_code=303)
 
 
 @app.get("/jobs/{job_id}/annotated.ipynb")
@@ -287,6 +342,44 @@ def executed_path(job: dict) -> Path | None:
         return None
     path = store.job_dir(job["id"]) / "results" / "executed" / name
     return path if path.is_file() else None
+
+
+def again_state(conn, job: dict, author: str) -> dict | None:
+    """Whether a finished author job can be run again by this visitor: None if
+    it cannot be at all (still active, a nightly job, its upload is gone),
+    else {"not_author": bool, "blocking": the author's active job of that kind}."""
+    if job["status"] not in store.FINAL or job["kind"] == "regression" or not job["author"]:
+        return None
+    if job["source"] == "upload" and not (store.job_dir(job["id"]) / "input.ipynb").is_file():
+        return None
+    if job["source"] != "upload" and not job["source_url"]:
+        return None
+    return {"not_author": author != job["author"],
+            "blocking": active_job(conn, job["author"], job["kind"])}
+
+
+def blocked_reason(job: dict) -> str | None:
+    """Why a blocked job stopped, for the job page's next step: no_runner,
+    metadata (metadata.ci unreadable), fetch (GitHub or the input), or run."""
+    if job["status"] != "blocked":
+        return None
+    stage = job.get("stage") or ""
+    if "no runner fits" in stage:
+        return "no_runner"
+    if "metadata.ci" in stage:
+        return "metadata"
+    return "run" if (job.get("summary") or {}).get("run") else "fetch"
+
+
+def github_source(url: str | None) -> dict | None:
+    """A GitHub source URL as words: {"label", "title"}: "pull request #57" with
+    the repository as the title, or "gpuaidev@main" with the file's path."""
+    m = re.match(r"https://github\.com/([^/]+/([^/]+))/(?:pull/(\d+)|blob/([^/]+)/(.+))$", url or "")
+    if not m:
+        return None
+    if m[3]:
+        return {"label": f"pull request #{m[3]}", "title": m[1]}
+    return {"label": f"{m[2]}@{m[4]}", "title": f"{m[1]}: {m[5]}"}
 
 
 OUTCOME = {"passed": "Passed", "done": "Done", "failed": "Failed", "blocked": "Blocked",

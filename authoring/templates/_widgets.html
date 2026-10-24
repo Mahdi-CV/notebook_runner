@@ -36,19 +36,28 @@
 {% endif %}
 {%- endmacro %}
 
-{% macro submit_form(kind, label) %}
-<form class="submit" method="post" action="{{ prefix }}/jobs" enctype="multipart/form-data">
+{# values: what to fill in ({author, category, url}); error: a rejected
+   submission of this form ({text, blocking job, file name to choose again}). #}
+{% macro submit_form(kind, label, values={}, error=None) %}
+<form class="submit" method="post" action="{{ prefix }}/jobs" enctype="multipart/form-data"{% if error %} aria-describedby="{{ kind }}-error"{% endif %}>
+  {% if error %}
+  <div class="error" id="{{ kind }}-error" role="alert" tabindex="-1">
+    {{ error.text }}
+    {% if error.blocking %}<a href="{{ prefix }}/jobs/{{ error.blocking.id }}">Open {{ error.blocking.notebook }}</a> ({{ error.blocking.status | joblabel | lower }}).{% endif %}
+    {% if error.file %}<div class="meta">Choose {{ error.file }} again: the browser does not keep the file.</div>{% endif %}
+  </div>
+  {% endif %}
   <input type="hidden" name="kind" value="{{ kind }}">
-  <label>Your name or email <input type="text" name="author" value="{{ author }}" required maxlength="60"></label>
+  <label>Your name or email <input type="text" name="author" value="{{ values.author or author }}" required maxlength="60"></label>
   <label>Category
     <select name="category" required>
-      {% for key, name in categories.items() %}<option value="{{ key }}">{{ name }}</option>{% endfor %}
+      {% for key, name in categories.items() %}<option value="{{ key }}"{% if key == values.category %} selected{% endif %}>{{ name }}</option>{% endfor %}
     </select>
   </label>
   <label>Notebook <span>An .ipynb file.</span> <input type="file" name="notebook" accept=".ipynb"></label>
   <div class="or">or paste a GitHub link</div>
   <label>GitHub URL <span>A pull request, or a notebook on a branch.</span>
-    <input type="url" name="url" placeholder="https://github.com/AMD-ROCm-Internal/gpuaidev-internal/pull/123"></label>
+    <input type="url" name="url" value="{{ values.url or '' }}" placeholder="https://github.com/AMD-ROCm-Internal/gpuaidev-internal/pull/123"></label>
   <div><button type="submit">{{ label }}</button></div>
 </form>
 {% endmacro %}

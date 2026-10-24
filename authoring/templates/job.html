@@ -10,7 +10,7 @@
 <h1>{{ job.notebook }} <span id="status">{{ job_badge(job.status) }}</span></h1>
 <p class="sub">
   Submitted {{ job.created_at[:16] | replace('T', ' ') }} UTC
-  {% if job.source_url %}· <a href="{{ job.source_url }}">{{ job.source_url }}</a>{% endif %}
+  {% if job.source_url %}· <a href="{{ job.source_url }}"{% if source %} title="{{ source.title }}">{{ source.label }}{% else %}>{{ job.source_url }}{% endif %}</a>{% endif %}
   {% if job.target %}· {{ 'ran' if final else 'runs' }} on <b>{{ job.target }}</b>{% endif %}
   {% if job.finished_at and job.started_at %}· finished {{ job.finished_at[11:16] }} UTC{% endif %}
 </p>
@@ -25,6 +25,46 @@
     {% if s.run and s.run.summary %}<p>{{ s.run.summary | codespans }}</p>
     {% elif s.message %}<p>{{ s.message | replace('no target fits:', 'No runner fits this notebook:') | replace(' | ', '; ') }}</p>{% endif %}
   </div>
+  {% if job.kind != 'regression' %}
+  {% set from_github = job.source != 'upload' %}
+  {% set submit_again = prefix ~ '/?category=' ~ (job.category | urlencode) ~ '#' ~ job.kind %}
+  <div class="next-step">
+    <p>
+    {%- if job.status == 'passed' -%}
+      Next: {% if from_github %}your pull request is ready for review{% else %}open a pull request with this notebook{% endif %}
+      {%- if static and static.counts.error %}, once you fix the static-check errors below{% endif %}. CI runs these same checks.
+    {%- elif job.status == 'failed' -%}
+      Next: fix the issues below in your notebook,
+      {% if from_github %}push the fixes to {{ 'the pull request' if '/pull/' in job.source_url else 'the branch' }}, then run it again (Run again fetches the latest version).
+      {%- else %}then <a href="{{ submit_again }}">submit the fixed notebook</a>.{% endif %}
+    {%- elif job.status == 'done' -%}
+      Next: {% if s.diff and s.diff.cells %}download the annotated notebook, review the cell changes below, then {% endif %}<a href="{{ prefix }}/?category={{ job.category | urlencode }}#validate">validate it</a> on a GPU.
+    {%- elif job.status == 'error' -%}
+      This is a fault in Notebook CI, not in your notebook. Run it again; if it crashes again, tell the Notebook CI maintainers and quote job <span class="mono">{{ job.id }}</span>.
+    {%- elif job.status == 'cancelled' -%}
+      Run it again when you are ready.
+    {%- elif blocked_by == 'no_runner' -%}
+      Next: no runner has the hardware your <code>metadata.ci</code> asks for. Change it to hardware listed on the <a href="{{ prefix }}/runners">Runners</a> page, or ask the Notebook CI maintainers for a runner, then run again.
+    {%- elif blocked_by == 'metadata' -%}
+      Next: fix <code>metadata.ci</code> so it reads as the hardware list and GPU count that gpuaidev's <span class="mono">.github/CI_METADATA.md</span> describes, then {% if from_github %}run again{% else %}<a href="{{ submit_again }}">submit the fixed notebook</a>{% endif %}.
+    {%- elif blocked_by == 'fetch' -%}
+      Next: {% if from_github %}check that the URL is a pull request changing one notebook, or a notebook file, in a repository the service can read, then <a href="{{ submit_again }}">submit it again</a>{% else %}check that the file is a Jupyter notebook, then <a href="{{ submit_again }}">submit it again</a>{% endif %}.
+    {%- elif blocked_by == 'run' -%}
+      Next: read the summary above and the progress log. If the cause is in your notebook, fix it and {% if from_github %}run again{% else %}<a href="{{ submit_again }}">submit it again</a>{% endif %}; if it is a platform problem, run again later.
+    {%- endif -%}
+    </p>
+    {% if again %}
+    <form method="post" action="{{ prefix }}/jobs/{{ job.id }}/again">
+      {% set why = 'Only ' ~ job.author ~ ' can run this job again.' if again.not_author else '' %}
+      <button class="{{ '' if job.status in ('error', 'cancelled') else 'secondary' }}" type="submit"
+              {%- if why or again.blocking %} disabled aria-describedby="again-why"{% endif %}
+              title="{{ 'Fetches the latest version from GitHub' if from_github else 'Runs the same file again' }}">Run again</button>
+      {% if why %}<span id="again-why" class="dim"> {{ why }}</span>
+      {% elif again.blocking %}<span id="again-why" class="dim"> Your {{ job.kind }} job <a href="{{ prefix }}/jobs/{{ again.blocking.id }}">{{ again.blocking.notebook }}</a> is {{ again.blocking.status | joblabel | lower }}; one at a time.</span>{% endif %}
+    </form>
+    {% endif %}
+  </div>
+  {% endif %}
   {% else %}
   <p class="stage" id="stage" role="status" aria-live="polite" style="margin: 12px 0 4px">{{ job.stage }}</p>
   {% endif %}
