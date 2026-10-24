@@ -1,0 +1,61 @@
+# One-time setup for the k8s runner (tools/k8s_pod.py). Apply with an admin
+# context:  kubectl --context workshop apply -f tools/k8s/rbac.yaml
+#
+# Everything is confined to one namespace. The runner's agent runs with
+# --dangerously-skip-permissions and can read whatever credential the runner
+# holds, so the kubeconfig minted from this ServiceAccount must be able to do
+# exactly what k8s_pod.py does here, and nothing anywhere else. It has no access
+# to Secrets: pods get HF_TOKEN from the admin-created `hf-token` Secret (see
+# tools/k8s_pod.py) through the kubelet.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: notebook-runner
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: notebook-runner
+  namespace: notebook-runner
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: notebook-runner-token
+  namespace: notebook-runner
+  annotations:
+    kubernetes.io/service-account.name: notebook-runner
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: notebook-runner
+  namespace: notebook-runner
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [create, get, list, watch, delete]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [create, get]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: notebook-runner
+  namespace: notebook-runner
+subjects:
+  - kind: ServiceAccount
+    name: notebook-runner
+    namespace: notebook-runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: notebook-runner

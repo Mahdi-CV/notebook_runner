@@ -1,0 +1,18 @@
+[Unit]
+Description=notebook-runner HTTP agent server (SSH replacement over :80)
+After=network.target
+
+[Service]
+Type=simple
+# AGENT_SECRET is provided via an EnvironmentFile, never inline here, so it
+# doesn't end up in `systemctl cat`/journal-visible unit definitions.
+EnvironmentFile=/etc/notebook-runner-agent.env
+Environment=AGENT_LISTEN_PORT=8899
+ExecStart=/usr/bin/python3 /opt/notebook-runner-agent/agent_server.py
+Restart=on-failure
+RestartSec=5
+# Runs as root with no sandboxing: it must run docker, equivalent to a root SSH session.
+User=root
+
+[Install]
+WantedBy=multi-user.target

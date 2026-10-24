@@ -51,7 +51,8 @@ from pathlib import Path
 
 # Reuse the dashboard's loaders so "latest result per notebook" is defined once.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import status as status_mod  # noqa: E402
+import routing
+import status as status_mod
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PREVIEW_DIR = REPO_ROOT / "logs" / "github_preview"
@@ -73,11 +74,6 @@ NOOP = "NOOP"
 def marker(kind: str, stem: str) -> str:
     """Hidden fingerprint embedded in issue/PR bodies for dedup."""
     return f"<!-- {MANAGED}: {kind}:{stem} -->"
-
-
-def _counts_as_pass(payload: dict, expected_partial: bool) -> bool:
-    st = payload.get("status")
-    return st == "pass" or (st == "partial" and expected_partial)
 
 
 def split_issues(payload: dict) -> tuple[list, list]:
@@ -107,9 +103,8 @@ def split_issues(payload: dict) -> tuple[list, list]:
     issue_problems = []
     for iss in issues:
         fixability = iss.get("fixability")
-        if fixability in ("needs_author", "infra_blocked"):
-            issue_problems.append(iss)
-        elif fixability == "auto_fixable" and not has_validated:
+        if fixability in ("needs_author", "infra_blocked") or (
+                fixability == "auto_fixable" and not has_validated):
             issue_problems.append(iss)
         # auto_fixable + has_validated => considered covered by the PR
     return pr_fixes, issue_problems
@@ -118,14 +113,14 @@ def split_issues(payload: dict) -> tuple[list, list]:
 def desired_state(rows_payloads: list[dict]) -> list[dict]:
     """Compute the desired GitHub artifact for each notebook.
 
-    rows_payloads: list of {stem, rel_key, payload, expected_partial}
+    rows_payloads: list of {stem, rel_key, payload}
     Returns a list of plans: {stem, rel_key, want_issue, want_pr, pr_fixes,
     issue_problems, passes, payload}.
     """
     plans = []
     for r in rows_payloads:
         payload = r["payload"]
-        passes = _counts_as_pass(payload, r["expected_partial"])
+        passes = payload.get("status") == "pass"
         pr_fixes, issue_problems = split_issues(payload)
         plans.append({
             "stem": r["stem"],
@@ -148,9 +143,9 @@ def desired_state(rows_payloads: list[dict]) -> list[dict]:
 
 def _issue_lines(iss: dict) -> list[str]:
     out = [
-        f"- **Error type:** `{iss.get('error_type', 'unknown')}`"
-        f"  ·  **Cell:** {iss.get('cell_index', '?')}"
-        f"  ·  **Fixability:** `{iss.get('fixability', 'unknown')}`",
+        (f"- **Error type:** `{iss.get('error_type', 'unknown')}`"
+         f"  ·  **Cell:** {iss.get('cell_index', '?')}"
+         f"  ·  **Fixability:** `{iss.get('fixability', 'unknown')}`"),
     ]
     if iss.get("description"):
         out.append(f"  - **What broke:** {iss['description'].strip()}")
@@ -165,8 +160,8 @@ def render_issue_body(plan: dict) -> str:
         marker("issue", plan["stem"]),
         f"## Regression report — `{plan['rel_key']}`",
         "",
-        "_Filed automatically by the notebook regression agent. "
-        "These issues require author judgment to fix._",
+        ("_Filed automatically by the notebook regression agent. "
+         "These issues require author judgment to fix._"),
         "",
         f"**Status:** {p.get('status', 'fail')}",
     ]
@@ -178,10 +173,10 @@ def render_issue_body(plan: dict) -> str:
     for iss in plan["issue_problems"]:
         lines += _issue_lines(iss)
     if plan["pr_fixes"]:
-        lines += ["", "_A separate PR proposes mechanical fixes for the "
-                  "auto-fixable issues in this notebook._"]
-    lines += ["", "---", "_Agent-managed: this issue is updated on each run and "
-              "auto-closed when the notebook passes._"]
+        lines += ["", ("_A separate PR proposes mechanical fixes for the "
+                       "auto-fixable issues in this notebook._")]
+    lines += ["", "---", ("_Agent-managed: this issue is updated on each run and "
+                          "auto-closed when the notebook passes._")]
     return "\n".join(lines)
 
 
@@ -192,8 +187,8 @@ def _cell_diff(rel_key: str, fixed_path: str) -> list[str]:
     if not orig_p.exists() or not fixed_p.exists():
         return ["_(diff unavailable — original or fixed notebook not found locally)_"]
     try:
-        orig = json.load(open(orig_p))["cells"]
-        fixed = json.load(open(fixed_p))["cells"]
+        orig = json.loads(orig_p.read_text())["cells"]
+        fixed = json.loads(fixed_p.read_text())["cells"]
     except (OSError, json.JSONDecodeError, KeyError):
         return ["_(diff unavailable — could not parse notebooks)_"]
 
@@ -219,10 +214,10 @@ def render_pr_body(plan: dict) -> str:
         marker("fix", plan["stem"]),
         f"## Proposed fix — `{plan['rel_key']}`",
         "",
-        "_Opened automatically by the notebook regression agent. "
-        "Each change below was validated by re-running the notebook on an "
-        "AMD ROCm GPU. **Review before merging — this PR is a proposal, not "
-        "an auto-merge.**_",
+        ("_Opened automatically by the notebook regression agent. "
+         "Each change below was validated by re-running the notebook on an "
+         "AMD ROCm GPU. **Review before merging — this PR is a proposal, not "
+         "an auto-merge.**_"),
         "",
     ]
     if p.get("docker_image_resolved"):
@@ -245,19 +240,12 @@ def pr_comment_marker(pr_number: int) -> str:
     return f"<!-- {MANAGED}: pr-comment:{pr_number} -->"
 
 
-_STATUS_EMOJI = {"pass": "✅", "partial": "🟡", "fail": "❌"}
+_STATUS_EMOJI = {"pass": "✅", "blocked": "🟡", "fail": "❌"}
 
 
-def _pr_row_status(payload: dict, expected_partial: bool) -> str:
-    """Human status label for the table: pass / partial / fail / (no result)."""
-    st = payload.get("status")
-    if st == "pass":
-        return "pass"
-    if st == "partial":
-        return "pass" if expected_partial else "partial"
-    if st == "fail":
-        return "fail"
-    return st or "unknown"
+def _pr_row_status(payload: dict) -> str:
+    """Human status label for the table: pass / fail / blocked."""
+    return status_mod.verdict_status(payload.get("status"))
 
 
 def _top_failure_reason(payload: dict) -> str:
@@ -279,44 +267,37 @@ def _top_failure_reason(payload: dict) -> str:
 def build_pr_comment_rows(changed: list[str], results_dir: Path) -> list[dict]:
     """For each changed notebook (rel path), pull its latest result payload.
 
-    Returns rows: {rel_key, stem, payload_or_None, expected_partial}. Notebooks
-    with no result JSON are reported explicitly as "no result" — never hidden.
+    Returns rows: {rel_key, stem, payload_or_None}. Notebooks with no result
+    JSON are reported explicitly as "no result" — never hidden.
     """
-    manifest = status_mod.load_manifest()
     results = status_mod.load_results(results_dir)
     rows = []
     for rel in changed:
         stem = Path(rel).stem
-        entry = manifest.get(rel) or manifest.get(Path(rel).name) or {}
         rec = results.get(stem)
-        rows.append({
-            "rel_key": rel,
-            "stem": stem,
-            "payload": rec["payload"] if rec else None,
-            "expected_partial": entry.get("expected_result") == "partial",
-        })
+        rows.append({"rel_key": rel, "stem": stem, "payload": rec["payload"] if rec else None})
     return rows
 
 
 def render_pr_comment(pr_number: int, rows: list[dict]) -> str:
     """One Markdown comment: header + per-notebook status table + failure detail."""
     n_total = len(rows)
-    n_pass = sum(1 for r in rows if r["payload"] and _pr_row_status(r["payload"], r["expected_partial"]) == "pass")
-    n_fail = sum(1 for r in rows if r["payload"] and _pr_row_status(r["payload"], r["expected_partial"]) == "fail")
-    n_partial = sum(1 for r in rows if r["payload"] and _pr_row_status(r["payload"], r["expected_partial"]) == "partial")
+    n_pass = sum(1 for r in rows if r["payload"] and _pr_row_status(r["payload"]) == "pass")
+    n_fail = sum(1 for r in rows if r["payload"] and _pr_row_status(r["payload"]) == "fail")
+    n_blocked = sum(1 for r in rows if r["payload"] and _pr_row_status(r["payload"]) == "blocked")
     n_missing = sum(1 for r in rows if not r["payload"])
 
     lines = [
         pr_comment_marker(pr_number),
         "## Notebook regression — changed notebooks",
         "",
-        "_Posted automatically by the notebook regression agent. Each changed "
-        "notebook below was executed on an AMD ROCm GPU. This is a report, not a "
-        "merge gate._",
+        ("_Posted automatically by the notebook regression agent. Each changed "
+         "notebook below was executed on an AMD ROCm GPU. This is a report, not a "
+         "merge gate._"),
         "",
         f"**Summary:** {n_pass}/{n_total} pass"
-        + (f", {n_partial} partial" if n_partial else "")
         + (f", {n_fail} fail" if n_fail else "")
+        + (f", {n_blocked} blocked (could not be evaluated)" if n_blocked else "")
         + (f", {n_missing} no-result" if n_missing else ""),
         "",
         "| Notebook | Result | Detail |",
@@ -326,7 +307,7 @@ def render_pr_comment(pr_number: int, rows: list[dict]) -> str:
         if not r["payload"]:
             lines.append(f"| `{r['rel_key']}` | ⚠️ no result | _agent produced no result JSON_ |")
             continue
-        st = _pr_row_status(r["payload"], r["expected_partial"])
+        st = _pr_row_status(r["payload"])
         emoji = _STATUS_EMOJI.get(st, "❔")
         detail = "—" if st == "pass" else _top_failure_reason(r["payload"])
         # Escape pipes in detail so the table doesn't break.
@@ -389,7 +370,7 @@ def run_pr_comment(pr_number: int, changed: list[str], repo: str | None,
 
     mode = "PUBLISH" if publish else "DRY-RUN"
     n_fail = sum(1 for r in rows if r["payload"]
-                 and _pr_row_status(r["payload"], r["expected_partial"]) == "fail")
+                 and _pr_row_status(r["payload"]) == "fail")
     print(f"\n[{mode}] pr-comment on PR #{pr_number} → {len(rows)} changed notebook(s), "
           f"{n_fail} failing")
     print(f"Preview written to {preview}")
@@ -535,24 +516,15 @@ def write_previews(plans: list[dict]) -> None:
 
 
 def load_rows_payloads(results_dir: Path) -> list[dict]:
-    """Latest result payload per manifest notebook (skips never-tested / skipped)."""
-    manifest = status_mod.load_manifest()
+    """Latest result payload per notebook a target can run (skips never-tested)."""
     results = status_mod.load_results(results_dir)
     out = []
-    for key, entry in manifest.items():
-        entry = entry or {}
-        if entry.get("skip"):
+    for key, (_, reason) in routing.routes().items():
+        rec = results.get(Path(key).stem)
+        # Blocked runs say nothing about the notebook: no issue, no PR, no close.
+        if reason or rec is None or status_mod.verdict_status(rec["payload"].get("status")) == "blocked":
             continue
-        stem = Path(key).stem
-        rec = results.get(stem)
-        if rec is None:
-            continue
-        out.append({
-            "stem": stem,
-            "rel_key": key,
-            "payload": rec["payload"],
-            "expected_partial": entry.get("expected_result") == "partial",
-        })
+        out.append({"stem": Path(key).stem, "rel_key": key, "payload": rec["payload"]})
     return out
 
 

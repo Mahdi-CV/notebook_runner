@@ -35,7 +35,9 @@ the system prompt appended below.
 |-----------------------|---------------------------------------------------------|
 | `SSH_CMD`             | Exact SSH prefix for every server command                |
 | `SSH_HF_CMD`          | SSH prefix with HF_TOKEN pre-exported                   |
-| `GPU_HARDWARE`        | Hardware name (e.g. mi300x) for Docker image resolution |
+| `GPU_HARDWARE`        | Hardware name (e.g. mi300x, rx7900xtx) for Docker image resolution |
+| `MEMORY_LIMIT`, `CONTAINER_ENV`, `RUN_NOTEBOOK`, `DOCKER_IMAGE`/`IMAGE_REPO` | The notebook's declared requirements and how to run it; use them as in CLAUDE.md. `DOCKER_IMAGE` is the runner-resolved `image:tag` — use it verbatim; only resolve yourself in the `IMAGE_REPO`/no-image fallback |
+| `OUTPUT_NOTEBOOK`     | Where papermill must write the executed fixed notebook (`<nb>_fixed_out.ipynb`); the runner's verdict comes from it |
 | `NOTEBOOK_LOCAL`      | Local path to the notebook being tested                 |
 | `NOTEBOOK_REMOTE`     | Remote path — already copied, ready to use              |
 | `WORKSPACE_BASE`      | Remote base for run dirs (`<WORKSPACE_BASE>/tutorial_agent_runs/<stem>`) |
@@ -43,6 +45,8 @@ the system prompt appended below.
 | `RESULTS_DIR`         | Where to write the result JSON                          |
 | `FIXES_DIR`           | Local dir to retrieve the genuine-fix notebook into     |
 | `VERIFICATION_RESULT` | Local path to the verification agent's result JSON      |
+| `RUNNER`, `POD_CMD`, `K8S_UP_CMD`, `POD_PULL_CMD` | Pod runners (k8s, radeon) only — see below |
+| `TIMEBOX_MINUTES`     | Wall-clock limit for this run, as in CLAUDE.md |
 
 Everywhere this playbook shows `<WORKSPACE_BASE>/tutorial_agent_runs/<stem>`,
 substitute the literal `WORKSPACE_BASE` value from the runtime context (it
@@ -62,6 +66,10 @@ Refer to CLAUDE.md (loaded automatically from the project root) for:
 - Cleanup procedures
 
 All those patterns apply identically to the fixer agent.
+
+With `RUNNER = k8s` or `radeon`, CLAUDE.md's "Runner: pod" section applies too.
+The verification pod is gone; provision your own with `K8S_UP_CMD` before
+Step 2 and use it for every step after.
 
 ---
 
@@ -91,10 +99,30 @@ Bash: <SSH_CMD> 'python3 <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/preflight_p
 ```
 Then use `<nb>_fixed_patched.ipynb` for the validation run.
 
-**5. Zero auto_fixable issues = early exit.**
-If the verification result has no `auto_fixable` issues, write the result
-immediately with `status=fail`, carry all issues through, `fixes=[]`, and stop.
-Do not re-run the notebook.
+**5. Only `auto_fixable` issues are yours.** The runner does not start you
+for a notebook without any; carry the others through unchanged.
+
+**6. Never try to get around a local permission problem.**
+If writing to `/work/results`, `/work/logs`, `/work/fixes` or `STATUS.md`
+fails with a permission error (`EACCES` / `PermissionError`),
+that is a host misconfiguration for a human to fix — not something to work
+around. Do NOT: search for SUID binaries, run `su` or `sudo`, probe
+capabilities, disable or bypass the sandbox, `chown`/`chmod`/recreate/rename
+the mounted directories, or write to `results/runs.db` directly (only
+`write_result.py` and `run.py` write results). Probing for elevated access on
+this host triggers security alerts.
+Retry the write ONCE. If it still fails, write the exact payload
+`write_result.py` would have produced (including a UTC `timestamp`) to
+`/work/logs/<notebook_stem>_PENDING_RESULT.json`, name the blocker in your
+final message, and stop.
+
+The same applies beyond these paths: if any of your own actions fails on
+permissions or ownership (on the GPU server, in a pod, reading a file), do not
+reach for more privilege or someone else's — no `sudo`/`su`, no other users'
+credentials or keys, no searching for credentials or reading `.env` files.
+Record it as an `other` / `infra_blocked` issue and stop. Commands a notebook's
+own cells run (for example a `sudo systemctl` cell) are notebook content: if
+they fail, record that as an issue like any other failure.
 
 ---
 
@@ -108,21 +136,8 @@ Do not re-run the notebook.
 
 2. Read `NOTEBOOK_LOCAL` with the Read tool. Read every cell.
 
-3. Filter issues to only those with `fixability == "auto_fixable"`. Count them.
-   If zero, write the result immediately:
-   ```
-   Bash: python3 <TOOLS_DIR>/write_result.py \
-     --notebook "<NOTEBOOK_LOCAL>" \
-     --status fail \
-     --summary "No auto-fixable issues. All N issues require author intervention." \
-     --issues '<all issues from verification, unchanged>' \
-     --fixes '[]' \
-     --agent "claude_code_fix" \
-     --verification-result "<VERIFICATION_RESULT>" \
-     --docker-image-resolved "<image:tag>" \
-     --results-dir "<RESULTS_DIR>"
-   ```
-   Then stop.
+3. Filter issues to only those with `fixability == "auto_fixable"`. The
+   runner only starts you when there is at least one.
 
 4. Note the execution pattern (A/B/C/D) from reading cell sources — you need
    this to know how to re-run the notebook.
@@ -156,6 +171,14 @@ Bash: <SSH_CMD> 'pip index versions <package> 2>/dev/null | head -3'
 Bash: <SSH_HF_CMD> 'docker run --rm --entrypoint /bin/bash \
   <image> -c "pip install -q \"<package>==<candidate>\" && \
   python3 -c \"import <package>; print(\\\"ok\\\")\" || echo FAILED"'
+```
+
+With a pod runner (`RUNNER = k8s` or `radeon`), test in a throwaway venv inside your pod instead, so the
+candidate never lands in the environment the fixed notebook later runs in:
+```
+Bash: <POD_CMD> 'python3 -m venv --system-site-packages /tmp/pin && \
+  /tmp/pin/bin/pip install -q "<package>==<candidate>" && \
+  /tmp/pin/bin/python -c "import <package>; print(\"ok\")" || echo FAILED; rm -rf /tmp/pin'
 ```
 
 Only proceed with the pin if the import test passes. If it fails, try the
@@ -204,8 +227,8 @@ Bash: <SSH_CMD> 'python3 /workspace/preflight_patch.py \
   --output /workspace/<nb>_fixed_patched.ipynb'
 ```
 
-This applies exactly the 4 allowed patches (notebook_login, input, gradio,
-audio) deterministically. Use `<nb>_fixed_patched.ipynb` for the run.
+This applies exactly the 5 allowed patches (notebook_login, input, gradio,
+audio, `ci-skip` cells) deterministically. Use `<nb>_fixed_patched.ipynb` for the run.
 
 ### 3c. Write the run script
 
@@ -213,10 +236,7 @@ audio) deterministically. Use `<nb>_fixed_patched.ipynb` for the run.
 Bash: <SSH_CMD> 'cat > <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh << '"'"'SCRIPT'"'"'
 #!/bin/bash
 set -e
-pip install -q papermill ipykernel
-python -m ipykernel install --sys-prefix
-python -m papermill /workspace/<nb>_fixed_patched.ipynb /workspace/<nb>_fixed_out.ipynb \
-  --kernel python3 --execution-timeout 3000
+bash /workspace/run_notebook.sh /workspace/<nb>_fixed_patched.ipynb /workspace/<nb>_fixed_out.ipynb
 SCRIPT
 chmod +x <WORKSPACE_BASE>/tutorial_agent_runs/<stem>/run.sh'
 ```
@@ -271,12 +291,15 @@ without re-reading the notebook:
 }
 ```
 
-**Status logic:**
-- `pass` — ALL auto_fixable fixes validated AND no `needs_author`/`infra_blocked`
-  issues remain (or the manifest sets `expected_result: partial`)
-- `fail` — Any fix failed validation, or unfixable issues remain
+**Verdict:** you do not set one. The runner reads `OUTPUT_NOTEBOOK` (the
+executed fixed notebook) and records `pass` if every code cell ran without an
+error, `fail` if a cell raised, `blocked` if it could not be evaluated. Your
+`validated` flags and issues are the diagnosis behind it.
 
 ### 4c. Retrieve the genuine-fix notebook (for the GitHub reporter)
+
+(With a pod runner, use the `POD_PULL_CMD` line from the runtime context
+instead of the scp below.)
 
 If **at least one** fix validated, copy the genuine-fix notebook back to this
 host so the reporter can diff it and propose the change to authors. Retrieve
@@ -284,7 +307,7 @@ host so the reporter can diff it and propose the change to authors. Retrieve
 contains preflight scaffolding (gradio/audio/input skips) that must never be
 shown to tutorial authors; only the genuine fix belongs in a PR.
 
-Do this **before Cleanup** (cleanup deletes the remote file):
+Do this before you finish (the runner removes the run dir afterwards):
 ```
 Bash: scp -o StrictHostKeyChecking=no -o ForwardX11=no \
   <user>@<host>:<WORKSPACE_BASE>/tutorial_agent_runs/<stem>/<nb>_fixed.ipynb \
@@ -298,7 +321,6 @@ omit `--fixed-notebook` below.)
 ```
 Bash: python3 <TOOLS_DIR>/write_result.py \
   --notebook "<NOTEBOOK_LOCAL>" \
-  --status pass|fail \
   --summary "One paragraph: what was fixed, what was validated, what remains" \
   --issues '<all issues — auto_fixable + needs_author + infra_blocked>' \
   --fixes '<fixes array>' \
@@ -310,16 +332,14 @@ Bash: python3 <TOOLS_DIR>/write_result.py \
 ```
 (Omit `--fixed-notebook` if no fix validated in Step 4c.)
 
-After writing the result, print the final status line and stop.
+After writing the result, stop.
 
 ---
 
 ## Cleanup
 
-Always run after any outcome — same as CLAUDE.md:
+Same as CLAUDE.md: stop every container you started, and leave the run dir and
+`OUTPUT_NOTEBOOK` in place for the runner.
 ```
 Bash: <SSH_CMD> 'docker stop <name> 2>/dev/null || true'
-Bash: <SSH_CMD> 'docker run --rm -v <WORKSPACE_BASE>/tutorial_agent_runs/<stem>:/workspace alpine \
-  sh -c "rm -rf /workspace/*" 2>/dev/null || true'
-Bash: <SSH_CMD> 'rm -rf <WORKSPACE_BASE>/tutorial_agent_runs/<stem> 2>/dev/null || true'
 ```

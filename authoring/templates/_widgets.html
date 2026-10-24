@@ -1,0 +1,78 @@
+{% from "_macros.html" import target_type %}
+{% macro job_badge(status) -%}
+<span class="badge {{ status | jobclass }}">{{ status | joblabel }}</span>
+{%- endmacro %}
+
+{# The runner table; `summary` adds the one-line queue summary under it
+   (the Runners page shows the queue in full instead). Below 600px wide each
+   row becomes a card (table.stack in layout.html), labelled from data-label. #}
+{% macro runner_rows(availability, summary=True) -%}
+{% if not availability %}
+<p class="dim">The worker has not reported yet: runner availability appears once it is running.</p>
+{% else %}
+<div class="table-wrap"><table class="stack">
+  <thead><tr><th scope="col">Runner</th><th scope="col">Hardware</th><th scope="col">In use</th><th scope="col">Running now</th><th scope="col">Status</th></tr></thead>
+  <tbody>
+  {% for t in availability.targets %}
+  <tr>
+    <td class="nowrap"><b>{{ t.name }}</b><div class="meta">{{ target_type(t.type) }}{% if t.where %}<br><span class="mono">{{ t.where }}</span>{% endif %}</div></td>
+    <td class="nowrap" data-label="Hardware">{{ t.hardware }}<div class="meta">up to {{ (t.gpus_per_run or 1) | plural('GPU') }} per run{% if t.gpu_memory_gb %} · {{ t.gpu_memory_gb }} GB each{% endif %}{% if t.provides %}<br>provides {{ t.provides | join(', ') }}{% endif %}</div></td>
+    <td class="nowrap" data-label="In use" style="min-width: 150px">
+      <div class="meter {{ 'full' if t.used >= t.total }}" style="margin-top: 6px"><div style="width: {{ (100 * t.used / t.total) | round }}%"></div></div>
+      <div class="meta" style="margin-top: 4px">{{ t.used }} of {{ t.total | plural('GPU' if t.unit == 'gpus' else 'slot') }} busy</div>
+    </td>
+    <td data-label="Running now">
+      {% for j in t.jobs %}<div><a href="{{ prefix }}/jobs/{{ j.id }}">{{ j.notebook.split('/')[-1] }}</a> <span class="dim">· {{ 'nightly pass' if j.kind == 'regression' else j.author }} · since {{ j.started_at | ts }}{% set ran = j.started_at | elapsed %}{% if ran and ran > 0 %} (for {{ ran | dur }}){% endif %}</span></div>
+      {% else %}<span class="dim">idle</span>{% endfor %}
+    </td>
+    <td data-label="Status">{% set ok = t.probe.startswith('ok') %}<span class="badge {{ 'ok' if ok else 'warn' if t.probe == 'not checked yet' else 'bad' }}">{{ 'reachable' if ok else t.probe.split(':')[0] }}</span>
+      {% if not ok or t.probe != 'ok' %}<div class="dim" style="font-size: 12px">{{ t.probe }}</div>{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% if summary %}
+<p class="dim" style="margin-top: 8px" aria-live="polite">
+  Waiting for a GPU: {{ availability.queue.authors_waiting | plural('author job') }} and {{ availability.queue.regression_waiting | plural('nightly notebook') }}.
+  {% if availability.nightly %}The nightly pass has {{ availability.nightly.remaining | plural('notebook') }} left; author jobs always go first.{% endif %}
+  Updated {{ availability.updated_at | ts }}.
+</p>
+{% endif %}
+{% endif %}
+{%- endmacro %}
+
+{# An estimated wait in minutes, in words: "about 20 min", "about 1 h 10 min". #}
+{% macro about(minutes) -%}
+{% if minutes is none %}no estimate yet
+{%- elif minutes < 1 %}under a minute
+{%- elif minutes < 15 %}about {{ minutes | round | int }} min
+{%- else %}{% set m = (minutes / (5 if minutes < 60 else 10)) | round | int * (5 if minutes < 60 else 10) %}
+{%- if m < 60 %}about {{ m }} min{% else %}about {{ m // 60 }} h{% if m % 60 %} {{ m % 60 }} min{% endif %}{% endif %}
+{%- endif %}
+{%- endmacro %}
+
+{# values: what to fill in ({author, category, url}); error: a rejected
+   submission of this form ({text, blocking job, file name to choose again}). #}
+{% macro submit_form(kind, label, values={}, error=None) %}
+<form class="submit" method="post" action="{{ prefix }}/jobs" enctype="multipart/form-data"{% if error %} aria-describedby="{{ kind }}-error"{% endif %}>
+  {% if error %}
+  <div class="error" id="{{ kind }}-error" role="alert" tabindex="-1">
+    {{ error.text }}
+    {% if error.blocking %}<a href="{{ prefix }}/jobs/{{ error.blocking.id }}">Open {{ error.blocking.notebook }}</a> ({{ error.blocking.status | joblabel | lower }}).{% endif %}
+    {% if error.file %}<div class="meta">Choose {{ error.file }} again: the browser does not keep the file.</div>{% endif %}
+  </div>
+  {% endif %}
+  <input type="hidden" name="kind" value="{{ kind }}">
+  <label>Your name or email <input type="text" name="author" value="{{ values.author or author }}" required maxlength="60"></label>
+  <label>Category
+    <select name="category" required>
+      {% for key, name in categories.items() %}<option value="{{ key }}"{% if key == values.category %} selected{% endif %}>{{ name }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>Notebook <span>An .ipynb file.</span> <input type="file" name="notebook" accept=".ipynb"></label>
+  <div class="or">or paste a GitHub link</div>
+  <label>GitHub URL <span>A pull request, or a notebook on a branch.</span>
+    <input type="url" name="url" value="{{ values.url or '' }}" placeholder="https://github.com/AMD-ROCm-Internal/gpuaidev-internal/pull/123"></label>
+  <div><button type="submit">{{ label }}</button></div>
+</form>
+{% endmacro %}

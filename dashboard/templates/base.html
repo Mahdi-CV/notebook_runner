@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Nightly results{% endblock %} · {% block site %}Notebook CI{% endblock %}</title>
+<style>
+  :root {
+    --bg: #f7f7f8; --fg: #1c1d21; --muted: #6b6f7a; --line: #e2e3e7; --card: #fff;
+    --ok: #1f7a3d; --ok-bg: #e3f4e8; --ok-soft-bg: #eef7e6; --warn: #8a5a00; --warn-bg: #fdf1d8;
+    --bad: #a3222b; --bad-bg: #fbe4e5; --info: #1d4f91; --info-bg: #e2ecf9; --muted-bg: #eceef1;
+    --accent: #c4161c;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--fg); }
+  header { background: #1c1d21; color: #fff; padding: 8px 24px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 28px; min-height: 52px; }
+  header .brand { font-weight: 600; letter-spacing: .2px; }
+  header .brand span { color: #ff5a5f; }
+  header nav { display: flex; flex-wrap: wrap; gap: 4px 18px; }
+  header nav a { color: #c9ccd3; text-decoration: none; padding: 4px 0; }
+  header nav a.active { box-shadow: inset 0 -2px 0 #ff5a5f; }
+  header nav a:hover, header nav a.active { color: #fff; }
+  main { max-width: 1280px; margin: 0 auto; padding: 24px; }
+  h1 { font-size: 22px; margin: 0 0 4px; overflow-wrap: anywhere; }
+  h2 { font-size: 16px; margin: 28px 0 10px; }
+  .sub { color: var(--muted); margin: 0 0 20px; max-width: 75ch; }
+  .crumbs { color: var(--muted); font-size: 13px; margin: 0 0 6px; }
+  a { color: var(--info); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 16px 18px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .tile { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+  a.tile { color: inherit; text-decoration: none; }
+  a.tile:hover { border-color: var(--muted); }
+  .tile.is-bad { border-color: var(--bad); } .tile.is-bad .n { color: var(--bad); }
+  .tile.is-warn { border-color: var(--warn); } .tile.is-warn .n { color: var(--warn); }
+  .tile.on { border-color: var(--fg); box-shadow: inset 0 0 0 1px var(--fg); }
+  .tile .n { font-size: 24px; font-weight: 600; }
+  .tile .l { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .4px; }
+  table { width: 100%; border-collapse: collapse; background: var(--card); }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--card); margin-bottom: 4px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: baseline; }
+  td.mono, td.ts { white-space: nowrap; }
+  time { white-space: nowrap; }
+  th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  tbody tr:hover td { background: #fafafb; }
+  th { background: #fafafb; font-weight: 600; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .3px; }
+  tr:last-child td { border-bottom: none; }
+  td.wrap { white-space: pre-wrap; word-break: break-word; min-width: 14rem; }
+  .eyebrow { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; line-height: 1.2; }
+  .meta { font-size: 12px; color: var(--muted); line-height: 1.3; }
+  .nowrap { white-space: nowrap; }
+  .clip { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .col-issue { min-width: 16rem; }
+  ul.misses { list-style: none; margin: 0; padding: 0; overflow-wrap: break-word; } ul.misses li + li { margin-top: 2px; }
+  table.fixed { table-layout: fixed; min-width: 560px; } table.fixed td { overflow-wrap: anywhere; }
+  .clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; overflow-wrap: anywhere; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .ok { color: var(--ok); background: var(--ok-bg); }
+  .ok-soft { color: var(--ok); background: var(--ok-soft-bg); }
+  .warn { color: var(--warn); background: var(--warn-bg); }
+  .bad { color: var(--bad); background: var(--bad-bg); }
+  .info { color: var(--info); background: var(--info-bg); }
+  .muted { color: var(--muted); background: var(--muted-bg); }
+  .badge.muted { color: #585c66; }
+  /* Not started yet (a queued job): outlined, so it never reads as a filled verdict. */
+  .badge.pending { color: #585c66; background: transparent; box-shadow: inset 0 0 0 1px #8a8f99; }
+  :focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+  .dim { color: var(--muted); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+  code, pre, kbd, .diff { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  code { font-size: .88em; background: var(--muted-bg); color: var(--fg); padding: 1px 5px; border-radius: 4px; }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  .prose { max-width: 80ch; overflow-wrap: anywhere; }
+  .prose h1 { font-size: 16px; margin: 0 0 8px; } .prose h2 { font-size: 14px; margin: 14px 0 6px; }
+  .prose ul { padding-left: 20px; margin: 0; } .prose li { margin: 4px 0; } .prose p { margin: 6px 0; }
+  pre { background: #f2f3f5; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; font-size: 12.5px; }
+  dl.kv { display: grid; grid-template-columns: 170px 1fr; gap: 6px 16px; margin: 0; align-items: baseline; }
+  dl.kv dt { color: var(--muted); }
+  dl.kv dd { margin: 0; word-break: break-word; }
+  .filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .filters a { text-decoration: none; padding: 4px 10px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); color: var(--fg); font-size: 13px; }
+  .filters a.on { background: #1c1d21; color: #fff; border-color: #1c1d21; }
+  .notice { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; }
+  details summary { cursor: pointer; color: var(--info); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } dl.kv { grid-template-columns: 1fr; gap: 2px 0; } dl.kv dt { font-size: 12px; margin-top: 10px; } dl.kv dt:first-child { margin-top: 0; } }
+  @media (max-width: 600px) { main { padding: 16px; } .col-target, .col-image, .age { display: none; } .col-issue { min-width: 12rem; } .tiles { grid-template-columns: repeat(3, 1fr); gap: 8px; } .tile { padding: 8px 10px; } .tile .n { font-size: 20px; } }
+  /* Outcome callout: the one place a finished job or result states how it ended. */
+  .outcome { border: 1px solid var(--line); border-left: 4px solid currentColor; border-radius: 8px; padding: 12px 16px; margin: 0 0 20px; background: var(--card); }
+  .outcome.bad { color: var(--bad); background: var(--bad-bg); } .outcome.warn { color: var(--warn); background: var(--warn-bg); }
+  .outcome.ok { color: var(--ok); background: var(--ok-bg); } .outcome.muted { color: #585c66; background: var(--muted-bg); }
+  .outcome .head { font-weight: 600; font-size: 16px; } .outcome p { color: var(--fg); margin: 4px 0 0; max-width: 80ch; overflow-wrap: anywhere; } .outcome .dim { margin-top: 4px; color: #585c66; }
+  /* Buttons and interactive states, for both apps. */
+  button, .button { font: inherit; font-weight: 600; padding: 8px 14px; min-height: 36px; border-radius: 6px; border: 1px solid #1c1d21; background: #1c1d21; color: #fff; cursor: pointer; text-decoration: none; display: inline-block; }
+  button.secondary, .button.secondary { background: #fff; color: var(--fg); border-color: var(--line); }
+  button:hover:not(:disabled), .button:hover { background: #33353b; border-color: #33353b; }
+  button.secondary:hover:not(:disabled), .button.secondary:hover { background: var(--bg); border-color: var(--muted); }
+  button:active:not(:disabled), .button:active { transform: translateY(1px); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  /* Downloads (executed and annotated notebooks): secondary buttons with a download glyph. */
+  .button.download { display: inline-flex; align-items: center; gap: 6px; }
+  .button.download svg { width: 16px; height: 16px; flex: none; }
+  .filters a:hover:not(.on) { border-color: var(--muted); }
+  button, .button, .filters a, a.tile { transition: background-color .12s, border-color .12s; }
+  header :focus-visible { outline-color: #fff; outline-offset: 4px; border-radius: 2px; }
+</style>
+{% block head %}{% endblock %}
+</head>
+<body>
+<header>
+  {% block brand %}<div class="brand">Notebook <span>CI</span></div>{% endblock %}
+  <nav>
+    {% block nav %}
+    {% set path = request.url.path %}
+    {% set here = 'notebooks' if path == '/' or path.startswith('/notebook') or path.startswith('/result') else 'runs' if path.startswith('/run') else 'targets' if path == '/targets' else '' %}
+    <a href="/" class="{{ 'active' if here == 'notebooks' }}"{% if here == 'notebooks' %} aria-current="page"{% endif %}>Notebooks</a>
+    <a href="/runs" class="{{ 'active' if here == 'runs' }}"{% if here == 'runs' %} aria-current="page"{% endif %}>Runs</a>
+    {% if authoring_url %}<a href="{{ authoring_url }}runners">Runners</a>{% endif %}
+    <a href="/targets" class="{{ 'active' if here == 'targets' }}"{% if here == 'targets' %} aria-current="page"{% endif %}>Routing</a>
+    {% if authoring_url %}<a href="{{ authoring_url }}">Check a notebook</a>{% endif %}
+    {% endblock %}
+  </nav>
+</header>
+<main>
+{% if db_missing %}<div class="notice">No results database yet (<span class="mono">results/runs.db</span>). Pages will fill in after the first run.</div>{% endif %}
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% from "_macros.html" import status_badge, nb_link, no_runner %}
+{% block title %}Notebooks{% endblock %}
+{% block content %}
+<h1>Notebooks</h1>
+<p class="sub">The most recent result for each notebook a runner can run.{% if summary.last %} Last result recorded {{ summary.last | age }} ({{ summary.last | ts }}).{% endif %}</p>
+
+<div class="tiles">
+  <a class="tile{{ ' on' if status == 'pass' }}" href="/?status=pass"{% if status == 'pass' %} aria-current="true"{% endif %}><div class="n">{{ summary.passing }}/{{ summary.total }}</div><div class="l">Passing</div></a>
+  <a class="tile{{ ' is-bad' if summary.fail }}{{ ' on' if status == 'fail' }}" href="/?status=fail"{% if status == 'fail' %} aria-current="true"{% endif %}><div class="n">{{ summary.fail }}</div><div class="l">Failing</div></a>
+  <a class="tile{{ ' is-warn' if summary.blocked }}{{ ' on' if status == 'blocked' }}" href="/?status=blocked"{% if status == 'blocked' %} aria-current="true"{% endif %}><div class="n">{{ summary.blocked }}</div><div class="l">Blocked</div></a>
+  <a class="tile{{ ' on' if status == 'never-tested' }}" href="/?status=never-tested"{% if status == 'never-tested' %} aria-current="true"{% endif %}><div class="n">{{ summary.never }}</div><div class="l">Never tested</div></a>
+  <a class="tile{{ ' on' if status == 'stale' }}" href="/?status=stale"{% if status == 'stale' %} aria-current="true"{% endif %}><div class="n">{{ summary.stale }}</div><div class="l">Not run in 7 days</div></a>
+  <a class="tile" href="/#no-target"><div class="n">{{ summary.no_target }}</div><div class="l">No runner fits</div></a>
+</div>
+
+<div class="filters">
+  <a href="/?status={{ status }}" class="{{ 'on' if not category }}"{% if not category %} aria-current="true"{% endif %}>All categories</a>
+  {% for c in categories %}<a href="/?category={{ c }}&status={{ status }}" class="{{ 'on' if category == c }}"{% if category == c %} aria-current="true"{% endif %}>{{ c | category }}</a>{% endfor %}
+</div>
+<div class="filters">
+  {% for s, label in [("", "Any status"), ("pass", "Passed"), ("fail", "Failed"), ("blocked", "Blocked"), ("never-tested", "Never tested"), ("stale", "Not run in 7 days")] %}
+  <a href="/?category={{ category }}&status={{ s }}" class="{{ 'on' if status == s }}"{% if status == s %} aria-current="true"{% endif %}>{{ label }}</a>
+  {% endfor %}
+</div>
+
+<div class="table-wrap"><table>
+  <thead><tr><th scope="col">Notebook</th><th scope="col">Status</th><th scope="col" class="col-target">Runner</th><th scope="col">Last result</th><th scope="col" class="col-image">Image</th><th scope="col" class="col-issue">Top issue</th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+    <tr>
+      <td><div class="meta">{{ r.category | category }}</div>{{ nb_link(r.key) }}</td>
+      <td>{{ status_badge(r.status) }}{% if r.stale %} <span class="badge muted" title="no result in the last 7 days">not run in 7 days</span>{% endif %}</td>
+      <td class="mono dim col-target">{{ r.target or "—" }}</td>
+      <td class="nowrap">{% if r.latest %}<a href="/result/{{ r.latest.id }}">{{ r.latest.recorded_at | ts }}</a> <span class="dim age">· {{ r.latest.recorded_at | age }}</span>{% else %}<span class="dim">—</span>{% endif %}</td>
+      {% set image = (r.latest.docker_image if r.latest else "") or "—" %}
+      <td class="mono dim col-image"><div class="clip" title="{{ image }}">{{ image }}</div></td>
+      {% set issue = (r.latest | why) if r.latest and r.status != "pass" else "" %}
+      <td class="col-issue"><div class="clamp" title="{{ issue }}">{{ issue | codespans }}</div></td>
+    </tr>
+  {% else %}
+    <tr><td colspan="6" class="dim">No notebooks match this filter.</td></tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+
+{% if no_target %}
+<h2 id="no-target">No runner fits ({{ no_target | length }})</h2>
+<p class="sub">Notebooks whose declared requirements no configured runner meets.</p>
+<div class="table-wrap"><table>
+  <thead><tr><th scope="col">Notebook</th><th scope="col">Category</th><th scope="col" class="col-issue">Why</th><th scope="col">Last result</th></tr></thead>
+  <tbody>
+  {% for s in no_target %}
+    <tr>
+      <td>{{ nb_link(s.key) }}</td>
+      <td class="dim">{{ s.category | category }}</td>
+      <td class="col-issue">{{ no_runner(s.reason, s.misses) }}</td>
+      <td class="ts">{% if s.latest %}<a href="/result/{{ s.latest.id }}">{{ s.latest.recorded_at | ts }}</a> · {{ s.latest.status | verdict | statuslabel }}{% else %}<span class="dim">—</span>{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% endif %}
+{% endblock %}

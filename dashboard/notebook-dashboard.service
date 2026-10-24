@@ -1,0 +1,28 @@
+[Unit]
+Description=notebook-runner read-only results dashboard
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/data/notebook_runner
+Environment=NBR_ROOT=/data/notebook_runner
+# Serve the authoring service (docker/run-authoring-web.sh, 127.0.0.1:8081) under
+# /authoring/ on this port. The dashboard only relays requests to it.
+Environment=NBR_AUTHORING_UPSTREAM=http://127.0.0.1:8081
+ExecStart=/data/notebook_runner/.venv-dashboard/bin/uvicorn dashboard.app:app --host 0.0.0.0 --port 8080
+Restart=on-failure
+RestartSec=5
+# Read-only by design: the app opens results/runs.db with a read-only URI and
+# serves GET routes only. results/ lives on the /aig_dashboard NFS share, which
+# refuses uids it doesn't know (so DynamicUser's random uid can't read it);
+# nobody is known to it and owns nothing. ProtectSystem=strict makes every
+# filesystem, the NFS mount included, read-only for this service.
+User=nobody
+Group=nogroup
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

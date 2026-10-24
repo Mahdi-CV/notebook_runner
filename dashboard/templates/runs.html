@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Runs{% endblock %}
+{% block content %}
+<h1>Runs</h1>
+<p class="sub">Each row is one batch of notebook runs: the nightly pass or a manual run. Results imported from older result files aren't part of a run and appear only on their notebook's page.</p>
+<div class="table-wrap"><table>
+  <thead><tr><th scope="col">Run</th><th scope="col">Started</th><th scope="col">Finished</th><th scope="col">Kind</th><th scope="col">Runners</th><th scope="col" class="num">Passed</th><th scope="col" class="num">Failed</th><th scope="col" class="num">Blocked</th><th scope="col" class="num">No runner fits</th><th scope="col" class="num">Cost</th></tr></thead>
+  <tbody>
+  {% for r in runs %}
+    <tr>
+      <td><a href="/run/{{ r.run_id }}">{{ r | runname }}</a><div class="meta mono">{{ r.run_id }}</div></td>
+      <td class="ts">{{ r.started_at | ts }}<br><span class="dim">{{ r.started_at | age }}</span></td>
+      <td class="ts">{% if live and live.run_id == r.run_id %}<span class="badge pending">in progress</span><br><span class="dim">{{ live.remaining | plural('notebook') }} to go</span>{% elif r.finished_at %}{{ r.finished_at | ts }}<br><span class="dim">after {{ r.started_at | elapsed(r.finished_at) | dur }}</span>{% else %}<span class="badge warn" title="no finish time recorded: still running, or interrupted">unfinished</span>{% endif %}</td>
+      <td>{{ r.mode | kind if r.mode else "—" }}</td>
+      <td class="mono">{{ r.host or "—" }}</td>
+      <td class="num">{{ r.counts.pass }}</td>
+      <td class="num">{% if r.counts.fail %}<b style="color: var(--bad)">{{ r.counts.fail }}</b>{% else %}<span class="dim">0</span>{% endif %}</td>
+      <td class="num">{% if r.counts.blocked %}<b style="color: var(--warn)">{{ r.counts.blocked }}</b>{% else %}<span class="dim">0</span>{% endif %}</td>
+      <td class="num">{{ r.counts.skipped }}</td>
+      <td class="num">{{ r.total_cost_usd | cost }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="10" class="dim">No runs recorded yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% endblock %}

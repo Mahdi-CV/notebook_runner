@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% from "_macros.html" import nb_link, requirements, target_type, no_runner %}
+{% block title %}Routing{% endblock %}
+{% block content %}
+<h1>Routing</h1>
+<p class="sub">Which runner (GPU machine, from <code>runner.yaml</code>) each notebook is routed to.</p>
+
+<h2>Runners ({{ targets | length }})</h2>
+{% if authoring_url and targets %}
+<p>In preference order: {% for name in targets %}<span class="mono">{{ name }}</span>{{ ', ' if not loop.last }}{% endfor %}. <a href="{{ authoring_url }}runners">Runners</a> shows each one's hardware, how busy it is and the queue.</p>
+{% else %}
+<div class="table-wrap"><table>
+  <thead><tr><th scope="col">Name</th><th scope="col">Type</th><th scope="col">Hardware</th><th scope="col">GPUs</th><th scope="col">Where</th><th scope="col">Scheduling</th><th scope="col">Provides</th></tr></thead>
+  <tbody>
+  {% for name, t in targets.items() %}
+    <tr>
+      <td class="mono">{{ name }}</td>
+      <td>{{ target_type(t.type) }}</td>
+      <td>{{ t.hardware or "—" }}</td>
+      <td>{{ t.gpus or 1 }}{% if t.gpu_memory_gb %} × {{ t.gpu_memory_gb }} GB{% endif %}</td>
+      <td class="mono">{% if t.type == "k8s" %}{{ t.context }} / {{ t.namespace }}{% elif t.type == "radeon" %}{{ t.user_name }} · pool {{ t.pod_type }}{% else %}{{ t.user }}@{{ t.host }}{% endif %}</td>
+      <td class="mono">
+        {% for k, v in (t.node_selector or {}).items() %}{{ k }}={{ v }}<br>{% endfor %}
+        {% for tol in (t.tolerations or []) %}<span class="dim">tolerates</span> {{ tol.key }}{% if tol.value %}={{ tol.value }}{% endif %}<br>{% endfor %}
+        {% if t.model_mount %}<span class="dim">model mount</span> {{ t.model_mount }}<br>{% endif %}
+      </td>
+      <td>{{ ((t.capabilities or []) + (["docker"] if t.type in (None, "ssh") else [])) | join(", ") or "—" }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="7" class="dim">No runner.yaml on this host: routes are not shown.</td></tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% endif %}
+
+{% for category, items in groups.items() %}
+<h2>{{ category | category }} ({{ items | length }})</h2>
+{# Fixed widths, so the columns line up from one category's table to the next. #}
+<div class="table-wrap"><table class="fixed">
+  <colgroup><col style="width: 36%"><col style="width: 30%"><col style="width: 34%"></colgroup>
+  <thead><tr><th scope="col">Notebook</th><th scope="col">Needs</th><th scope="col">Runner</th></tr></thead>
+  <tbody>
+  {% for n in items %}
+    <tr>
+      <td>{{ nb_link(n.key) }}</td>
+      <td>{{ requirements(n.req) if n.req else "—" }}</td>
+      <td>{% if n.target %}<span class="mono">{{ n.target }}</span>{% elif n.reason %}<span class="badge muted">no runner fits</span><div class="meta">{{ no_runner(n.reason, n.misses) }}</div>{% else %}—{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% endfor %}
+{% endblock %}

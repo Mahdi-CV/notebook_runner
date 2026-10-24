@@ -1,11 +1,12 @@
 """
 Deterministic pre-flight patcher for notebook regression testing.
 
-Applies exactly 4 allowed patches — no more, no less:
+Applies exactly 5 allowed patches — no more, no less:
   1. notebook_login() → login(token=os.environ["HF_TOKEN"])
   2. input() calls → static string "test"
   3. Gradio .launch() → skip the cell
   4. Audio playback (IPython.display.Audio, sounddevice) → skip the cell
+  5. Cells the notebook tags `ci-skip` → skip the cell
 
 Usage:
   python3 preflight_patch.py --input nb.ipynb --output nb_patched.ipynb
@@ -15,10 +16,10 @@ Usage:
 import argparse
 import json
 import re
-import sys
 from pathlib import Path
 
 SKIP_CELL = "# SKIPPED by preflight_patch: {reason}\npass"
+CI_SKIP_TAG = "ci-skip"  # the notebook's own "cannot run unattended" marker
 
 HF_LOGIN_REPLACEMENT = (
     'import os\n'
@@ -52,16 +53,22 @@ _AUDIO_IMPORT_RE = re.compile(
 )
 
 
-def _is_trivial_cell(src: str, pattern_re: re.Pattern) -> bool:
-    """Check if the cell contains only the pattern match and nothing else meaningful."""
+def _is_trivial_cell(src: str, pattern_re: re.Pattern, import_re: re.Pattern | None = None) -> bool:
+    """Check if the cell contains only the pattern match (and, optionally, imports
+    that are themselves related to the pattern) and nothing else meaningful."""
     lines = [ln.strip() for ln in src.strip().splitlines()
              if ln.strip() and not ln.strip().startswith('#')]
     if not lines:
         return True
+
+    def _is_related_import(ln: str) -> bool:
+        if not ln.startswith(('import ', 'from ')):
+            return False
+        return import_re.search(ln) is not None if import_re else True
+
     non_matching = [ln for ln in lines
                     if not pattern_re.search(ln)
-                    and not ln.startswith('import ')
-                    and not ln.startswith('from ')]
+                    and not _is_related_import(ln)]
     return len(non_matching) == 0
 
 
@@ -106,7 +113,7 @@ def patch_input_calls(src: str) -> tuple[str | None, str | None]:
     if not _INPUT_CALL_RE.search(src):
         return None, None
 
-    if _is_trivial_cell(src, _INPUT_CALL_RE):
+    if _is_trivial_cell(src, _INPUT_CALL_RE, None):
         return SKIP_CELL.format(reason="cell is only input() calls"), "Skipped cell containing only input() calls"
 
     patched = _INPUT_CALL_RE.sub('"test"', src)
@@ -118,14 +125,23 @@ def patch_gradio_launch(src: str) -> tuple[str | None, str | None]:
     if not _GRADIO_LAUNCH_RE.search(src):
         return None, None
 
-    if _is_trivial_cell(src, _GRADIO_LAUNCH_RE):
+    if _is_trivial_cell(src, _GRADIO_LAUNCH_RE, _GRADIO_IMPORT_RE):
         return SKIP_CELL.format(reason="Gradio .launch()"), "Skipped cell containing only .launch()"
 
     lines = src.splitlines()
     patched_lines = []
+    depth = 0  # open parens still pending from a skipped multi-line launch(...)
     for line in lines:
-        if _GRADIO_LAUNCH_RE.match(line) or (line.strip() and re.search(r'\.\s*launch\s*\(', line) and not line.strip().startswith('#')):
+        if depth > 0:
             patched_lines.append(f"# SKIPPED: {line}")
+            depth += line.count('(') - line.count(')')
+            continue
+        m = re.search(r'\.\s*launch\s*\(', line)
+        if m and not line.strip().startswith('#'):
+            # `pass` keeps the enclosing block valid if launch() was its last statement.
+            indent = line[:len(line) - len(line.lstrip())]
+            patched_lines.append(f"{indent}pass  # SKIPPED: {line.strip()}")
+            depth = line[m.start():].count('(') - line[m.start():].count(')')
         else:
             patched_lines.append(line)
     return '\n'.join(patched_lines), "Commented out .launch() call"
@@ -135,7 +151,7 @@ def patch_audio_playback(src: str) -> tuple[str | None, str | None]:
     if not _AUDIO_RE.search(src) and not _AUDIO_IMPORT_RE.search(src):
         return None, None
 
-    if _is_trivial_cell(src, _AUDIO_RE):
+    if _is_trivial_cell(src, _AUDIO_RE, _AUDIO_IMPORT_RE):
         return SKIP_CELL.format(reason="audio playback"), "Skipped cell containing only audio playback"
 
     lines = src.splitlines()
@@ -167,6 +183,12 @@ def patch_notebook(nb: dict) -> dict:
 
         src = "".join(cell.get("source", []))
         if not src.strip():
+            continue
+
+        if CI_SKIP_TAG in cell.get("metadata", {}).get("tags", []):
+            cell["source"] = [SKIP_CELL.format(reason=f"tagged {CI_SKIP_TAG}")]
+            cells_skipped.append({"cell_index": i, "type": "ci_skip_tag",
+                                  "description": f"Skipped cell tagged {CI_SKIP_TAG}"})
             continue
 
         for patch_type, patcher in PATCHERS:

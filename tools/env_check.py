@@ -20,11 +20,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-import yaml
-
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_MANIFEST = REPO_ROOT / "manifest.yaml"
 DEFAULT_RESULTS_DIR = REPO_ROOT / "results"
 WRITE_RESULT_SCRIPT = REPO_ROOT / "tools" / "write_result.py"
 
@@ -34,10 +30,6 @@ GATED_MODEL_RE = re.compile(
 HTTP_TIMEOUT = 10
 SSH_TIMEOUT = 15
 USER_AGENT = "notebook-runner-env-check/0.1"
-MIN_DISK_GB = 100
-# Remote workspace base to check for free disk. Defaults to /home/amd for the
-# tw* servers; the self-hosted CI box sets WORKSPACE_BASE=/home/gh-runner.
-WORKSPACE_BASE = os.getenv("WORKSPACE_BASE", "/home/amd").rstrip("/")
 
 
 def warn(msg: str) -> None:
@@ -46,15 +38,6 @@ def warn(msg: str) -> None:
 
 def err(msg: str) -> None:
     print(f"error: {msg}", file=sys.stderr)
-
-
-def load_manifest(path: Path) -> dict:
-    if not path.exists():
-        warn(f"manifest not found at {path}")
-        return {}
-    with open(path) as f:
-        data = yaml.safe_load(f) or {}
-    return data.get("notebooks", {}) or {}
 
 
 def extract_model_ids(notebook_path: Path) -> list[str]:
@@ -82,7 +65,8 @@ def hf_check_model(model_id: str, token: str) -> tuple[int | None, str]:
     for models the token cannot download.
     """
     req = urllib.request.Request(
-        f"https://huggingface.co/{model_id}/resolve/main/config.json",
+        # HF_ENDPOINT: an authoring job asks the credential broker (authoring/broker.py).
+        f"{os.environ.get('HF_ENDPOINT') or 'https://huggingface.co'}/{model_id}/resolve/main/config.json",
         headers={
             "Authorization": f"Bearer {token}",
             "User-Agent": USER_AGENT,
@@ -102,7 +86,8 @@ def ssh_run(ssh_cmd: str, remote_cmd: str) -> tuple[int, str, str]:
     """Run a command via ssh. Returns (returncode, stdout, stderr)."""
     full = f"{ssh_cmd} {remote_cmd!r}"
     proc = subprocess.run(
-        full, shell=True, capture_output=True, text=True, timeout=SSH_TIMEOUT
+        full, shell=True, capture_output=True, text=True, timeout=SSH_TIMEOUT,
+        check=False,
     )
     return proc.returncode, proc.stdout, proc.stderr
 
@@ -172,6 +157,7 @@ def run_check_hf(notebook_local: Path, hf_token: str | None) -> Check:
                 "error_type": "missing_dependency",
                 "description": reason,
                 "proposed_fix": "Set HF_TOKEN to a valid HuggingFace user access token. Generate one at https://huggingface.co/settings/tokens",
+                "fixability": "infra_blocked",
             }
             print(f"    {mid}: HTTP 401 (token invalid or expired)")
             break
@@ -183,6 +169,7 @@ def run_check_hf(notebook_local: Path, hf_token: str | None) -> Check:
                 "error_type": "missing_dependency",
                 "description": reason,
                 "proposed_fix": f"Request access at https://huggingface.co/{mid} and wait for approval, then re-run.",
+                "fixability": "infra_blocked",
             }
             print(f"    {mid}: HTTP 403 (no download access — gated model)")
             break
@@ -217,7 +204,7 @@ def run_check_gpu(ssh_cmd: str, gpus_required: int) -> Check:
         chk.warn("SSH timed out")
         warn("SSH timed out during GPU count check")
         return chk
-    except Exception as e:
+    except OSError as e:
         chk.warn(f"SSH error: {e}")
         warn(f"SSH error during GPU count check: {e}")
         return chk
@@ -235,29 +222,43 @@ def run_check_gpu(ssh_cmd: str, gpus_required: int) -> Check:
         return chk
 
     print(f"    found {count} GPU(s); notebook requires {gpus_required}")
+    return _gpu_verdict(chk, count, gpus_required, "available")
+
+
+def run_check_gpu_per_node(gpus_per_node: int, gpus_required: int) -> Check:
+    """k8s runner: a pod cannot span nodes, so the node size is the ceiling.
+    Whether a node with that many free GPUs exists right now is the
+    scheduler's call (k8s_pod.py reports UNSCHEDULABLE), not this check's."""
+    chk = Check("GPU count")
+    print(f"    nodes have {gpus_per_node} GPU(s); notebook requires {gpus_required}")
+    return _gpu_verdict(chk, gpus_per_node, gpus_required, "per node")
+
+
+def _gpu_verdict(chk: Check, count: int, gpus_required: int, where: str) -> Check:
     if count < gpus_required:
-        reason = f"only {count} GPU(s) available, notebook requires {gpus_required}"
+        reason = f"only {count} GPU(s) {where}, notebook requires {gpus_required}"
         chk.fail(reason, {
             "cell_index": None,
             "error_type": "missing_dependency",
             "description": reason,
-            "proposed_fix": f"Run this notebook on a server with at least {gpus_required} GPU(s), or update the manifest gpus_required field.",
+            "proposed_fix": f"Run this notebook on a target with at least {gpus_required} GPU(s), or correct metadata.ci.gpus in the notebook.",
+            "fixability": "infra_blocked",
         })
     else:
         chk.ok()
     return chk
 
 
-def run_check_disk(ssh_cmd: str) -> Check:
+def run_check_disk(ssh_cmd: str, workspace: str, need_gb: int) -> Check:
     chk = Check("Disk space")
-    remote = f"df -BG --output=avail {WORKSPACE_BASE} | tail -1 | tr -dc '0-9'"
+    remote = f"df -BG --output=avail {workspace} | tail -1 | tr -dc '0-9'"
     try:
         rc, out, serr = ssh_run(ssh_cmd, remote)
     except subprocess.TimeoutExpired:
         chk.warn("SSH timed out")
         warn("SSH timed out during disk space check")
         return chk
-    except Exception as e:
+    except OSError as e:
         chk.warn(f"SSH error: {e}")
         warn(f"SSH error during disk space check: {e}")
         return chk
@@ -274,14 +275,15 @@ def run_check_disk(ssh_cmd: str) -> Check:
         warn(f"could not parse disk avail from output: {out.strip()[:80]!r}")
         return chk
 
-    print(f"    {avail_gb} GB free on {WORKSPACE_BASE}; require >= {MIN_DISK_GB} GB")
-    if avail_gb < MIN_DISK_GB:
-        reason = f"only {avail_gb} GB free on {WORKSPACE_BASE}, need >= {MIN_DISK_GB} GB"
+    print(f"    {avail_gb} GB free on {workspace}; require >= {need_gb} GB")
+    if avail_gb < need_gb:
+        reason = f"only {avail_gb} GB free on {workspace}, need >= {need_gb} GB"
         chk.fail(reason, {
             "cell_index": None,
             "error_type": "missing_dependency",
             "description": reason,
-            "proposed_fix": f"Free disk space on the server until {WORKSPACE_BASE} has at least {MIN_DISK_GB} GB available.",
+            "proposed_fix": f"Free disk space on the server until {workspace} has at least {need_gb} GB available.",
+            "fixability": "infra_blocked",
         })
     else:
         chk.ok()
@@ -299,13 +301,13 @@ def write_failure_result(
         sys.executable,
         str(WRITE_RESULT_SCRIPT),
         "--notebook", str(notebook_local),
-        "--status", "fail",
+        "--status", "blocked",
         "--summary", summary,
         "--issues", json.dumps(issues),
         "--fixes", "[]",
         "--results-dir", str(results_dir),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         err(f"write_result.py failed (exit {proc.returncode}): {proc.stderr.strip()}")
     else:
@@ -315,13 +317,17 @@ def write_failure_result(
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Environment check for a notebook before the agent runs.")
-    p.add_argument("--notebook",       required=True, help="Notebook path as it appears in the manifest (e.g. inference/foo.ipynb)")
+    p.add_argument("--notebook",       required=True, help="Notebook key (e.g. inference/foo.ipynb)")
     p.add_argument("--notebook-local", required=True, help="Absolute path to the local .ipynb file to scan")
     p.add_argument("--ssh-cmd",        default=None,  help="Full SSH prefix (e.g. 'ssh -o ... user@host')")
-    p.add_argument("--manifest",       default=str(DEFAULT_MANIFEST), help="Path to manifest.yaml")
+    p.add_argument("--gpus",           type=int, default=1, help="GPUs the notebook needs (metadata.ci.gpus)")
+    p.add_argument("--disk-gb",        type=int, default=100, help="Free disk the notebook needs (metadata.ci.disk_gb)")
+    p.add_argument("--workspace-base", default="/home/amd", help="Remote dir whose free disk is checked")
     p.add_argument("--results-dir",    default=str(DEFAULT_RESULTS_DIR), help="Where to write result JSON on failure")
     p.add_argument("--write-result",   action="store_true", help="Write a result JSON on blocking failure")
     p.add_argument("--hf-token",       default=None, help="HuggingFace token (default: $HF_TOKEN)")
+    p.add_argument("--gpus-per-node",  type=int, default=None,
+                   help="k8s runner: GPUs per node, checked instead of probing a host over SSH")
     args = p.parse_args()
 
     notebook_local = Path(args.notebook_local)
@@ -339,13 +345,7 @@ def main() -> int:
         err(f"could not read notebook: {e}")
         return 2
 
-    manifest_path = Path(args.manifest)
-    manifest = load_manifest(manifest_path)
-    entry = manifest.get(args.notebook)
-    if entry is None:
-        warn(f"notebook '{args.notebook}' not in manifest; defaulting gpus_required=1")
-        entry = {}
-    gpus_required = int(entry.get("gpus_required", 1) or 1)
+    gpus_required = args.gpus
 
     hf_token = args.hf_token or os.environ.get("HF_TOKEN")
     results_dir = Path(args.results_dir)
@@ -358,7 +358,10 @@ def main() -> int:
     checks.append(chk1)
 
     print("CHECK 2/3: GPU count...")
-    if not args.ssh_cmd:
+    if args.gpus_per_node is not None:
+        chk2 = run_check_gpu_per_node(args.gpus_per_node, gpus_required)
+        chk2.print_result()
+    elif not args.ssh_cmd:
         chk2 = Check("GPU count")
         chk2.skip("--ssh-cmd not provided")
         warn("--ssh-cmd not provided; skipping GPU and disk checks")
@@ -369,12 +372,16 @@ def main() -> int:
     checks.append(chk2)
 
     print("CHECK 3/3: Disk space...")
-    if not args.ssh_cmd:
+    if args.gpus_per_node is not None:
+        chk3 = Check("Disk space")
+        chk3.skip("k8s runner: the pod's /workspace volume is sized by the target config")
+        chk3.print_result()
+    elif not args.ssh_cmd:
         chk3 = Check("Disk space")
         chk3.skip("--ssh-cmd not provided")
         chk3.print_result()
     else:
-        chk3 = run_check_disk(args.ssh_cmd)
+        chk3 = run_check_disk(args.ssh_cmd, args.workspace_base.rstrip('/'), args.disk_gb)
         chk3.print_result()
     checks.append(chk3)
 
