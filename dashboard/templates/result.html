@@ -14,6 +14,7 @@
   {% else %}
   <p>Set by the agent: this result was recorded before verdicts were computed from the executed notebook.</p>
   {% endif %}
+  {% if can_hold %}<p class="meta">A known infrastructure problem? <a href="/notebook/{{ res.notebook }}#hold">Hold this notebook</a> off the runner, so the nightly pass stops running it until the problem is fixed.</p>{% endif %}
 </div>
 
 <div class="grid2">

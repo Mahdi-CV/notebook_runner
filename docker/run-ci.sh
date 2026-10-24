@@ -207,6 +207,11 @@ echo "run-ci: starting pass $TS (image=$IMAGE, notebooks=$NB_REPO@$(git -C "$CHE
 # authoring worker (authoring/worker.py), which runs them in parallel on free
 # runner slots after any author jobs, instead of running them here one by one.
 QUEUE_ARGS=()
+# The holds set on the dashboard (tools/routing.py reads them with runner.yaml);
+# queue mode mounts all of jobs/ below.
+if [[ -f "$REPO_ROOT/jobs/holds.json" ]]; then
+  QUEUE_ARGS=(-v "$REPO_ROOT/jobs/holds.json:/work/jobs/holds.json:ro")
+fi
 if [[ "${NBR_QUEUE:-}" == "1" ]]; then
   mkdir -p "$REPO_ROOT/jobs"
   QUEUE_ARGS=(-e NBR_QUEUE=1 -e NBR_JOBS_DIR=/work/jobs

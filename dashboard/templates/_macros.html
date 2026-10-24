@@ -36,7 +36,7 @@
 
 {# runner.yaml's known issue holding a notebook off some runners: {reason, since, targets}. #}
 {% macro held_note(held) -%}
-<span class="badge warn" title="runner.yaml known_issues">held</span> off <span class="mono">{{ held.targets | join(", ") }}</span>{% if held.since %} since {{ held.since }}{% endif %}: {{ held.reason }}
+<span class="badge warn" title="{{ 'held from the dashboard' ~ (' by ' ~ held.by if held.by else '') if held.source == 'dashboard' else 'runner.yaml known_issues' }}">held</span> off <span class="mono">{{ held.targets | join(", ") }}</span>{% if held.since %} since {{ held.since }}{% endif %}: {{ held.reason }}
 {%- endmacro %}
 
 {% macro nb_link(key) -%}

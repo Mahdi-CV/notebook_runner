@@ -86,7 +86,8 @@ def catalog() -> dict:
         notebooks[key] = {"req": req, "target": target, "reason": reason,
                           "misses": routing.misses(req, config["targets"]) if fits_none else [],
                           "held": {"reason": entry.get("reason"), "since": entry.get("since"),
-                                   "targets": list(holds)} if holds else None}
+                                   "targets": list(holds), "source": entry.get("source"),
+                                   "by": entry.get("by")} if holds else None}
     return {"targets": config["targets"], "notebooks": notebooks}
 
 
@@ -139,6 +140,24 @@ def notebook_row(key: str, latest: dict | None) -> dict:
         "latest": latest,
         "stale": stale,
     }
+
+
+def hold_log(key: str) -> list[dict]:
+    """The holds set and lifted on the dashboard for one notebook, newest first
+    (jobs/holds-log.jsonl, written by the authoring service)."""
+    try:
+        lines = (JOBS_DIR / "holds-log.jsonl").read_text().splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get("notebook") == key:
+            out.append(event)
+    return out[::-1]
 
 
 def live_pass() -> dict | None:
@@ -228,8 +247,15 @@ def notebook(request: Request, key: str):
     check_url = (f"{AUTHORING_URL}?" + urlencode({"url": PUBLISHED_NOTEBOOKS + key,
                                                   "category": row["category"]})
                  if AUTHORING_URL and nb else None)
+    # A notebook blocked by its latest result can be held off runners from here
+    # (the authoring service keeps the holds); one held here can be lifted.
+    targets = m["targets"]
+    fits = [n for n, t in targets.items() if nb and nb["req"] and not routing.unmet(nb["req"], t)]
+    can_hold = bool(AUTHORING_URL and nb and not nb["held"] and fits and row["status"] == "blocked")
     return render(request, "notebook.html", key=key, nb=nb, row=row, history=history,
-                  check_url=check_url)
+                  check_url=check_url, can_hold=can_hold, fits=fits,
+                  hold_server=(row["latest"] or {}).get("server"),
+                  hold_log=hold_log(key), author=request.cookies.get("author", ""))
 
 
 @app.get("/result/{result_id}", response_class=HTMLResponse)
@@ -253,6 +279,8 @@ def result(request: Request, result_id: int):
                    and any(i.get("fixability") == "auto_fixable" for i in res["issues"]))
     return render(request, "result.html", res=res, payload=payload,
                   fixable=fixable, fix_jobs=fix_jobs(result_id) if AUTHORING_URL else [],
+                  can_hold=bool(AUTHORING_URL and latest == res["id"]
+                                and verdict_status(res["status"]) == "blocked"),
                   author=request.cookies.get("author", ""),
                   payload_pretty=json.dumps(payload, indent=2, ensure_ascii=False),
                   fixes=payload.get("fixes") or [], status=verdict_status(res["status"]),

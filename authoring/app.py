@@ -4,8 +4,10 @@ Authors upload a notebook or paste a GitHub URL, then watch the job's stage
 and log until it ends with a summary: pass, or each issue with its fix. A
 failed validate job with issues the fixer agent can fix offers a fix job,
 which returns a fixed notebook and its changes; so does a failed nightly
-result, from the regression dashboard. The Runners page shows how busy each
-GPU target is and how long the queue is.
+result, from the regression dashboard. The dashboard's hold and lift forms
+for notebooks blocked by an infrastructure problem post here too
+(authoring/holds.py). The Runners page shows how busy each GPU target is and
+how long the queue is.
 
 There is no login: the author's name identifies their jobs and is remembered
 in a cookie. This app holds no credentials; the worker and the job containers
@@ -31,8 +33,10 @@ from fastapi.exception_handlers import http_exception_handler
 from jinja2 import ChoiceLoader, FileSystemLoader
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import capacity, labels, pipeline, store
+from . import capacity, holds, labels, pipeline, store
 import results_db  # tools/, on the path through capacity
+import routing  # noqa: E402
+from status import verdict_status  # noqa: E402
 from .labels import CATEGORIES
 from . import render as nbrender
 
@@ -323,6 +327,72 @@ def start_nightly_fix(request: Request, result_id: int, author: str = Form(...))
     (dest / pipeline.VERIFICATION).write_text(json.dumps(state["payload"], indent=1, ensure_ascii=False))
     store.log(new_id, f"Fixes the issues the nightly check found (result {result_id})")
     resp = RedirectResponse(f"{PREFIX}/jobs/{new_id}", status_code=303)
+    resp.set_cookie("author", author, max_age=365 * 24 * 3600, samesite="lax")
+    return resp
+
+
+@app.post("/holds")
+def set_hold(notebook: str = Form(...), author: str = Form(...), reason: str = Form(...),
+             targets: list[str] = Form([])):
+    """Hold a nightly notebook off runners for a known infrastructure problem
+    (the dashboard's notebook page). Only one whose latest result is blocked."""
+    author, reason = author.strip(), " ".join(reason.split())
+    if not NAME_RE.match(author):
+        raise HTTPException(400, "Enter your name or email (letters, digits, spaces, . _ @ ' -).")
+    if not 10 <= len(reason) <= 500:
+        raise HTTPException(400, "Say what the infrastructure problem is (10 to 500 characters).")
+    config = routing.load_config()
+    if notebook in config["known_issues"]:
+        raise HTTPException(409, f"{notebook} is already held.")
+    path = store.NOTEBOOKS_DIR / notebook
+    if not path.is_file() or ".." in Path(notebook).parts:
+        raise HTTPException(404, f"There is no published notebook {notebook}.")
+    latest = latest_result(notebook)
+    if latest is None or verdict_status(latest["status"]) != "blocked":
+        raise HTTPException(409, "Only a notebook whose latest result is blocked (it could not be "
+                                 "evaluated) can be held; a failing notebook needs fixing, not a hold.")
+    fits = fitting_targets(path, config)
+    if not targets or not set(targets) <= set(fits):
+        raise HTTPException(400, "Choose the runners to hold it off: " + ", ".join(fits) + ".")
+    holds.hold(notebook, [t for t in fits if t in targets], reason, author)
+    return back_to_notebook(notebook, author)
+
+
+@app.post("/holds/lift")
+def lift_hold(notebook: str = Form(...), author: str = Form(...)):
+    author = author.strip()
+    if not NAME_RE.match(author):
+        raise HTTPException(400, "Enter your name or email (letters, digits, spaces, . _ @ ' -).")
+    if holds.lift(notebook, author) is None:
+        raise HTTPException(409, f"{notebook} has no hold set on the dashboard; one in "
+                                 "runner.yaml is lifted by editing it.")
+    return back_to_notebook(notebook, author)
+
+
+def latest_result(key: str) -> dict | None:
+    """The notebook's latest non-skip nightly result."""
+    try:
+        rdb = sqlite3.connect(f"file:{results_db.DEFAULT_DB}?mode=ro", uri=True)
+        rdb.row_factory = sqlite3.Row
+        row = rdb.execute("SELECT * FROM results WHERE notebook = ? AND phase != 'skip' "
+                          "ORDER BY id DESC LIMIT 1", (key,)).fetchone()
+        rdb.close()
+    except sqlite3.Error:
+        return None
+    return dict(row) if row else None
+
+
+def fitting_targets(path: Path, config: dict) -> list[str]:
+    """The runners that meet the notebook's requirements, in preference order."""
+    try:
+        req = routing.requirements(path)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return []
+    return [n for n, t in config["targets"].items() if not routing.unmet(req, t)]
+
+
+def back_to_notebook(key: str, author: str) -> RedirectResponse:
+    resp = RedirectResponse(f"{(DASHBOARD_URL or '/').rstrip('/')}/notebook/{key}#hold", status_code=303)
     resp.set_cookie("author", author, max_age=365 * 24 * 3600, samesite="lax")
     return resp
 

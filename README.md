@@ -173,13 +173,17 @@ requirements; when none does, it is reported as "no target" with the reason.
 Notebooks whose cells start containers themselves need a Docker daemon, so
 they only route to SSH targets.
 
-A notebook that keeps failing on a target for a known infrastructure reason
-(a slow proxy, a network that drops) can be held off it in `runner.yaml`
-under `known_issues`, with the reason (see `runner.example.yaml`). It then runs
-on another target that fits it, or, with none left, is not run at all: the
-nightly pass leaves it out, and the dashboard and STATUS.md list it as held
-with the reason. Remove the entry once the problem is fixed;
-`run.py --include-held` runs it anyway to check.
+A notebook that keeps getting blocked on a target for a known infrastructure
+reason (a slow proxy, a network that drops) can be held off it, with the
+reason: from its dashboard page (Hold this notebook, offered when its latest
+result is blocked; the authoring service keeps these holds in
+`jobs/holds.json` and their history in `jobs/holds-log.jsonl`), or in
+`runner.yaml` under `known_issues` (see `runner.example.yaml`), which wins and
+is lifted only there. A held notebook runs on another target that fits it,
+or, with none left, is not run at all: the nightly pass leaves it out, and the
+dashboard and STATUS.md list it as held with the reason and who held it. Lift
+the hold once the problem is fixed; `run.py --include-held` runs it anyway to
+check.
 
 Each run is timeboxed: `timebox_minutes` in `runner.yaml` (default 60), or the
 notebook's own `ci.timeout_minutes`. A run that hits it is stopped, its partial

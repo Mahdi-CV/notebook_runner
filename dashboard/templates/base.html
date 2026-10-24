@@ -96,6 +96,14 @@
   /* A one-line form: labelled fields, then the button, wrapping on narrow screens. */
   .inline-form { display: flex; flex-wrap: wrap; align-items: end; gap: 8px 12px; }
   .inline-form label { display: grid; gap: 4px; font-weight: 600; font-size: 13px; }
+  textarea { font: inherit; padding: 7px 9px; width: 100%; border: 1px solid #8a8f99; border-radius: 6px; background: #fff; resize: vertical; }
+  .hold-form { display: grid; gap: 12px; max-width: 70ch; }
+  .hold-form > label { display: grid; gap: 4px; font-weight: 600; font-size: 13px; }
+  .hold-form fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 6px 16px; }
+  .hold-form legend { font-weight: 600; font-size: 13px; margin-bottom: 4px; padding: 0; }
+  .hold-form .check { display: inline-flex; align-items: center; gap: 6px; }
+  .hold-log { margin: 8px 0 0; padding-left: 18px; }
+  .card.hold { margin: 16px 0; }
   button.secondary, .button.secondary { background: #fff; color: var(--fg); border-color: var(--line); }
   button:hover:not(:disabled), .button:hover { background: #33353b; border-color: #33353b; }
   button.secondary:hover:not(:disabled), .button.secondary:hover { background: var(--bg); border-color: var(--muted); }
