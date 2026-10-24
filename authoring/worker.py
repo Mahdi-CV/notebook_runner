@@ -53,7 +53,7 @@ LAUNCHER = os.environ.get("NBR_JOB_LAUNCHER") or "docker"
 RUN_JOB = store.REPO_ROOT / "docker" / "run-job.sh"
 # Author jobs reach their credentials only through the broker (authoring/broker.py).
 KEYS_FILE = store.JOBS_DIR / ".broker" / "keys.json"
-BROKER_URL = os.environ.get("NBR_BROKER_ADMIN_URL") or "http://127.0.0.1:8790"
+BROKER_CONTAINER = "nbr-broker"  # docker/run-broker.sh
 AUTHOR_KINDS = ("validate", "annotate")
 
 
@@ -221,16 +221,15 @@ class Worker:
         tmp.replace(KEYS_FILE)
 
     def cleanup_pods(self, job_id: str) -> None:
-        """Have the broker delete a stopped job's pod (run.py's own cleanup
-        died with its container)."""
-        admin = os.environ.get("NBR_BROKER_ADMIN_KEY")
-        if not admin:
-            return
+        """Delete a stopped job's pod (run.py's own cleanup died with its
+        container) with the broker's credentials, inside its container."""
+        cmd = ["-m", "authoring.broker", "cleanup", job_id]
+        cmd = [sys.executable, *cmd] if LAUNCHER == "local" else \
+            ["docker", "exec", BROKER_CONTAINER, "python", *cmd]
         try:
-            import requests
-            r = requests.post(f"{BROKER_URL}/admin/cleanup/{job_id}", timeout=120,
-                              headers={"Authorization": f"Bearer {admin}"})
-            store.log(job_id, f"Cleanup: {r.json().get('done') if r.ok else r.text[:200]}")
+            proc = subprocess.run(cmd, cwd=store.REPO_ROOT, capture_output=True, text=True,
+                                  timeout=120)
+            store.log(job_id, f"Cleanup: {(proc.stdout if proc.returncode == 0 else proc.stderr).strip()[-300:]}")
         except Exception as exc:  # noqa: BLE001 — the pod's lifetime limit is the backstop
             store.log(job_id, f"warning: could not clean up the job's pod: {exc}")
 

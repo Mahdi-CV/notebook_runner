@@ -7,7 +7,8 @@
 #             the broker as http://nbr-broker:8790 and nothing else
 #   bridge    the broker's own way out to the LLM gateway, the cluster,
 #             Radeon Global, Hugging Face and Docker Hub
-# and listens on 127.0.0.1:8790 for the worker's /admin/cleanup calls.
+# It publishes no port: the worker deletes a cancelled job's pod with
+# `docker exec nbr-broker python -m authoring.broker cleanup <job id>`.
 #
 # Usage:
 #   docker/run-broker.sh
@@ -24,7 +25,6 @@ set -a
 # shellcheck disable=SC1091  # path is runtime-resolved
 source "$REPO_ROOT/.env"
 set +a
-: "${NBR_BROKER_ADMIN_KEY:?set NBR_BROKER_ADMIN_KEY in .env (any long random string)}"
 
 docker network inspect nbr-jobs >/dev/null 2>&1 || docker network create --internal nbr-jobs >/dev/null
 
@@ -49,10 +49,9 @@ docker run -d \
   --tmpfs /home/agent:rw,size=64m,uid=$NBR_AGENT_UID,gid=$NBR_AGENT_UID \
   --security-opt no-new-privileges \
   --cpus 2 --memory 6g \
-  -p 127.0.0.1:8790:8790 \
   -e ANTHROPIC_API_KEY -e ANTHROPIC_BASE_URL -e ANTHROPIC_CUSTOM_HEADERS \
   -e HF_TOKEN -e NBR_AUTHOR_HF_TOKEN -e NBR_AUTHOR_HF_SECRET \
-  -e RADEON_CLOUD_API_TOKEN -e NBR_BROKER_ADMIN_KEY \
+  -e RADEON_CLOUD_API_TOKEN \
   -e NBR_BROKER_KEYS=/work/keys/keys.json \
   ${KUBE_ARGS[@]+"${KUBE_ARGS[@]}"} \
   -v "$REPO_ROOT/authoring:/work/authoring:ro" \

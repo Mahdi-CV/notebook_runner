@@ -397,7 +397,7 @@ Face token, if there is one: make it a read-only token you can rotate).
 ```bash
 # On the host: the broker, the worker (systemd, root: it starts containers)
 # and the web app (served by the dashboard under /authoring/)
-docker/run-broker.sh            # needs NBR_BROKER_ADMIN_KEY in .env
+docker/run-broker.sh
 python3 -m venv .venv-worker && .venv-worker/bin/pip install pyyaml requests
 cp authoring/notebook-authoring-worker.service /etc/systemd/system/
 systemctl enable --now notebook-authoring-worker

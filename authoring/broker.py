@@ -18,7 +18,10 @@ the job's behalf and with the real credentials, exactly what the job needs:
 A key is valid only while its job runs: the worker writes the keys of running
 jobs to jobs/.broker/keys.json (as SHA-256 hashes) and removes them when the
 job ends. A stolen key is useless after the job, and from outside the job
-network. /admin/cleanup lets the worker delete a cancelled job's pod.
+network. The worker deletes a cancelled job's pod with the broker's
+credentials by running this module's CLI in the broker's container
+(`docker exec nbr-broker python -m authoring.broker cleanup <job id>`), so
+there is no endpoint for that and no admin secret.
 
 What stays possible for a malicious job, by design: using its own pod and
 the LLM until its timebox ends, and reading whatever the notebook's pod is
@@ -26,6 +29,7 @@ given (NBR_AUTHOR_HF_SECRET; see README, Authoring service).
 
 Run (docker/run-broker.sh):
   uvicorn authoring.broker:app --host 0.0.0.0 --port 8790
+  python -m authoring.broker cleanup <job id>
 """
 
 import base64
@@ -280,15 +284,10 @@ def pull(tool: str, argv: list[str], job: dict, work: Path) -> dict:
 
 # ── the worker's cleanup ─────────────────────────────────────────────────────
 
-@app.post("/admin/cleanup/{job_id}")
-def cleanup(job_id: str, request: Request):
-    """Delete the pods a stopped job left (the worker calls this on cancel)."""
-    admin = os.environ.get("NBR_BROKER_ADMIN_KEY") or ""
-    given = (request.headers.get("authorization") or "")[7:]
-    if not admin or not hmac.compare_digest(admin, given):
-        raise HTTPException(401, "admin key required")
+def cleanup(job_id: str) -> list[str]:
+    """Delete the pods a stopped job left (the worker runs this on cancel)."""
     if not re.fullmatch(r"[a-z][0-9a-f]+", job_id):
-        raise HTTPException(400, "bad job id")
+        raise ValueError(f"bad job id: {job_id}")
     out = []
     for name, target in routing.load_config()["targets"].items():
         if target.get("type") == "k8s":
@@ -303,9 +302,15 @@ def cleanup(job_id: str, request: Request):
             if str(state.get("pod", "")).endswith(f"-{job_id}"):
                 radeon_pod.down(target, state["pod"])
                 out.append(f"{name}: deleted {state['pod']}")
-    return {"done": out}
+    return out
 
 
 @app.get("/healthz")
 def healthz():
     return "ok"
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3 or sys.argv[1] != "cleanup":
+        sys.exit("usage: python -m authoring.broker cleanup <job id>")
+    print("; ".join(cleanup(sys.argv[2])) or "nothing to delete")
