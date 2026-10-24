@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import nb_link, requirements, target_type, no_runner %}
+{% from "_macros.html" import nb_link, requirements, target_type, no_runner, held_note %}
 {% block title %}Routing{% endblock %}
 {% block content %}
 <h1>Routing</h1>
@@ -44,7 +44,7 @@
     <tr>
       <td>{{ nb_link(n.key) }}</td>
       <td>{{ requirements(n.req) if n.req else "—" }}</td>
-      <td>{% if n.target %}<span class="mono">{{ n.target }}</span>{% elif n.reason %}<span class="badge muted">no runner fits</span><div class="meta">{{ no_runner(n.reason, n.misses) }}</div>{% else %}—{% endif %}</td>
+      <td>{% if n.target %}<span class="mono">{{ n.target }}</span>{% if n.held %}<div class="meta">{{ held_note(n.held) }}</div>{% endif %}{% elif n.reason.startswith('held:') %}{{ held_note(n.held) }}{% elif n.reason %}<span class="badge muted">no runner fits</span><div class="meta">{{ no_runner(n.reason, n.misses) }}</div>{% else %}—{% endif %}</td>
     </tr>
   {% endfor %}
   </tbody>

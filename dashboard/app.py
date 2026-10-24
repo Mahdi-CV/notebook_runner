@@ -73,14 +73,20 @@ def db() -> sqlite3.Connection | None:
 
 def catalog() -> dict:
     """Targets, and for every notebook its requirements and route. When no
-    target fits, "misses" lists what each one lacks, one target per entry."""
+    target fits, "misses" lists what each one lacks, one target per entry;
+    "held" is runner.yaml's known issue holding it off some targets
+    ({reason, since, targets}), whether or not another target still runs it."""
     config = routing.load_config(CONFIG_PATH)
     notebooks = {}
     for key, (target, reason) in routing.routes(NOTEBOOKS_DIR, config).items():
         req = routing.resolve(NOTEBOOKS_DIR / key, {})[0]
         fits_none = req is not None and reason.startswith("no target fits")
+        holds = routing.holds_for(key, config)
+        entry = config["known_issues"].get(key) or {}
         notebooks[key] = {"req": req, "target": target, "reason": reason,
-                          "misses": routing.misses(req, config["targets"]) if fits_none else []}
+                          "misses": routing.misses(req, config["targets"]) if fits_none else [],
+                          "held": {"reason": entry.get("reason"), "since": entry.get("since"),
+                                   "targets": list(holds)} if holds else None}
     return {"targets": config["targets"], "notebooks": notebooks}
 
 
@@ -171,8 +177,12 @@ def overview(request: Request, category: str = "", status: str = ""):
     conn = db()
     latest = results_db.latest_by_notebook(conn) if conn else {}
 
-    rows, no_target = [], []
+    rows, no_target, held = [], [], []
     for key, nb in sorted(m["notebooks"].items()):
+        if nb["reason"].startswith("held:"):
+            held.append({"key": key, "category": category_of(key), "held": nb["held"],
+                         "latest": latest.get(key)})
+            continue
         if nb["reason"]:
             no_target.append({"key": key, "category": category_of(key), "reason": nb["reason"],
                               "misses": nb["misses"], "latest": latest.get(key)})
@@ -192,6 +202,7 @@ def overview(request: Request, category: str = "", status: str = ""):
         "never": sum(r["status"] == "never-tested" for r in rows),
         "stale": sum(r["stale"] for r in rows),
         "no_target": len(no_target),
+        "held": len(held),
         "last": max((r["latest"]["recorded_at"] for r in rows if r["latest"]), default=None),
     }
     categories = sorted({r["category"] for r in rows})
@@ -199,7 +210,8 @@ def overview(request: Request, category: str = "", status: str = ""):
              if (not category or r["category"] == category)
              and (not status or r["status"] == status or (status == "stale" and r["stale"]))]
     no_target = [] if status else [n for n in no_target if not category or n["category"] == category]
-    return render(request, "overview.html", rows=shown, no_target=no_target, summary=summary,
+    held = [] if status else [n for n in held if not category or n["category"] == category]
+    return render(request, "overview.html", rows=shown, no_target=no_target, held=held, summary=summary,
                   categories=categories, category=category, status=status)
 
 

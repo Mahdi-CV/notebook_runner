@@ -2,7 +2,8 @@
 Aggregate per-notebook regression results into a status dashboard.
 
 Reads results/*.json for every notebook in notebooks/ and prints a markdown
-summary + table. Notebooks no configured target can run are listed apart (see
+summary + table. Notebooks no configured target can run, or held off them for
+a known infrastructure issue (runner.yaml known_issues), are listed apart (see
 tools/routing.py). Supports --gap (work-order list), --json
 (machine-readable), --write (also write STATUS.md), --results-dir PATH.
 """
@@ -258,12 +259,21 @@ def render_markdown(rows: list[dict], summary: dict, no_target: dict[str, str]) 
             )
         )
 
-    if no_target:
+    held = {k: why for k, why in no_target.items() if why.startswith("held:")}
+    unroutable = {k: why for k, why in no_target.items() if k not in held}
+    if held:
+        lines += ["", "## Held", "",
+                  "Notebooks runner.yaml's known_issues hold off the targets that fit them, "
+                  "for a known infrastructure problem; they are not run until it is lifted.", "",
+                  "| Notebook | Why |", "|---|---|"]
+        lines += [f"| {k} | {why.removeprefix('held: ').replace('|', chr(92) + '|')} |"
+                  for k, why in sorted(held.items())]
+    if unroutable:
         lines += ["", "## No target", "",
                   "Notebooks whose declared requirements no configured target meets.", "",
                   "| Notebook | Why |", "|---|---|"]
         lines += [f"| {k} | {why.replace('|', chr(92) + '|')} |"
-                  for k, why in sorted(no_target.items())]
+                  for k, why in sorted(unroutable.items())]
 
     return "\n".join(lines) + "\n"
 

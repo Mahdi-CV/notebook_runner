@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import status_badge, nb_link, no_runner %}
+{% from "_macros.html" import status_badge, nb_link, no_runner, held_note %}
 {% block title %}Notebooks{% endblock %}
 {% block content %}
 <h1>Notebooks</h1>
@@ -12,6 +12,7 @@
   <a class="tile{{ ' on' if status == 'never-tested' }}" href="/?status=never-tested"{% if status == 'never-tested' %} aria-current="true"{% endif %}><div class="n">{{ summary.never }}</div><div class="l">Never tested</div></a>
   <a class="tile{{ ' on' if status == 'stale' }}" href="/?status=stale"{% if status == 'stale' %} aria-current="true"{% endif %}><div class="n">{{ summary.stale }}</div><div class="l">Not run in 7 days</div></a>
   <a class="tile" href="/#no-target"><div class="n">{{ summary.no_target }}</div><div class="l">No runner fits</div></a>
+  {% if summary.held %}<a class="tile is-warn" href="/#held"><div class="n">{{ summary.held }}</div><div class="l">Held: infrastructure</div></a>{% endif %}
 </div>
 
 <div class="filters">
@@ -43,6 +44,24 @@
   {% endfor %}
   </tbody>
 </table></div>
+
+{% if held %}
+<h2 id="held">Held for known infrastructure issues ({{ held | length }})</h2>
+<p class="sub">Not run until the problem is fixed and the hold is lifted in <code>runner.yaml</code> (<code>known_issues</code>). Each result below is the last run before the hold.</p>
+<div class="table-wrap"><table>
+  <thead><tr><th scope="col">Notebook</th><th scope="col">Category</th><th scope="col" class="col-issue">Why</th><th scope="col">Last result</th></tr></thead>
+  <tbody>
+  {% for s in held %}
+    <tr>
+      <td>{{ nb_link(s.key) }}</td>
+      <td class="dim">{{ s.category | category }}</td>
+      <td class="col-issue">{{ held_note(s.held) }}</td>
+      <td class="ts">{% if s.latest %}<a href="/result/{{ s.latest.id }}">{{ s.latest.recorded_at | ts }}</a> · {{ s.latest.status | verdict | statuslabel }}{% else %}<span class="dim">—</span>{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% endif %}
 
 {% if no_target %}
 <h2 id="no-target">No runner fits ({{ no_target | length }})</h2>

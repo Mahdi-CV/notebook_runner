@@ -5,7 +5,9 @@ A notebook declares its needs in its own metadata (`metadata.ci`, documented
 upstream in ROCm/gpuaidev .github/CI_METADATA.md); the targets are this
 deployment's private runner.yaml (see runner.example.yaml). Neither knows about
 the other: a notebook never names a machine, and a target never names a
-notebook.
+notebook. The one exception is runner.yaml's known_issues: notebooks held off
+targets where a known infrastructure problem stops them, with the reason, so
+the nightly pass does not spend a run rediscovering it.
 
 Usage:
   python3 tools/routing.py [--dir notebooks/] [--target NAME]   # print every route
@@ -100,11 +102,26 @@ def requirements(nb_path: Path) -> Requirements:
 
 
 def load_config(path: Path = CONFIG_PATH) -> dict:
-    """runner.yaml as {"targets": {name: target}, "timebox_minutes": N}; no
-    targets if it is missing."""
+    """runner.yaml as {"targets": {name: target}, "timebox_minutes": N,
+    "known_issues": {key: {reason, targets?, since?}}}; no targets if it is missing."""
     data = (yaml.safe_load(path.read_text()) or {}) if path.exists() else {}
+    known = data.get("known_issues") or {}
+    for key, entry in known.items():
+        if not isinstance(entry, dict) or not entry.get("reason"):
+            raise ValueError(f"{path}: known_issues.{key} needs a reason")
     return {"targets": data.get("targets") or {},
-            "timebox_minutes": int(data.get("timebox_minutes") or DEFAULT_TIMEBOX_MINUTES)}
+            "timebox_minutes": int(data.get("timebox_minutes") or DEFAULT_TIMEBOX_MINUTES),
+            "known_issues": known}
+
+
+def holds_for(key: str, config: dict) -> dict[str, str]:
+    """{target name: reason} for the targets a known infrastructure issue holds
+    this notebook (its key under the notebook root) off. An entry without
+    `targets` holds it off every target."""
+    entry = (config.get("known_issues") or {}).get(key)
+    if not entry:
+        return {}
+    return {name: str(entry["reason"]) for name in (entry.get("targets") or config["targets"])}
 
 
 def target_capabilities(target: dict) -> set[str]:
@@ -129,22 +146,29 @@ def unmet(req: Requirements, target: dict) -> list[str]:
     return missing
 
 
-def route(req: Requirements, targets: dict, only: str | None = None
-          ) -> tuple[str | None, dict | None, str]:
-    """Return (name, target, "") for the first target in config order that fits,
-    or (None, None, reason) when none does."""
+def route(req: Requirements, targets: dict, only: str | None = None,
+          held: dict[str, str] | None = None) -> tuple[str | None, dict | None, str]:
+    """Return (name, target, "") for the first target in config order that fits
+    and the notebook is not held off (`held`, from holds_for), or (None, None,
+    reason) when none does: "held: ..." when only held targets fit."""
     unknown = [h for h in req.hardware if h not in KNOWN_HARDWARE]
     if unknown:
         return None, None, f"unknown hardware {', '.join(unknown)} in metadata.ci"
     candidates = {only: targets[only]} if only in targets else ({} if only else targets)
     if not candidates:
         return None, None, (f"no target named {only}" if only else "no targets configured")
-    reasons = []
+    reasons, held_off = [], []
     for name, target in candidates.items():
         missing = unmet(req, target)
-        if not missing:
+        if not missing and name in (held or {}):
+            held_off.append(name)
+        elif not missing:
             return name, target, ""
-        reasons.append(f"{name} lacks {'; '.join(missing)}")
+        else:
+            reasons.append(f"{name} lacks {'; '.join(missing)}")
+    if held_off:
+        return None, None, (f"held: known infrastructure issue on {', '.join(held_off)}: "
+                            f"{held[held_off[0]]}")
     return None, None, "no target fits: " + " | ".join(reasons)
 
 
@@ -158,7 +182,8 @@ def misses(req: Requirements, targets: dict, only: str | None = None
             if (missing := unmet(req, target))]
 
 
-def resolve(nb_path: Path, targets: dict, only: str | None = None
+def resolve(nb_path: Path, targets: dict, only: str | None = None,
+            held: dict[str, str] | None = None
             ) -> tuple[Requirements | None, str | None, dict | None, str]:
     """(requirements, target name, target, reason) for one notebook file. A
     notebook whose metadata.ci cannot be read gets no target, with the reason."""
@@ -166,7 +191,7 @@ def resolve(nb_path: Path, targets: dict, only: str | None = None
         req = requirements(nb_path)
     except (OSError, ValueError, TypeError, AttributeError) as e:
         return None, None, None, f"invalid notebook or metadata.ci: {e}"
-    return (req, *route(req, targets, only))
+    return (req, *route(req, targets, only, held))
 
 
 def notebook_keys(notebooks_dir: Path = NOTEBOOKS_DIR) -> list[str]:
@@ -182,13 +207,14 @@ def routes(notebooks_dir: Path = NOTEBOOKS_DIR, config: dict | None = None,
            only: str | None = None) -> dict[str, tuple[str | None, str]]:
     """{key: (target name or None, reason)} for every notebook. With no targets
     configured (e.g. a dashboard without runner.yaml) every reason is empty."""
-    targets = (config or load_config())["targets"]
+    config = config or load_config()
+    targets = config["targets"]
     out = {}
     for key in notebook_keys(notebooks_dir):
         if not targets:
             out[key] = (None, "")
             continue
-        _, name, _, reason = resolve(notebooks_dir / key, targets, only)
+        _, name, _, reason = resolve(notebooks_dir / key, targets, only, holds_for(key, config))
         out[key] = (name, reason)
     return out
 

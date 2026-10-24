@@ -1021,6 +1021,9 @@ def parse_args():
                    help="Group this invocation's results under an existing run id "
                         "(ci_run.py uses this so its batches form one run). "
                         "Default: a fresh UTC timestamp.")
+    p.add_argument("--include-held", action="store_true",
+                   help="Run notebooks runner.yaml's known_issues hold off a target anyway "
+                        "(to check whether the problem is gone).")
     p.add_argument("--notify", action="store_true",
                    help="After the run, post a summary of it to Teams "
                         "(needs TEAMS_WEBHOOK_URL; skipped with a note if unset).")
@@ -1126,11 +1129,12 @@ def main():
         print(f"{'='*60}")
 
         rel_key = _rel_key(nb, base_dir)
-        req, target_name, target, reason = routing.resolve(nb, targets, args.target)
+        held = {} if args.include_held else routing.holds_for(rel_key, config)
+        req, target_name, target, reason = routing.resolve(nb, targets, args.target, held)
         if req:
             req.timeout_minutes = req.timeout_minutes or config["timebox_minutes"]
         if target is None:
-            print(f"  NO TARGET — {reason}\n")
+            print(f"  {'HELD' if reason.startswith('held:') else 'NO TARGET'} — {reason}\n")
             skipped.append({"notebook": str(nb), "reason": reason})
             _db_call(db, results_db.record_result, run_id, rel_key, str(nb), "skip",
                      {"status": "skip", "message": reason}, None)

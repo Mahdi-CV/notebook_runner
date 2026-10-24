@@ -256,13 +256,17 @@ class Worker:
                 continue
             # Could it ever run here, with every slot free?
             ssh_ok = job["kind"] == "regression"
-            _, never = capacity.pick(req, targets, {}, job.get("only_target"), allow_ssh=ssh_ok)
+            known = capacity.holds(job)
+            _, never = capacity.pick(req, targets, {}, job.get("only_target"), allow_ssh=ssh_ok,
+                                     held=known)
             if never:
-                store.finish(self.conn, job["id"], "blocked", "Cannot run: no runner fits",
-                             {"message": never})
+                stage = ("Held: known infrastructure issue" if never.startswith("held:")
+                         else "Cannot run: no runner fits")
+                store.finish(self.conn, job["id"], "blocked", stage, {"message": never})
                 continue
             free = {n: t for n, t in targets.items() if n not in held}
-            target, _ = capacity.pick(req, free, used, job.get("only_target"), allow_ssh=ssh_ok)
+            target, _ = capacity.pick(req, free, used, job.get("only_target"), allow_ssh=ssh_ok,
+                                      held=known)
             if target:
                 self.start(job, "gpu", target, req.gpus)
                 unit, _ = capacity.slots(targets[target])

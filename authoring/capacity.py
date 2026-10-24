@@ -51,21 +51,28 @@ def usage(targets: dict, running: list[dict]) -> dict[str, int]:
 
 
 def pick(req: "routing.Requirements", targets: dict, used: dict[str, int],
-         only: str | None = None, allow_ssh: bool = True) -> tuple[str | None, str]:
+         only: str | None = None, allow_ssh: bool = True,
+         held: dict[str, str] | None = None) -> tuple[str | None, str]:
     """(target, "") for the first fitting target with room; (None, reason)
     when the fitting targets are all busy ("busy") or none fits at all.
     Author jobs pass allow_ssh=False: an SSH target gives the notebook the
-    host's Docker daemon and needs AGENT_SECRET in the job."""
+    host's Docker daemon and needs AGENT_SECRET in the job. `held`: targets a
+    known infrastructure issue holds a nightly notebook off (routing.holds_for)."""
     candidates = {only: targets[only]} if only in targets else ({} if only else targets)
     if not allow_ssh:
         candidates = {n: t for n, t in candidates.items() if t.get("type", "ssh") != "ssh"}
-    fitting, reasons = [], []
+    fitting, reasons, held_off = [], [], []
     for name, target in candidates.items():
         missing = routing.unmet(req, target)
         if missing:
             reasons.append(f"{name} lacks {'; '.join(missing)}")
+        elif name in (held or {}):
+            held_off.append(name)
         else:
             fitting.append(name)
+    if not fitting and held_off:
+        return None, (f"held: known infrastructure issue on {', '.join(held_off)}: "
+                      f"{held[held_off[0]]}")
     if not fitting:
         return None, "no target fits: " + (" | ".join(reasons) or "no targets configured")
     for name in fitting:
@@ -139,7 +146,8 @@ def fitting(job: dict, targets: dict) -> tuple[list[str], int]:
         req = requirements(job_notebook(job))
     except (OSError, ValueError, TypeError, AttributeError):
         return list(allowed), int(job.get("gpus") or 1)
-    return [n for n, t in allowed.items() if not routing.unmet(req, t)], req.gpus
+    known = holds(job)
+    return [n for n, t in allowed.items() if not routing.unmet(req, t) and n not in known], req.gpus
 
 
 def minutes_between(start: str | None, end: str) -> float:
@@ -267,6 +275,11 @@ def read_snapshot() -> dict | None:
 
 def load_targets() -> dict:
     return routing.load_config()["targets"]
+
+
+def holds(job: dict) -> dict[str, str]:
+    """The targets runner.yaml's known_issues hold a nightly notebook off."""
+    return routing.holds_for(job["notebook"], routing.load_config()) if job["kind"] == "regression" else {}
 
 
 def requirements(nb_path: Path) -> "routing.Requirements":
