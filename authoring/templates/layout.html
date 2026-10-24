@@ -28,6 +28,10 @@
   .next-step { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 12px; }
   .next-step p { margin: 0; flex: 1 1 32ch; max-width: 80ch; }
   .next-step form { margin: 0; }
+  /* The fix offer: its own row under the next step, explained before the button. */
+  .next-step form.fix-offer, .next-step > p.meta { flex: 1 1 100%; }
+  .next-step form.fix-offer { padding-top: 10px; border-top: 1px solid var(--line); }
+  .next-step form.fix-offer p { margin: 0 0 8px; }
   pre.log { max-height: 460px; overflow-y: auto; background: #16171a; color: #d6d8de; border: none; font-size: 12px; line-height: 1.5; }
   .stage { font-size: 15px; font-weight: 600; }
   .meter { height: 8px; background: var(--muted-bg); border-radius: 4px; overflow: hidden; min-width: 120px; }

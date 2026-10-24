@@ -19,6 +19,9 @@ ISSUE_TYPES = {"version_incompatibility": "Version mismatch", "deprecated_api": 
                "other": "Other"}
 KINDS = {"verify": "Check", "fix": "Fix attempt", "full": "Check and fix", "skip": "Skipped",
          "interactive": "Interactive"}
+# Authoring job kinds (authoring/store.py), as a job's label.
+JOB_KINDS = {"validate": "Validate", "annotate": "Annotate", "fix": "Fix",
+             "regression": "Nightly pass"}
 STATUSES = {"pass": "Passed", "passed": "Passed", "fail": "Failed", "failed": "Failed",
             "blocked": "Blocked", "never-tested": "Never tested", "skip": "Skipped",
             "queued": "Queued", "running": "Running", "cancelled": "Cancelled",
@@ -117,6 +120,7 @@ def register(env) -> None:
     env.filters["category"] = lambda k: CATEGORIES.get(k, k)
     env.filters["issue_type"] = lambda k: ISSUE_TYPES.get(k, (k or "").replace("_", " "))
     env.filters["kind"] = lambda k: KINDS.get(k, k)
+    env.filters["jobkind"] = lambda k: JOB_KINDS.get(k, k)
     env.filters["statuslabel"] = lambda k: STATUSES.get(k, k)
     env.filters["plural"] = plural
     env.filters["codespans"] = codespans

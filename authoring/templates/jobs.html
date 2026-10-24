@@ -12,7 +12,7 @@
   <thead><tr><th scope="col">Notebook</th><th scope="col">Type</th><th scope="col">Author</th><th scope="col">Status</th><th scope="col">Stage</th><th scope="col">Runner</th><th scope="col">Submitted</th></tr></thead>
   <tbody>
   {% for j in jobs %}
-  <tr><td><a href="{{ prefix }}/jobs/{{ j.id }}">{{ j.notebook }}</a></td><td>{{ j.kind | capitalize }}</td><td>{{ j.author }}</td>
+  <tr><td><a href="{{ prefix }}/jobs/{{ j.id }}">{{ j.notebook }}</a></td><td>{{ j.kind | jobkind }}</td><td>{{ j.author }}</td>
       <td>{{ job_badge(j.status) }}</td><td>{% if j.status in ('queued', 'running') %}{{ j.stage }}{% endif %}</td><td class="dim">{{ j.target or '—' }}</td>
       <td class="nowrap dim">{{ j.created_at | ts }}</td></tr>
   {% else %}

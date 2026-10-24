@@ -57,7 +57,9 @@ TOOLS_DIR   = (HERE / "tools").resolve()
 # NBR_RESULTS_DIR: a job of the authoring service keeps its results apart from
 # the regression results (authoring/pipeline.py).
 RESULTS_DIR = Path(os.environ.get("NBR_RESULTS_DIR") or HERE / "results").resolve()
-FIXES_DIR   = (HERE / "fixes").resolve()   # genuine-fix notebooks retrieved by the fixer (for PRs)
+# Genuine-fix notebooks retrieved by the fixer (for PRs); NBR_FIXES_DIR: an
+# authoring fix job keeps its own.
+FIXES_DIR   = Path(os.environ.get("NBR_FIXES_DIR") or HERE / "fixes").resolve()
 EXECUTED_DIR = RESULTS_DIR / "executed"    # executed notebooks each verdict is computed from
 SHIM_DIR    = (TOOLS_DIR / "http_ssh_shim").resolve()
 

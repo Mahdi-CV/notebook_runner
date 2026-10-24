@@ -35,7 +35,7 @@
   <tr>
     <td class="num dim pos">{{ loop.index }}</td>
     <td data-label="Notebook"><a href="{{ prefix }}/jobs/{{ j.id }}">{{ j.notebook.split('/')[-1] }}</a></td>
-    <td data-label="Job">{% if j.kind == 'regression' %}Nightly pass{% else %}{{ j.kind | capitalize }} <span class="dim">· {{ j.author }}</span>{% endif %}</td>
+    <td data-label="Job">{% if j.kind == 'regression' %}Nightly pass{% else %}{{ j.kind | jobkind }} <span class="dim">· {{ j.author }}</span>{% endif %}</td>
     <td class="num" data-label="GPUs">{{ j.gpus }}</td>
     <td class="nowrap" data-label="Estimated wait">{{ about(j.start_in) }}</td>
   </tr>
@@ -53,7 +53,7 @@
   <thead><tr><th scope="col">Job</th><th scope="col" class="num">Median of recent jobs</th></tr></thead>
   <tbody>
   {% for kind, minutes in availability.estimates.items() %}
-  <tr><td>{{ {'validate': 'Validate', 'annotate': 'Annotate', 'regression': 'Nightly notebook'}[kind] }}</td><td class="num">{{ minutes | dur('min') }}</td></tr>
+  <tr><td>{{ 'Nightly notebook' if kind == 'regression' else kind | jobkind }}</td><td class="num">{{ minutes | dur('min') }}</td></tr>
   {% endfor %}
   </tbody>
 </table></div>

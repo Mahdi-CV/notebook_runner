@@ -5,7 +5,8 @@
                            checks; a validate job then waits for a GPU, an
                            annotate job goes straight on to the agent
   run <job> --target T     a validate or regression job's run on a GPU target,
-                           through run.py --mode verify (or the pass's mode)
+                           through run.py --mode verify (or the pass's mode); a
+                           fix job's run.py --mode fix, from its parent's diagnosis
 
 A phase never writes jobs.db: it reports through files in its job directory,
 which is the only part of jobs/ its container can write.
@@ -314,7 +315,8 @@ STAGE_LINES = [
     (re.compile(r"env.?check|Checking the environment", re.I), "Checking the environment"),
     (re.compile(r"Copying|Waiting for pod|launched instance|Provision|READY", re.I),
      "Starting the GPU environment"),
-    (re.compile(r"Starting verify agent|Starting fix agent", re.I), "Running the notebook"),
+    (re.compile(r"Starting verify agent", re.I), "Running the notebook"),
+    (re.compile(r"Starting fix agent", re.I), "Applying the fixes and running the notebook"),
     (re.compile(r"Writing .*result|write_result", re.I), "Writing the diagnosis"),
 ]
 
@@ -327,13 +329,16 @@ def run(job: Job, target: str) -> None:
         env = {"NBR_RESULTS_DB": str(job.dir / "runs.db"), "NBR_STAGE_DIR": str(job.dir / "stage")}
     else:
         nb_path, base = job.layout_notebook, job.dir / "repo" / NOTEBOOK_SUBDIR
-        mode, run_id = "verify", job.id
+        mode, run_id = ("fix" if job.kind == "fix" else "verify"), job.id
         (job.dir / "results").mkdir(exist_ok=True)
-        env = {"NBR_RESULTS_DIR": str(job.dir / "results"),
+        (job.dir / "fixes").mkdir(exist_ok=True)
+        env = {"NBR_RESULTS_DIR": str(job.dir / "results"), "NBR_FIXES_DIR": str(job.dir / "fixes"),
                "NBR_RESULTS_DB": str(job.dir / "runs.db"), "NBR_STAGE_DIR": str(job.dir / "stage")}
     job.stage(f"Running on {target}")
     cmd = [sys.executable, str(RUN_PY), str(nb_path), "--dir", str(base),
            "--mode", mode, "--target", target, "--run-id", run_id]
+    if job.kind == "fix":
+        cmd += ["--verification-result", str(job.dir / VERIFICATION)]
     started = time.time()
     proc = subprocess.Popen(cmd, cwd=REPO_ROOT, env={**os.environ, **env}, text=True,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1)
@@ -355,9 +360,65 @@ def run(job: Job, target: str) -> None:
         job.final(status, f"Regression run: {status}", {"run": outcome})
         return
     static = json.loads((job.dir / "static.json").read_text())
+    if job.kind == "fix":
+        finish_fix(job, status, static, outcome)
+        return
     words = {"passed": "Passed: every cell ran", "failed": "Failed: see the issues below",
              "blocked": "Blocked: the notebook could not be run to the end"}
     job.final(status, words[status], {"static": static, "run": outcome})
+
+
+# A fix job's copy of its parent's diagnosis (the verify result JSON), and the
+# fixed notebook it offers the author.
+VERIFICATION = "verification.json"
+FIXED = "fixed.ipynb"
+
+
+def finish_fix(job: Job, status: str, static: dict, outcome: dict) -> None:
+    """The fixer's notebook, in the author's own formatting, and its changes."""
+    retrieved = job.dir / "fixes" / job.layout_notebook.name
+    validated = [f for f in outcome.get("fixes") or [] if f.get("validated")]
+    summary = {"static": static, "run": outcome, "parent": job.request.get("parent")}
+    if not retrieved.is_file():
+        words = {"passed": "Passed, but no fixed notebook came back",
+                 "failed": "No fix could be validated",
+                 "blocked": "Blocked: the fixes could not be tried to the end"}
+        job.final(status, words[status], summary)
+        return
+    original_text = (job.dir / "input.ipynb").read_text()
+    original = json.loads(original_text)
+    try:
+        fixed = json.loads(retrieved.read_text())
+    except ValueError as e:
+        raise Stop("error", f"The fixed notebook is not valid JSON ({e}).") from e
+    fixed = keep_format(original, fixed)
+    (job.dir / FIXED).write_text(dump_like(original_text, fixed))
+    summary["diff"] = cell_diff(original, fixed)
+    n = plural(len(validated), "fix")
+    words = {"passed": f"Fixed: every cell ran with {n}",
+             "failed": f"Partly fixed: {n} worked, but cells still fail",
+             "blocked": f"Blocked after {n}: the notebook could not be run to the end"}
+    job.final(status, words[status], summary)
+
+
+def keep_format(original: dict, fixed: dict) -> dict:
+    """The fixed cells' sources in the author's notebook: the fixer rewrites the
+    whole file (and drops outputs), so when the cells still line up, carry only
+    the sources over; else take its notebook as it is."""
+    a, b = original.get("cells") or [], fixed.get("cells") or []
+    if len(a) != len(b) or any(x.get("cell_type") != y.get("cell_type") for x, y in zip(a, b)):
+        return fixed
+    out = json.loads(json.dumps(original))
+    for cell, new in zip(out["cells"], b):
+        if lint.source(cell) != lint.source(new):
+            cell["source"] = lint.source(new).splitlines(keepends=True)  # Jupyter's own layout
+    return out
+
+
+def dump_like(text: str, nb: dict) -> str:
+    """Serialize as the author's file is: the same indent and non-ASCII as is."""
+    m = re.search(r"^\{\n( +)\"", text)
+    return json.dumps(nb, indent=len(m[1]) if m else 1, ensure_ascii=False) + "\n"
 
 
 def run_outcome(job: Job, nb_path: Path) -> dict:
@@ -378,6 +439,7 @@ def run_outcome(job: Job, nb_path: Path) -> dict:
     executed = Path(payload.get("executed_notebook") or "").name or None
     return {"status": row["status"], "summary": row["summary"], "message": row["message"],
             "issues": payload.get("issues") or [], "verdict": payload.get("verdict"),
+            "fixes": payload.get("fixes") or [],
             "docker_image": row["docker_image"], "cost_usd": row["cost_usd"],
             "executed": executed}
 

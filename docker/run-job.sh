@@ -12,7 +12,7 @@
 # Like docker/run-ci.sh, the container is read-only and runs as the image's
 # non-root user.
 #
-# An author's job (validate, annotate) is untrusted: its notebook's code runs
+# An author's job (validate, annotate, fix) is untrusted: its notebook's code runs
 # on our GPUs and the agent reads it. Its container gets no secret at all,
 # only its job key (NBR_JOB_KEY, from the worker's environment), and runs on
 # the internal network nbr-jobs, whose one reachable host is the credential

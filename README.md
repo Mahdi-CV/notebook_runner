@@ -353,6 +353,11 @@ identifies their jobs.
   the first runner that fits the notebook's `metadata.ci`. The job page shows
   the stage and the live log, then a pass or each issue with its cell, cause,
   proposed fix and fixability, and the executed notebook.
+- **Fix**: a failed validate job with issues marked auto-fixable offers the
+  fixer agent (`run.py --mode fix`, `CLAUDE_FIX.md`) on the same version of
+  the notebook. It applies those fixes, runs the notebook again on a GPU, and
+  returns the fixed notebook in the author's own formatting, each fix with
+  whether it worked, a cell-by-cell diff, and the issues still open.
 - **Annotate**: the annotate-notebook-for-ci skill (from the gpuaidev checkout)
   on the notebook, with no GPU. You get the annotated notebook to download, the
   agent's list of changes, a cell-by-cell diff and the static checks before and

@@ -23,7 +23,7 @@
   <thead><tr><th scope="col">Notebook</th><th scope="col">Type</th><th scope="col">Status</th><th scope="col">Stage</th><th scope="col">Submitted</th></tr></thead>
   <tbody>
   {% for j in mine %}
-  <tr><td><a href="{{ prefix }}/jobs/{{ j.id }}">{{ j.notebook }}</a></td><td>{{ j.kind | capitalize }}</td><td>{{ job_badge(j.status) }}</td>
+  <tr><td><a href="{{ prefix }}/jobs/{{ j.id }}">{{ j.notebook }}</a></td><td>{{ j.kind | jobkind }}</td><td>{{ job_badge(j.status) }}</td>
       <td>{% if j.status in ('queued', 'running') %}{{ j.stage }}{% endif %}</td><td class="nowrap dim">{{ j.created_at | ts }}</td></tr>
   {% endfor %}
   </tbody>

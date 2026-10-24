@@ -6,12 +6,13 @@
 {% set s = job.summary or {} %}
 {% set nbview = (prefix ~ '/jobs/' ~ job.id ~ '/view/' ~ views[0]) if views else None %}
 <p class="crumbs"><a href="{{ prefix }}/jobs">Jobs</a> / {{ job.notebook }}</p>
-<div class="meta">{{ {'validate': 'Validate', 'annotate': 'Annotate', 'regression': 'Nightly pass'}[job.kind] }} · {{ categories.get(job.category, job.category or '') }}{% if job.author %} · {{ job.author }}{% endif %}</div>
+<div class="meta">{{ job.kind | jobkind }} · {{ categories.get(job.category, job.category or '') }}{% if job.author %} · {{ job.author }}{% endif %}</div>
 <h1>{{ job.notebook }} <span id="status">{{ job_badge(job.status) }}</span></h1>
 <p class="sub">
   Submitted {{ job.created_at | ts }}
   {% if job.source_url %}· <a href="{{ job.source_url }}"{% if source %} title="{{ source.title }}">{{ source.label }}{% else %}>{{ job.source_url }}{% endif %}</a>{% endif %}
   {% if job.target %}· {{ 'ran' if final else 'runs' }} on <b>{{ job.target }}</b>{% endif %}
+  {% if parent %}· fixes the issues <a href="{{ prefix }}/jobs/{{ parent.id }}">job {{ parent.id }}</a> found{% endif %}
   {% if job.kind == 'regression' and job.run_id and dashboard_url %}· part of <a href="{{ dashboard_url.rstrip('/') }}/run/{{ job.run_id }}">this nightly pass</a>{% endif %}
   {% if job.finished_at and job.started_at %}· {{ 'stopped' if job.status in ('cancelled', 'error') else 'finished' }} {{ job.finished_at | ts }} after {{ job.started_at | elapsed(job.finished_at) | dur }}
   {%- elif job.status == 'running' and job.started_at %}· started {{ job.started_at | ts }}{% endif %}
@@ -34,10 +35,16 @@
   </div>
   {% if job.kind != 'regression' %}
   {% set from_github = job.source != 'upload' %}
-  {% set submit_again = prefix ~ '/?category=' ~ (job.category | urlencode) ~ '#' ~ job.kind %}
+  {% set submit_again = prefix ~ '/?category=' ~ (job.category | urlencode) ~ '#' ~ ('validate' if job.kind == 'fix' else job.kind) %}
   <div class="next-step">
     <p>
-    {%- if job.status == 'passed' -%}
+    {%- if job.kind == 'fix' and job.status in ('passed', 'failed') and s.diff -%}
+      Next: download the fixed notebook and review each change below; they are suggestions, so keep only what you agree with.
+      {% if open_issues %}Then fix the {{ open_issues | length | plural('issue') }} still open yourself. {% endif %}
+      {%- if from_github %}Push the result to {{ 'the pull request' if '/pull/' in job.source_url else 'the branch' }} and validate it again.{% else %}<a href="{{ submit_again }}">Validate</a> the result again.{% endif %}
+    {%- elif job.kind == 'fix' and job.status in ('passed', 'failed') -%}
+      Next: none of the fixes worked, so there is no fixed notebook. Fix the issues below yourself, then validate the notebook again.
+    {%- elif job.status == 'passed' -%}
       Next: {% if from_github %}your pull request is ready for review{% else %}open a pull request with this notebook{% endif %}
       {%- if static and static.counts.error %}, once you fix the static-check errors below{% endif %}. CI runs these same checks.
     {%- elif job.status == 'failed' -%}
@@ -46,6 +53,8 @@
       {%- else %}then <a href="{{ submit_again }}">submit the fixed notebook</a>.{% endif %}
     {%- elif job.status == 'done' -%}
       Next: {% if s.diff and s.diff.cells %}download the annotated notebook, review the cell changes below, then {% endif %}<a href="{{ prefix }}/?category={{ job.category | urlencode }}#validate">validate it</a> on a GPU.
+    {%- elif job.kind == 'fix' and job.status in ('error', 'cancelled') and parent -%}
+      {{ 'This is a fault in Notebook CI, not in your notebook. ' if job.status == 'error' }}You can try the fixes again from <a href="{{ prefix }}/jobs/{{ parent.id }}">the validate job</a>.
     {%- elif job.status == 'error' -%}
       This is a fault in Notebook CI, not in your notebook. Run it again; if it crashes again, tell the Notebook CI maintainers and quote job <span class="mono">{{ job.id }}</span>.
     {%- elif job.status == 'cancelled' -%}
@@ -60,6 +69,18 @@
       Next: read the summary above and the progress log. If the cause is in your notebook, fix it and {% if from_github %}run again{% else %}<a href="{{ submit_again }}">submit it again</a>{% endif %}; if it is a platform problem, run again later.
     {%- endif -%}
     </p>
+    {% if fix %}
+    <form method="post" action="{{ prefix }}/jobs/{{ job.id }}/fix" class="fix-offer">
+      <p>The fixer agent can try the {{ fix.count | plural('fix', 'fixes') }} marked <i>Can be fixed automatically</i>: it changes only those cells, runs the notebook again on a GPU, and gives you the fixed notebook with each change to review. It takes about as long as this run.</p>
+      {% set why = 'Only ' ~ job.author ~ ' can ask for fixes.' if fix.not_author else '' %}
+      <button type="submit"{% if why or fix.blocking %} disabled aria-describedby="fix-why"{% endif %}>Try the automatic fixes</button>
+      {% if why %}<span id="fix-why" class="dim"> {{ why }}</span>
+      {% elif fix.blocking %}<span id="fix-why" class="dim"> Your fix job <a href="{{ prefix }}/jobs/{{ fix.blocking.id }}">{{ fix.blocking.notebook }}</a> is {{ fix.blocking.status | joblabel | lower }}; one at a time.</span>{% endif %}
+    </form>
+    {% endif %}
+    {% if fix_jobs %}
+    <p class="meta">Fix jobs for this run: {% for f in fix_jobs %}<a href="{{ prefix }}/jobs/{{ f.id }}">{{ f.created_at | ts }}</a> ({{ f.status | joblabel | lower }}){{ ', ' if not loop.last }}{% endfor %}.</p>
+    {% endif %}
     {% if again %}
     <form method="post" action="{{ prefix }}/jobs/{{ job.id }}/again">
       {% set why = 'Only ' ~ job.author ~ ' can run this job again.' if again.not_author else '' %}
@@ -77,7 +98,7 @@
   {% endif %}
   <p class="dim" id="position" role="status" aria-live="polite" style="margin: 0"{% if not position %} hidden{% endif %}>
     <span id="posn">{% if position %}Number {{ position }} in the queue for a GPU.{% endif %}</span>
-    {% if estimates[job.kind] %}{{ {'validate': 'Validate jobs', 'annotate': 'Annotate jobs', 'regression': 'Nightly notebooks'}[job.kind] }} usually take about {{ estimates[job.kind] | dur('min') }} once they start.{% endif %}
+    {% if estimates[job.kind] %}{{ 'Nightly notebooks' if job.kind == 'regression' else (job.kind | jobkind) ~ ' jobs' }} usually take about {{ estimates[job.kind] | dur('min') }} once they start.{% endif %}
     <a href="{{ prefix }}/runners">See the runners</a>.
   </p>
   {% if not final and job.kind != 'regression' %}
@@ -90,8 +111,8 @@
 </div>
 
 {% if final %}
-  {% if job.kind in ('validate', 'regression') and s.run %}
-  <h2>Run on a GPU</h2>
+  {% if job.kind in ('validate', 'regression', 'fix') and s.run %}
+  <h2>{{ 'Run with the fixes' if job.kind == 'fix' else 'Run on a GPU' }}</h2>
   <div class="card">
     <dl class="kv">
       {% if s.run.message %}<dt>Message</dt><dd>{{ s.run.message }}</dd>{% endif %}
@@ -100,7 +121,25 @@
       {% if executed %}<dt>Executed notebook</dt><dd>{{ download_button(prefix ~ '/jobs/' ~ job.id ~ '/executed.ipynb', 'Download executed notebook') }}<div class="meta" style="margin-top: 4px">Every cell's output from this run.</div></dd>{% endif %}
     </dl>
   </div>
-  {% if s.run.issues %}
+  {% if job.kind == 'fix' %}
+  {% if s.run.fixes %}
+  <h2>Fixes tried ({{ s.run.fixes | length }})</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th scope="col">Cell</th><th scope="col" class="col-issue">Change</th><th scope="col">Result</th></tr></thead>
+    <tbody>
+    {% for f in s.run.fixes | sort(attribute='cell_index') %}
+    <tr><td class="num">{{ f.cell_index if f.cell_index is not none else '—' }}</td>
+        <td class="wrap">{{ (f.description or f.fix_description or '') | codespans }}</td>
+        <td>{% if f.validated %}<span class="badge ok">Worked</span>{% else %}<span class="badge bad">Did not work</span>{% endif %}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% endif %}
+  {% if open_issues %}
+  <h2>Issues still open ({{ open_issues | length }})</h2>
+  {{ issues_table(open_issues, (prefix ~ '/jobs/' ~ job.id ~ '/view/executed') if 'executed' in views else None, audience='author') }}
+  {% endif %}
+  {% elif s.run.issues %}
   <h2>Issues to fix ({{ s.run.issues | length }})</h2>
   {{ issues_table(s.run.issues, (prefix ~ '/jobs/' ~ job.id ~ '/view/executed') if 'executed' in views else None, audience='author') }}
   {% elif job.status == 'passed' %}
@@ -108,10 +147,16 @@
   {% endif %}
   {% endif %}
 
-  {% if job.kind == 'annotate' and s.diff %}
+  {% if job.kind in ('annotate', 'fix') and s.diff %}
+  {% if job.kind == 'fix' %}
+  <h2>Fixed notebook</h2>
+  <p>{{ download_button(prefix ~ '/jobs/' ~ job.id ~ '/fixed.ipynb', 'Download fixed notebook') }}
+     <span class="dim">Your notebook with the fixes that worked. Review the changes below before committing it.</span></p>
+  {% else %}
   <h2>Annotated notebook</h2>
   <p>{{ download_button(prefix ~ '/jobs/' ~ job.id ~ '/annotated.ipynb', 'Download annotated notebook') }}
      <span class="dim">Review the changes below before committing it.</span></p>
+  {% endif %}
   {% if s.changes %}<div class="card prose">{{ s.changes | md }}</div>{% endif %}
   {% if s.diff.metadata_before != s.diff.metadata_after %}
   <h2>metadata.ci</h2>
@@ -149,7 +194,7 @@
   {% endif %}
 {% endif %}
 
-{% if static %}
+{% if static and job.kind != 'fix' %}
 <h2>Static checks {% if job.kind == 'annotate' and final %}on the annotated notebook{% endif %}</h2>
 <p class="dim">{{ static.counts.error | plural('error') }}, {{ static.counts.warning | plural('warning') }}. Errors must be fixed before the tutorial can be published; warnings need your judgment.{% if not final and job.kind == 'validate' %} You can start fixing these now; the GPU run continues.{% endif %}</p>
 {% if static.findings %}

@@ -1,8 +1,10 @@
 """Self-serve notebook authoring: submit validate and annotate jobs, follow them.
 
 Authors upload a notebook or paste a GitHub URL, then watch the job's stage
-and log until it ends with a summary: pass, or each issue with its fix. The
-Runners page shows how busy each GPU target is and how long the queue is.
+and log until it ends with a summary: pass, or each issue with its fix. A
+failed validate job with issues the fixer agent can fix offers a fix job,
+which returns a fixed notebook and its changes. The Runners page shows how
+busy each GPU target is and how long the queue is.
 
 There is no login: the author's name identifies their jobs and is remembered
 in a cookie. This app holds no credentials; the worker and the job containers
@@ -201,7 +203,12 @@ def job_page(request: Request, job_id: str):
             static = json.loads((d / "static.json").read_text())
         except ValueError:
             static = None
+    run = (job.get("summary") or {}).get("run") or {}
     return render(request, "job.html", job=job, position=queue_position(conn, job),
+                  fix=fix_state(conn, job, request.cookies.get("author", "")),
+                  fix_jobs=store.children(conn, job_id) if job["kind"] == "validate" else [],
+                  parent=store.get(conn, job["parent"]) if job.get("parent") else None,
+                  open_issues=open_issues(run) if job["kind"] == "fix" else None,
                   log=log_text, log_next=log_next, final=final, steps=job_steps(job, final, log_text),
                   static=static,
                   has={name: (d / name).exists() for name in
@@ -260,6 +267,41 @@ def run_again(request: Request, job_id: str):
     return RedirectResponse(f"{PREFIX}/jobs/{new_id}", status_code=303)
 
 
+@app.post("/jobs/{job_id}/fix")
+def start_fix(request: Request, job_id: str):
+    """A fix job for a failed validate job: the fixer agent applies the fixes
+    the diagnosis marks auto_fixable to the same notebook, then re-runs it."""
+    conn, job = load_job(job_id)
+    state = fix_state(conn, job, request.cookies.get("author", ""))
+    if state is None:
+        raise HTTPException(409, "This job has no issues the fixer can fix.")
+    if state["not_author"]:
+        raise HTTPException(403, "Only the author who submitted this job can ask for fixes.")
+    if state["blocking"]:
+        return RedirectResponse(f"{PREFIX}/jobs/{state['blocking']['id']}", status_code=303)
+    src = store.job_dir(job_id)
+    new_id = store.create(conn, "fix", job["notebook"], author=job["author"],
+                          category=job["category"], source=job["source"],
+                          source_url=job["source_url"], parent=job_id)
+    dest = store.job_dir(new_id)
+    # The version that was diagnosed, never a newer one from GitHub.
+    for name in ("input.ipynb", "pr.json"):
+        if (src / name).is_file():
+            (dest / name).write_bytes((src / name).read_bytes())
+    (dest / pipeline.VERIFICATION).write_bytes(state["diagnosis"].read_bytes())
+    store.log(new_id, f"Fixes the issues found by job {job_id}")
+    return RedirectResponse(f"{PREFIX}/jobs/{new_id}", status_code=303)
+
+
+@app.get("/jobs/{job_id}/fixed.ipynb")
+def fixed(job_id: str):
+    _, job = load_job(job_id)
+    path = store.job_dir(job_id) / pipeline.FIXED
+    if not path.exists():
+        raise HTTPException(404, "No fixed notebook")
+    return FileResponse(path, media_type="application/x-ipynb+json", filename=job["notebook"])
+
+
 @app.get("/jobs/{job_id}/annotated.ipynb")
 def annotated(job_id: str):
     _, job = load_job(job_id)
@@ -279,14 +321,14 @@ def executed(job_id: str):
                         filename=f"{Path(job['notebook']).stem}.executed.ipynb")
 
 
-VIEWS = {"executed": "Executed", "annotated": "Annotated", "submitted": "Submitted"}
+VIEWS = {"executed": "Executed", "fixed": "Fixed", "annotated": "Annotated", "submitted": "Submitted"}
 
 
 def notebook_views(job: dict) -> dict[str, Path]:
     """The notebooks a job page can show, best first."""
     d = store.job_dir(job["id"])
-    views = {"executed": executed_path(job), "annotated": d / "annotated.ipynb",
-             "submitted": d / "input.ipynb"}
+    views = {"executed": executed_path(job), "fixed": d / pipeline.FIXED,
+             "annotated": d / "annotated.ipynb", "submitted": d / "input.ipynb"}
     return {k: p for k, p in views.items() if p is not None and p.is_file()}
 
 
@@ -300,9 +342,11 @@ def view_notebook(job_id: str, which: str):
         nb = json.loads(path.read_text())
     except ValueError:
         raise HTTPException(422, "The notebook is not valid JSON")
-    # The annotated notebook numbers its cells differently: its issues would land on the wrong cells.
-    issues = ((job.get("summary") or {}).get("run") or {}).get("issues") or [] \
-        if which != "annotated" else []
+    # The annotated notebook numbers its cells differently: its issues would land on the
+    # wrong cells. A fix job's views show the issues still open, not the ones it fixed.
+    run = (job.get("summary") or {}).get("run") or {}
+    issues = [] if which == "annotated" else open_issues(run) if job["kind"] == "fix" \
+        else run.get("issues") or []
     page = nbrender.notebook_html(nb, f"{job['notebook']} ({VIEWS[which].lower()})", issues)
     # Notebooks come from authors: no scripts, no external loads, in a sandboxed frame.
     return HTMLResponse(page, headers={"Content-Security-Policy": nbrender.CSP,
@@ -348,7 +392,7 @@ def again_state(conn, job: dict, author: str) -> dict | None:
     """Whether a finished author job can be run again by this visitor: None if
     it cannot be at all (still active, a nightly job, its upload is gone),
     else {"not_author": bool, "blocking": the author's active job of that kind}."""
-    if job["status"] not in store.FINAL or job["kind"] == "regression" or not job["author"]:
+    if job["status"] not in store.FINAL or job["kind"] in ("regression", "fix") or not job["author"]:
         return None
     if job["source"] == "upload" and not (store.job_dir(job["id"]) / "input.ipynb").is_file():
         return None
@@ -356,6 +400,32 @@ def again_state(conn, job: dict, author: str) -> dict | None:
         return None
     return {"not_author": author != job["author"],
             "blocking": active_job(conn, job["author"], job["kind"])}
+
+
+def fix_state(conn, job: dict, author: str) -> dict | None:
+    """Whether a failed validate job can have a fix job: None if not (no issue
+    the fixer may fix, or the diagnosis is gone), else {"not_author",
+    "blocking": the author's active fix job, "diagnosis": its result JSON}."""
+    if job["kind"] != "validate" or job["status"] != "failed" or not job["author"]:
+        return None
+    issues = ((job.get("summary") or {}).get("run") or {}).get("issues") or []
+    if not any(i.get("fixability") == "auto_fixable" for i in issues):
+        return None
+    d = store.job_dir(job["id"])
+    results = sorted((d / "results").glob("*.json"), key=lambda p: p.stat().st_mtime)
+    if not results or not (d / "input.ipynb").is_file():
+        return None
+    return {"not_author": author != job["author"], "diagnosis": results[-1],
+            "count": sum(i.get("fixability") == "auto_fixable" for i in issues),
+            "blocking": active_job(conn, job["author"], "fix")}
+
+
+def open_issues(run: dict) -> list[dict]:
+    """A fix job's issues minus the ones a validated fix took care of: those the
+    fixer could fix whose cell has a fix that worked."""
+    fixed = {f.get("cell_index") for f in run.get("fixes") or [] if f.get("validated")}
+    return [i for i in run.get("issues") or []
+            if not (i.get("fixability") == "auto_fixable" and i.get("cell_index") in fixed)]
 
 
 def blocked_reason(job: dict) -> str | None:
@@ -392,6 +462,7 @@ def job_steps(job: dict, final: bool, log: str = "") -> list[dict]:
     kind, phase, status, stage = job["kind"], job["phase"], job["status"], job.get("stage") or ""
     names = {"validate": ["Queued", "Static checks", "Waiting for a GPU", "Running"],
              "annotate": ["Queued", "Static checks", "Annotating", "Checking the result"],
+             "fix": ["Queued", "Static checks", "Waiting for a GPU", "Fixing and running"],
              "regression": ["Queued", "Waiting for a GPU", "Running"]}[kind]
     names = names + [OUTCOME.get(status, "Done") if final else "Done"]
     gpu_wait = names.index("Waiting for a GPU") if "Waiting for a GPU" in names else None

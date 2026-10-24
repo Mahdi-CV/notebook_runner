@@ -46,15 +46,15 @@ SNAPSHOT_SECONDS = 15
 PROBE_SECONDS = 60
 PREPARE_SLOTS = int(os.environ.get("NBR_PREPARE_SLOTS") or 3)
 # Finished jobs' directories are deleted after this many days (the jobs.db row stays).
-RETENTION_DAYS = {"regression": 7, "validate": int(os.environ.get("NBR_JOB_RETENTION_DAYS") or 30),
-                  "annotate": int(os.environ.get("NBR_JOB_RETENTION_DAYS") or 30)}
+RETENTION_DAYS = {"regression": 7, **{kind: int(os.environ.get("NBR_JOB_RETENTION_DAYS") or 30)
+                                       for kind in store.AUTHOR_KINDS}}
 PRUNE_SECONDS = 3600
 LAUNCHER = os.environ.get("NBR_JOB_LAUNCHER") or "docker"
 RUN_JOB = store.REPO_ROOT / "docker" / "run-job.sh"
 # Author jobs reach their credentials only through the broker (authoring/broker.py).
 KEYS_FILE = store.JOBS_DIR / ".broker" / "keys.json"
 BROKER_CONTAINER = "nbr-broker"  # docker/run-broker.sh
-AUTHOR_KINDS = ("validate", "annotate")
+AUTHOR_KINDS = store.AUTHOR_KINDS
 
 
 # ── launching and following phases ───────────────────────────────────────────
@@ -314,7 +314,7 @@ class Worker:
             self.last_probe = time.time()
             threading.Thread(target=self.probe, args=(targets,), daemon=True).start()
         estimates = {}
-        for kind in ("validate", "annotate", "regression"):
+        for kind in store.KINDS:
             d = store.recent_durations(self.conn, kind)
             if d:
                 estimates[kind] = round(statistics.median(d) / 60, 1)
