@@ -233,9 +233,8 @@ def executed_notebook_view(result_id: int):
         nb = json.loads(path.read_text())
     except ValueError:
         raise HTTPException(422, "The executed notebook is not valid JSON")
-    flagged = {i["cell_index"] for i in payload.get("issues") or []
-               if isinstance(i.get("cell_index"), int)}
-    page = nbrender.notebook_html(nb, f"{res['notebook']} (executed)", flagged)
+    page = nbrender.notebook_html(nb, f"{res['notebook']} (executed)", payload.get("issues") or [],
+                                  audience="maintainers")
     return HTMLResponse(page, headers={"Content-Security-Policy": nbrender.CSP,
                                        "X-Content-Type-Options": "nosniff"})
 

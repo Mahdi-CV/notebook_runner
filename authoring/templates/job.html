@@ -119,7 +119,7 @@
 <div class="filters">
   {% for v in views %}<a href="{{ prefix }}/jobs/{{ job.id }}/view/{{ v }}" target="nbview" class="{{ 'on' if loop.first }}"{% if loop.first %} aria-current="true"{% endif %}
      onclick="for (const a of this.parentNode.querySelectorAll('a')) { a.classList.toggle('on', a === this); a === this ? a.setAttribute('aria-current', 'true') : a.removeAttribute('aria-current'); } document.querySelector('iframe[name=nbview]').title = '{{ view_names[v] }} notebook: {{ job.notebook }}'">{{ view_names[v] }}</a>{% endfor %}
-  {% if 'executed' in views %}<span class="dim" style="align-self: center">Cells with an error or an issue are marked in red with ⚠.</span>{% endif %}
+  {% if 'executed' in views %}<span class="dim" style="align-self: center">Cells with an error or an issue are marked in red with ⚠, each issue under its cell.</span>{% endif %}
 </div>
 <iframe name="nbview" src="{{ nbview }}" sandbox title="{{ view_names[views[0]] }} notebook: {{ job.notebook }}"
         style="width: 100%; height: min(820px, 75vh); resize: vertical; border: 1px solid var(--line); border-radius: 8px; background: #fff"></iframe>

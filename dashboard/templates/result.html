@@ -10,7 +10,7 @@
   <div class="head">{{ status | statuslabel }}</div>
   {% if verdict %}
   <p>{% if executed and verdict.failed_cell is not none %}{% set parts = verdict.reason.split('cell ' ~ verdict.failed_cell, 1) %}{{ parts[0] }}<a href="/result/{{ res.id }}/view#cell-{{ verdict.failed_cell }}" target="nbview" onclick="document.getElementById('notebook').scrollIntoView()">cell {{ verdict.failed_cell }}</a>{{ parts[1] if parts | length > 1 else '' }}{% else %}{{ verdict.reason }}{% endif %}{% if verdict.agent_disagrees %} <span class="badge warn">the agent said {{ payload.agent_status | statuslabel }}</span>{% endif %}</p>
-  <div class="dim">{{ verdict.cells.executed }} ran · {{ verdict.cells.failed }} failed · {{ verdict.cells.skipped }} skipped · {{ verdict.cells.not_run }} not run</div>
+  {% if verdict.cells and verdict.cells.values() | sum %}<div class="dim">{{ verdict.cells.executed }} ran · {{ verdict.cells.failed }} failed · {{ verdict.cells.skipped }} skipped · {{ verdict.cells.not_run }} not run</div>{% endif %}
   {% else %}
   <p>Set by the agent: this result was recorded before verdicts were computed from the executed notebook.</p>
   {% endif %}
@@ -80,7 +80,7 @@
 
 {% if executed %}
 <h2 id="notebook">Executed notebook</h2>
-<p class="dim">Every cell's output from this run; cells with an error or an issue are marked in red with ⚠. <a href="/result/{{ res.id }}/notebook">Download it</a>.</p>
+<p class="dim">Every cell's output from this run; cells with an error or an issue are marked in red with ⚠, and each issue is shown under its cell. <a href="/result/{{ res.id }}/notebook">Download it</a>.</p>
 <iframe name="nbview" src="/result/{{ res.id }}/view" sandbox title="Executed notebook"
         style="width: 100%; height: min(820px, 75vh); resize: vertical; border: 1px solid var(--line); border-radius: 8px; background: #fff"></iframe>
 {% endif %}
