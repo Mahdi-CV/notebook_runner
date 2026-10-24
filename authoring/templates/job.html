@@ -1,6 +1,6 @@
 {% extends "layout.html" %}
 {% from "_widgets.html" import job_badge with context %}
-{% from "_macros.html" import fixability_badge, issues_table %}
+{% from "_macros.html" import fixability_badge, issues_table, download_button %}
 {% block title %}{{ job.notebook }}{% endblock %}
 {% block content %}
 {% set s = job.summary or {} %}
@@ -16,8 +16,13 @@
 </p>
 
 <div class="card">
+  {# A connected sequence: a ticked dot per finished step, the current one
+     ringed, the one a job stopped at coloured by its outcome. #}
   <ol class="steps" aria-label="Progress">
-    {% for step in steps %}<li class="{{ step.state }}"{% if step.state == 'now' or (final and step.state not in ('done', '') and not loop.last) %} aria-current="step"{% endif %}>{% if step.state == 'done' %}✓ {% endif %}{{ step.name }}</li>{% endfor %}
+    {% for step in steps %}<li class="{{ step.state }}"{% if step.state == 'now' or (final and step.state not in ('done', '') and not loop.last) %} aria-current="step"{% endif %}>
+      <span class="dot" aria-hidden="true">{{ '✓' if step.state == 'done' else {'bad': '✕', 'warn': '!', 'muted': '–'}.get(step.state, loop.index) }}</span>
+      <span class="name">{{ step.name }}{% if step.state == 'done' %}<span class="vh"> (done)</span>{% elif step.state in ('bad', 'warn', 'muted') %}<span class="vh"> (stopped here)</span>{% endif %}</span>
+    </li>{% endfor %}
   </ol>
   {% if final %}
   <div class="outcome {{ job.status | jobclass }}" style="margin: 14px 0 0">
@@ -50,12 +55,12 @@
       {% if s.run.message %}<dt>Message</dt><dd>{{ s.run.message }}</dd>{% endif %}
       <dt>Runner</dt><dd>{{ s.run.target }} ({{ s.run.minutes }} min)</dd>
       {% if s.run.docker_image %}<dt>Image</dt><dd class="mono">{{ s.run.docker_image }}</dd>{% endif %}
-      {% if executed %}<dt>Executed notebook</dt><dd><a href="{{ prefix }}/jobs/{{ job.id }}/executed.ipynb">Download it with every cell's output</a></dd>{% endif %}
+      {% if executed %}<dt>Executed notebook</dt><dd>{{ download_button(prefix ~ '/jobs/' ~ job.id ~ '/executed.ipynb', 'Download executed notebook') }}<div class="meta" style="margin-top: 4px">Every cell's output from this run.</div></dd>{% endif %}
     </dl>
   </div>
   {% if s.run.issues %}
   <h2>Issues to fix ({{ s.run.issues | length }})</h2>
-  {{ issues_table(s.run.issues, (prefix ~ '/jobs/' ~ job.id ~ '/view/executed') if 'executed' in views else None) }}
+  {{ issues_table(s.run.issues, (prefix ~ '/jobs/' ~ job.id ~ '/view/executed') if 'executed' in views else None, audience='author') }}
   {% elif job.status == 'passed' %}
   <p>Every code cell ran without an error.</p>
   {% endif %}
@@ -63,7 +68,7 @@
 
   {% if job.kind == 'annotate' and s.diff %}
   <h2>Annotated notebook</h2>
-  <p><a class="button" href="{{ prefix }}/jobs/{{ job.id }}/annotated.ipynb">Download the annotated notebook</a>
+  <p>{{ download_button(prefix ~ '/jobs/' ~ job.id ~ '/annotated.ipynb', 'Download annotated notebook') }}
      <span class="dim">Review the changes below before committing it.</span></p>
   {% if s.changes %}<div class="card prose">{{ s.changes | md }}</div>{% endif %}
   {% if s.diff.metadata_before != s.diff.metadata_after %}

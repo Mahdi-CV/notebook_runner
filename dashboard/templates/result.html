@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import status_badge, fixability_badge, nb_link, target_type, issues_table %}
+{% from "_macros.html" import status_badge, fixability_badge, nb_link, target_type, issues_table, download_button %}
 {% block title %}Result {{ res.id }}{% endblock %}
 {% block content %}
 <p class="crumbs"><a href="/">Notebooks</a> / {{ nb_link(res.notebook) }} / result {{ res.id }}</p>
@@ -19,7 +19,7 @@
 <div class="grid2">
   <div class="card">
     <dl class="kv">
-      <dt>Executed notebook</dt><dd>{% if executed %}<a href="/result/{{ res.id }}/notebook">Download (.ipynb)</a>{% else %}<span class="dim">—</span>{% endif %}</dd>
+      <dt>Executed notebook</dt><dd>{% if executed %}{{ download_button('/result/' ~ res.id ~ '/notebook', 'Download executed notebook') }}{% else %}<span class="dim">—</span>{% endif %}</dd>
       <dt>Kind</dt><dd>{{ res.phase | kind }}</dd>
       <dt>Agent</dt><dd class="mono">{{ res.agent or "—" }}</dd>
       <dt>Recorded</dt><dd>{{ res.recorded_at | ts }}</dd>
@@ -80,7 +80,8 @@
 
 {% if executed %}
 <h2 id="notebook">Executed notebook</h2>
-<p class="dim">Every cell's output from this run; cells with an error or an issue are marked in red with ⚠. <a href="/result/{{ res.id }}/notebook">Download it</a>.</p>
+<p class="dim">Every cell's output from this run; cells with an error or an issue are marked in red with ⚠.</p>
+<p>{{ download_button('/result/' ~ res.id ~ '/notebook', 'Download executed notebook') }}</p>
 <iframe name="nbview" src="/result/{{ res.id }}/view" sandbox title="Executed notebook"
         style="width: 100%; height: min(820px, 75vh); resize: vertical; border: 1px solid var(--line); border-radius: 8px; background: #fff"></iframe>
 {% endif %}

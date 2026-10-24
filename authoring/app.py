@@ -330,7 +330,7 @@ def severity_badge(sev: str) -> str:
 
 def job_class(status: str) -> str:
     return {"passed": "ok", "done": "ok", "failed": "bad", "error": "bad", "blocked": "warn",
-            "cancelled": "muted", "queued": "muted", "running": "info"}.get(status, "muted")
+            "cancelled": "muted", "queued": "pending", "running": "info"}.get(status, "muted")
 
 
 templates.env.filters["sevclass"] = severity_badge
