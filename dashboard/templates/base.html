@@ -60,6 +60,8 @@
   .info { color: var(--info); background: var(--info-bg); }
   .muted { color: var(--muted); background: var(--muted-bg); }
   .badge.muted { color: #585c66; }
+  /* Not started yet (a queued job): outlined, so it never reads as a filled verdict. */
+  .badge.pending { color: #585c66; background: transparent; box-shadow: inset 0 0 0 1px #8a8f99; }
   :focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
   .dim { color: var(--muted); }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
@@ -93,6 +95,9 @@
   button.secondary:hover:not(:disabled), .button.secondary:hover { background: var(--bg); border-color: var(--muted); }
   button:active:not(:disabled), .button:active { transform: translateY(1px); }
   button:disabled { opacity: .5; cursor: not-allowed; }
+  /* Downloads (executed and annotated notebooks): secondary buttons with a download glyph. */
+  .button.download { display: inline-flex; align-items: center; gap: 6px; }
+  .button.download svg { width: 16px; height: 16px; flex: none; }
   .filters a:hover:not(.on) { border-color: var(--muted); }
   button, .button, .filters a, a.tile { transition: background-color .12s, border-color .12s; }
   header :focus-visible { outline-color: #fff; outline-offset: 4px; border-radius: 2px; }

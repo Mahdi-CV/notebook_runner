@@ -12,8 +12,18 @@
 {%- if req.capabilities %} · needs {{ req.capabilities | sort | join(", ") }}{% endif %}
 {%- endmacro %}
 
-{% macro fixability_badge(f) -%}
-{%- if f -%}<span class="badge {{ {'auto_fixable': 'info', 'needs_author': 'warn', 'infra_blocked': 'muted'}.get(f, 'muted') }}">{{ {'auto_fixable': 'Auto-fixable', 'needs_author': 'Needs the author', 'infra_blocked': 'Platform issue'}.get(f, f | replace('_', ' ')) }}</span>{%- endif -%}
+{# Who fixes an issue. Authors read it about their own notebook; maintainers
+   (the dashboard) keep the short triage words. #}
+{% macro fixability_badge(f, audience="maintainer") -%}
+{%- set words = {"auto_fixable": "Can be fixed automatically", "needs_author": "Needs your change",
+                 "infra_blocked": "Platform issue, not your notebook"} if audience == "author" else
+                {"auto_fixable": "Auto-fixable", "needs_author": "Needs the author", "infra_blocked": "Platform issue"} -%}
+{%- if f -%}<span class="badge {{ {'auto_fixable': 'info', 'needs_author': 'warn', 'infra_blocked': 'muted'}.get(f, 'muted') }}">{{ words.get(f, f | replace('_', ' ')) }}</span>{%- endif -%}
+{%- endmacro %}
+
+{# A notebook download, the same secondary button with a download glyph in both apps. #}
+{% macro download_button(href, label) -%}
+<a class="button secondary download" href="{{ href }}"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 2.5v8M4.5 7 8 10.5 11.5 7M3 13.5h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>{{ label }}</a>
 {%- endmacro %}
 
 {% macro nb_link(key) -%}
@@ -25,9 +35,10 @@
 {%- endmacro %}
 
 {# One issues table for both apps: cell (linked into the notebook view when
-   cell_href is given), type, what broke, the fix, and who fixes it; in cell
-   order, issues without a cell (no index, or the agents' -1) last. #}
-{% macro issues_table(issues, cell_href=None) -%}
+   cell_href is given), type, what broke, the fix, and who fixes it (worded
+   for the audience, see fixability_badge); in cell order, issues without a
+   cell (no index, or the agents' -1) last. #}
+{% macro issues_table(issues, cell_href=None, audience="maintainer") -%}
 {%- set numbered = issues | selectattr('cell_index', 'integer') | selectattr('cell_index', 'ge', 0)
                           | sort(attribute='cell_index') | list -%}
 {%- set issues = numbered + (issues | reject('in', numbered) | list) -%}
@@ -40,7 +51,7 @@
       <td class="nowrap">{{ i.error_type | issue_type }}</td>
       <td class="wrap">{{ i.description | codespans }}</td>
       <td class="wrap">{{ i.proposed_fix | codespans }}</td>
-      <td>{{ fixability_badge(i.fixability) }}</td>
+      <td>{{ fixability_badge(i.fixability, audience) }}</td>
     </tr>
   {% endfor %}
   </tbody>
