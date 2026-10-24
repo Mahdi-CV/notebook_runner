@@ -2,22 +2,22 @@
 {% block title %}Runs{% endblock %}
 {% block content %}
 <h1>Runs</h1>
-<p class="sub">Each row is one invocation of the runner (a daily pass or an ad-hoc run). Results imported from older result files aren't tied to a run and appear only on their notebook's page.</p>
+<p class="sub">Each row is one batch of notebook runs: the nightly pass or a manual run. Results imported from older result files aren't part of a run and appear only on their notebook's page.</p>
 <div class="table-wrap"><table>
-  <thead><tr><th scope="col">Run</th><th scope="col">Started</th><th scope="col">Finished</th><th scope="col">Mode</th><th scope="col">Targets</th><th scope="col">Pass</th><th scope="col">Fail</th><th scope="col">Blocked</th><th scope="col">No target</th><th scope="col">Cost</th></tr></thead>
+  <thead><tr><th scope="col">Run</th><th scope="col">Started</th><th scope="col">Finished</th><th scope="col">Kind</th><th scope="col">Runners</th><th scope="col" class="num">Passed</th><th scope="col" class="num">Failed</th><th scope="col" class="num">Blocked</th><th scope="col" class="num">No runner fits</th><th scope="col" class="num">Cost</th></tr></thead>
   <tbody>
   {% for r in runs %}
     <tr>
       <td class="mono"><a href="/run/{{ r.run_id }}">{{ r.run_id }}</a></td>
-      <td>{{ r.started_at | ts }}<br><span class="dim">{{ r.started_at | age }}</span></td>
-      <td>{% if r.finished_at %}{{ r.finished_at | ts }}{% else %}<span class="badge warn" title="no finish time recorded: still running, or interrupted">unfinished</span>{% endif %}</td>
-      <td>{{ r.mode or "—" }}</td>
+      <td class="ts">{{ r.started_at | ts }}<br><span class="dim">{{ r.started_at | age }}</span></td>
+      <td class="ts">{% if r.finished_at %}{{ r.finished_at | ts }}{% else %}<span class="badge warn" title="no finish time recorded: still running, or interrupted">unfinished</span>{% endif %}</td>
+      <td>{{ r.mode | kind if r.mode else "—" }}</td>
       <td class="mono">{{ r.host or "—" }}</td>
-      <td>{{ r.counts.pass }}</td>
-      <td>{% if r.counts.fail %}<span class="badge bad">{{ r.counts.fail }}</span>{% else %}0{% endif %}</td>
-      <td>{% if r.counts.blocked %}<span class="badge warn">{{ r.counts.blocked }}</span>{% else %}0{% endif %}</td>
-      <td>{{ r.counts.skipped }}</td>
-      <td>{{ r.total_cost_usd | cost }}</td>
+      <td class="num">{{ r.counts.pass }}</td>
+      <td class="num">{% if r.counts.fail %}<b style="color: var(--bad)">{{ r.counts.fail }}</b>{% else %}<span class="dim">0</span>{% endif %}</td>
+      <td class="num">{% if r.counts.blocked %}<b style="color: var(--warn)">{{ r.counts.blocked }}</b>{% else %}<span class="dim">0</span>{% endif %}</td>
+      <td class="num">{{ r.counts.skipped }}</td>
+      <td class="num">{{ r.total_cost_usd | cost }}</td>
     </tr>
   {% else %}
     <tr><td colspan="10" class="dim">No runs recorded yet.</td></tr>

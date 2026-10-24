@@ -26,16 +26,14 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.templating import Jinja2Templates
 from fastapi.exception_handlers import http_exception_handler
 from jinja2 import ChoiceLoader, FileSystemLoader
-from markupsafe import Markup, escape
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import capacity, pipeline, store
+from . import capacity, labels, pipeline, store
+from .labels import CATEGORIES
 from . import render as nbrender
 
 HERE = Path(__file__).resolve().parent
 MAX_UPLOAD_BYTES = int(os.environ.get("NBR_MAX_UPLOAD_MB") or 10) * 1024 * 1024
-CATEGORIES = {"inference": "Inference", "fine_tune": "Fine-tuning", "pretrain": "Training",
-              "gpu_dev_optimize": "GPU development and optimization"}
 DASHBOARD_URL = os.environ.get("NBR_DASHBOARD_URL")
 # NBR_AUTHORING_PREFIX: the path the regression dashboard serves this app under
 # when it proxies it on its own port (e.g. "/authoring"); links and redirects
@@ -44,7 +42,7 @@ PREFIX = (os.environ.get("NBR_AUTHORING_PREFIX") or "").rstrip("/")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._@'-]{0,59}$")
 FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.ipynb$")
 
-app = FastAPI(title="Notebook authoring", docs_url=None, redoc_url=None, openapi_url=None)
+app = FastAPI(title="Notebook CI · Authoring", docs_url=None, redoc_url=None, openapi_url=None)
 templates = Jinja2Templates(directory=str(HERE / "templates"))
 templates.env.loader = ChoiceLoader([FileSystemLoader(str(HERE / "templates")),
                                      FileSystemLoader(str(HERE.parent / "dashboard" / "templates"))])
@@ -174,7 +172,7 @@ def job_page(request: Request, job_id: str):
         except ValueError:
             static = None
     return render(request, "job.html", job=job, position=queue_position(conn, job),
-                  log=log_text, log_next=log_next, final=final, steps=job_steps(job, final),
+                  log=log_text, log_next=log_next, final=final, steps=job_steps(job, final, log_text),
                   static=static,
                   has={name: (d / name).exists() for name in
                        ("annotated.ipynb", "static.json", "CHANGES.md")},
@@ -291,11 +289,11 @@ def executed_path(job: dict) -> Path | None:
     return path if path.is_file() else None
 
 
-OUTCOME = {"passed": "Pass", "done": "Done", "failed": "Fail", "blocked": "Blocked",
-           "cancelled": "Cancelled", "error": "Error"}
+OUTCOME = {"passed": "Passed", "done": "Done", "failed": "Failed", "blocked": "Blocked",
+           "cancelled": "Cancelled", "error": "Crashed"}
 
 
-def job_steps(job: dict, final: bool) -> list[dict]:
+def job_steps(job: dict, final: bool, log: str = "") -> list[dict]:
     """The job page's progress steps: [{"name", "state"}], where state is done,
     now, or (where a job stopped short) its outcome's badge class."""
     kind, phase, status, stage = job["kind"], job["phase"], job["status"], job.get("stage") or ""
@@ -305,7 +303,9 @@ def job_steps(job: dict, final: bool) -> list[dict]:
     names = names + [OUTCOME.get(status, "Done") if final else "Done"]
     gpu_wait = names.index("Waiting for a GPU") if "Waiting for a GPU" in names else None
     if kind == "annotate":
-        reached = 3 if stage.startswith("Checking") else 2 if stage.startswith("Annotating") \
+        seen = stage if not final else "\n".join(
+            line[3:] for line in log.splitlines() if line.startswith("── "))
+        reached = 3 if "Checking" in seen else 2 if "Annotating" in seen \
             else 1 if status == "running" or job.get("started_at") else 0
     elif phase == "gpu":
         ran = status == "running" or (job.get("summary") or {}).get("run")
@@ -317,16 +317,11 @@ def job_steps(job: dict, final: bool) -> list[dict]:
     if final:
         reached = min(reached, len(names) - 2)
         cls = job_class(status)
-        return [{"name": n, "state": "done" if i < reached else cls if i in (reached, len(names) - 1)
-                 else ""} for i, n in enumerate(names)]
+        # Only the step it stopped at is coloured; the outcome box below states the result.
+        return [{"name": n, "state": "done" if i < reached else cls if i == reached else ""}
+                for i, n in enumerate(names)]
     return [{"name": n, "state": "done" if i < reached else "now" if i == reached else ""}
             for i, n in enumerate(names)]
-
-
-def codespans(text) -> Markup:
-    """Escape text, then show `backticked` spans as code."""
-    escaped = str(escape(text or ""))
-    return Markup(re.sub(r"`([^`\n]+)`", r"<code>\1</code>", escaped))
 
 
 def severity_badge(sev: str) -> str:
@@ -341,8 +336,8 @@ def job_class(status: str) -> str:
 templates.env.filters["sevclass"] = severity_badge
 templates.env.filters["jobclass"] = job_class
 # The same verdict words as the regression dashboard (pass/fail).
-templates.env.filters["joblabel"] = lambda s: {"passed": "pass", "failed": "fail"}.get(s, s)
-templates.env.filters["codespans"] = codespans
+templates.env.filters["joblabel"] = lambda s: labels.STATUSES.get(s, s)
+labels.register(templates.env)
 
 
 @app.exception_handler(StarletteHTTPException)

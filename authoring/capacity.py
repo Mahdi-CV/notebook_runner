@@ -93,7 +93,7 @@ def probe(name: str, target: dict) -> str:
                 return "unreachable: " + (proc.stderr.strip().splitlines() or ["kubectl failed"])[-1]
             pods = json.loads(proc.stdout).get("items", [])
             pending = sum(p.get("status", {}).get("phase") == "Pending" for p in pods)
-            return "ok" + (f" ({pending} pod(s) waiting for GPUs)" if pending else "")
+            return "ok" + (f" ({pending} pod{'' if pending == 1 else 's'} waiting for GPUs)" if pending else "")
         if kind == "radeon":
             import radeon_pod
             st = radeon_pod.Service(target).status().get("status")

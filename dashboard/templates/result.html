@@ -1,73 +1,63 @@
 {% extends "base.html" %}
-{% from "_macros.html" import status_badge, fixability_badge, nb_link, target_type %}
+{% from "_macros.html" import status_badge, fixability_badge, nb_link, target_type, issues_table %}
 {% block title %}Result {{ res.id }}{% endblock %}
 {% block content %}
-<p class="sub"><a href="/">Notebooks</a> / {{ nb_link(res.notebook) }} / result {{ res.id }}</p>
+<p class="crumbs"><a href="/">Notebooks</a> / {{ nb_link(res.notebook) }} / result {{ res.id }}</p>
 <h1>{{ res.notebook.split('/')[-1] }} {{ status_badge(status) }}</h1>
-<p class="sub">{{ res.phase }} run · {{ res.recorded_at | ts }} ({{ res.recorded_at | age }})</p>
+<p class="sub">{{ res.phase | kind }} · {{ res.recorded_at | ts }} ({{ res.recorded_at | age }}){% if res.server %} · ran on {{ res.server }}{% endif %}</p>
+
+<div class="outcome {{ {'pass': 'ok', 'fail': 'bad', 'blocked': 'warn'}.get(status, 'muted') }}">
+  <div class="head">{{ status | statuslabel }}</div>
+  {% if verdict %}
+  <p>{% if executed and verdict.failed_cell is not none %}{% set parts = verdict.reason.split('cell ' ~ verdict.failed_cell, 1) %}{{ parts[0] }}<a href="/result/{{ res.id }}/view#cell-{{ verdict.failed_cell }}" target="nbview" onclick="document.getElementById('notebook').scrollIntoView()">cell {{ verdict.failed_cell }}</a>{{ parts[1] if parts | length > 1 else '' }}{% else %}{{ verdict.reason }}{% endif %}{% if verdict.agent_disagrees %} <span class="badge warn">the agent said {{ payload.agent_status | statuslabel }}</span>{% endif %}</p>
+  <div class="dim">{{ verdict.cells.executed }} ran · {{ verdict.cells.failed }} failed · {{ verdict.cells.skipped }} skipped · {{ verdict.cells.not_run }} not run</div>
+  {% else %}
+  <p>Set by the agent: this result was recorded before verdicts were computed from the executed notebook.</p>
+  {% endif %}
+</div>
 
 <div class="grid2">
   <div class="card">
     <dl class="kv">
-      <dt>Status</dt><dd>{{ status_badge(status) }}</dd>
-      {% if verdict %}
-      <dt>Verdict</dt><dd>{% if executed and verdict.failed_cell is not none %}{% set parts = verdict.reason.split('cell ' ~ verdict.failed_cell, 1) %}{{ parts[0] }}<a href="/result/{{ res.id }}/view#cell-{{ verdict.failed_cell }}" target="nbview" onclick="document.getElementById('notebook').scrollIntoView()">cell {{ verdict.failed_cell }}</a>{{ parts[1] if parts | length > 1 else '' }}{% else %}{{ verdict.reason }}{% endif %}{% if verdict.agent_disagrees %}<br><span class="badge warn">agent said {{ payload.agent_status }}</span>{% endif %}</dd>
-      <dt>Cells</dt><dd>{{ verdict.cells.executed }} ran · {{ verdict.cells.failed }} failed · {{ verdict.cells.skipped }} skipped · {{ verdict.cells.not_run }} not run</dd>
-      {% else %}
-      <dt>Verdict</dt><dd class="dim">set by the agent (recorded before verdicts were computed from the executed notebook)</dd>
-      {% endif %}
-      <dt>Executed notebook</dt><dd>{% if executed %}<a href="/result/{{ res.id }}/notebook">download</a>{% else %}<span class="dim">—</span>{% endif %}</dd>
-      <dt>Phase</dt><dd>{{ res.phase }}</dd>
+      <dt>Executed notebook</dt><dd>{% if executed %}<a href="/result/{{ res.id }}/notebook">Download (.ipynb)</a>{% else %}<span class="dim">—</span>{% endif %}</dd>
+      <dt>Kind</dt><dd>{{ res.phase | kind }}</dd>
       <dt>Agent</dt><dd class="mono">{{ res.agent or "—" }}</dd>
       <dt>Recorded</dt><dd>{{ res.recorded_at | ts }}</dd>
       <dt>Run</dt><dd class="mono">{% if res.run_id %}<a href="/run/{{ res.run_id }}">{{ res.run_id }}</a>{% else %}<span class="dim">imported from a result file</span>{% endif %}</dd>
-      <dt>Turns</dt><dd>{{ res.num_turns or "—" }}</dd>
+      <dt>Agent turns</dt><dd>{{ res.num_turns or "—" }}</dd>
       <dt>Cost</dt><dd>{{ res.cost_usd | cost }}</dd>
     </dl>
   </div>
   <div class="card">
     <dl class="kv">
-      <dt>Target</dt><dd class="mono">{{ res.server or "—" }}</dd>
+      <dt>Runner</dt><dd class="mono">{{ res.server or "—" }}</dd>
       {% if target %}
-        <dt>Target type</dt><dd>{{ target_type(target.type) }}</dd>
+        <dt>Type</dt><dd>{{ target_type(target.type) }}</dd>
         {% if target.type == "k8s" %}
           <dt>Cluster</dt><dd class="mono">{{ target.context }} / {{ target.namespace }}</dd>
           <dt>Node selector</dt><dd class="mono">{% for k, v in (target.node_selector or {}).items() %}{{ k }}={{ v }}<br>{% endfor %}</dd>
         {% endif %}
         <dt>Hardware</dt><dd>{{ target.hardware or "—" }}</dd>
       {% endif %}
-      <dt>Docker image</dt><dd class="mono">{{ res.docker_image or "—" }}</dd>
-      <dt>Result file</dt><dd class="mono dim">{{ (res.result_file or "—").split('/')[-1] }}</dd>
+      <dt>Docker image</dt><dd class="mono" style="white-space: normal; word-break: break-all">{{ res.docker_image or "—" }}</dd>
+      <dt>Result file</dt><dd class="mono dim" style="word-break: break-all">{{ (res.result_file or "—").split('/')[-1] }}</dd>
     </dl>
   </div>
 </div>
 
 {% if res.summary %}
 <h2>Summary</h2>
-<div class="card wrap">{{ res.summary }}</div>
+<div class="card"><div class="prose">{{ res.summary | codespans }}</div></div>
 {% endif %}
 
 {% if res.message and not (verdict and verdict.reason == res.message) %}
-<h2>Runner message</h2>
+<h2>Message</h2>
 <pre>{{ res.message }}</pre>
 {% endif %}
 
 <h2>Issues ({{ res.issues | length }})</h2>
 {% if res.issues %}
-<div class="table-wrap"><table>
-  <thead><tr><th scope="col">Cell</th><th scope="col">Type</th><th scope="col">Fixability</th><th scope="col">What broke</th><th scope="col">Proposed fix</th></tr></thead>
-  <tbody>
-  {% for i in res.issues %}
-    <tr>
-      <td>{% if i.cell_index is not none and executed %}<a href="/result/{{ res.id }}/view#cell-{{ i.cell_index }}" target="nbview" onclick="document.getElementById('notebook').scrollIntoView()">{{ i.cell_index }}</a>{% else %}{{ i.cell_index if i.cell_index is not none else "—" }}{% endif %}</td>
-      <td class="mono">{{ i.error_type or "—" }}</td>
-      <td>{{ fixability_badge(i.fixability) }}</td>
-      <td class="wrap">{{ i.description or "" }}</td>
-      <td class="wrap">{{ i.proposed_fix or "" }}</td>
-    </tr>
-  {% endfor %}
-  </tbody>
-</table></div>
+{{ issues_table(res.issues, ('/result/' ~ res.id ~ '/view') if executed else None) }}
 {% else %}
 <p class="dim">No issues recorded.</p>
 {% endif %}

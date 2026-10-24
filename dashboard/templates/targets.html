@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 {% from "_macros.html" import nb_link, requirements, target_type %}
-{% block title %}Targets{% endblock %}
+{% block title %}Routing{% endblock %}
 {% block content %}
-<h1>Targets</h1>
-<p class="sub">Where the runner can execute notebooks (<span class="mono">runner.yaml</span>, in preference order), and where each notebook's declared requirements route it.</p>
+<h1>Routing</h1>
+<p class="sub">The GPU machines notebooks run on (from <code>runner.yaml</code>, in preference order), and which one each notebook is routed to.</p>
 
-<h2>Targets ({{ targets | length }})</h2>
+<h2>Runners ({{ targets | length }})</h2>
 <div class="table-wrap"><table>
   <thead><tr><th scope="col">Name</th><th scope="col">Type</th><th scope="col">Hardware</th><th scope="col">GPUs</th><th scope="col">Where</th><th scope="col">Scheduling</th><th scope="col">Provides</th></tr></thead>
   <tbody>
@@ -30,15 +30,15 @@
 </table></div>
 
 {% for category, items in groups.items() %}
-<h2>{{ category }} ({{ items | length }})</h2>
+<h2>{{ category | category }} ({{ items | length }})</h2>
 <div class="table-wrap"><table>
-  <thead><tr><th scope="col">Notebook</th><th scope="col">Needs</th><th scope="col">Runs on</th></tr></thead>
+  <thead><tr><th scope="col">Notebook</th><th scope="col">Needs</th><th scope="col">Runner</th></tr></thead>
   <tbody>
   {% for n in items %}
     <tr>
       <td>{{ nb_link(n.key) }}</td>
       <td>{{ requirements(n.req) if n.req else "—" }}</td>
-      <td class="mono">{% if n.target %}{{ n.target }}{% elif n.reason %}<span class="badge muted">no target</span> <span class="dim wrap">{{ n.reason }}</span>{% else %}—{% endif %}</td>
+      <td class="mono">{% if n.target %}{{ n.target }}{% elif n.reason %}<span class="badge muted">no runner fits</span> <span class="dim wrap">{{ n.reason | replace('no target fits: ', '') | replace(' | ', '; ') }}</span>{% else %}—{% endif %}</td>
     </tr>
   {% endfor %}
   </tbody>

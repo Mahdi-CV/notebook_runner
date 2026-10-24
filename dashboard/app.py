@@ -43,12 +43,13 @@ MAX_PROXY_BODY = 12 * 1024 * 1024
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from authoring import labels
 from authoring import render as nbrender  # the authoring service's notebook view
 import results_db
 import routing
 from status import category_of, result_reason, verdict_status
 
-app = FastAPI(title="Notebook regression dashboard", docs_url=None, redoc_url=None,
+app = FastAPI(title="Notebook CI", docs_url=None, redoc_url=None,
               openapi_url=None)
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
 
@@ -121,6 +122,9 @@ def why(result: dict | None) -> str:
         payload = {}
     merged = {**result, **payload}
     reason = result_reason(merged, width=110)
+    head, sep, rest = reason.partition(": ")
+    if sep and head in labels.ISSUE_TYPES:
+        reason = f"{labels.ISSUE_TYPES[head]}: {rest}"
     summary = (merged.get("summary") or "").strip()
     if verdict_status(merged.get("status")) != "pass" and not merged.get("issues") and summary:
         first = summary.split(". ")[0][:160]
@@ -132,6 +136,7 @@ def why(result: dict | None) -> str:
 for name, fn in {"ts": fmt_ts, "age": fmt_age, "cost": fmt_cost, "why": why,
                  "verdict": verdict_status}.items():
     templates.env.filters[name] = fn
+labels.register(templates.env)
 
 
 def notebook_row(key: str, latest: dict | None) -> dict:
@@ -303,6 +308,8 @@ def run(request: Request, run_id: str):
         argv = " ".join(json.loads(run_row.get("argv") or "[]"))
     except json.JSONDecodeError:
         argv = run_row.get("argv") or ""
+    order = {"fail": 0, "blocked": 1}
+    results = sorted(results, key=lambda r: (order.get(verdict_status(r["status"]), 2), r["notebook"]))
     return render(request, "run.html", run=run_row, results=results, argv=argv,
                   counts=run_counts(results))
 

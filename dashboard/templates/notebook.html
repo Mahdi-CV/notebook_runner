@@ -2,7 +2,7 @@
 {% from "_macros.html" import status_badge, requirements %}
 {% block title %}{{ row.name }}{% endblock %}
 {% block content %}
-<p class="sub"><a href="/">Notebooks</a> / {{ row.category }}</p>
+<p class="crumbs"><a href="/">Notebooks</a> / {{ row.category | category }}</p>
 <h1>{{ row.name }} {{ status_badge(row.status) }}</h1>
 <p class="sub mono">{{ key }}</p>
 
@@ -17,7 +17,7 @@
     <dl class="kv">
       {% if nb %}
       <dt>Needs</dt><dd>{{ requirements(nb.req) if nb.req else "—" }}</dd>
-      <dt>Runs on</dt><dd class="mono">{{ nb.target or "—" }}{% if nb.reason %}<br><span class="dim">{{ nb.reason }}</span>{% endif %}</dd>
+      <dt>Runner</dt><dd class="mono">{{ nb.target or "—" }}{% if nb.reason %}<br><span class="dim">{{ nb.reason }}</span>{% endif %}</dd>
       {% if nb.req and nb.req.image %}<dt>Image</dt><dd class="mono">{{ nb.req.image }}</dd>{% endif %}
       {% if nb.req and nb.req.parameters %}<dt>CI parameters</dt><dd class="mono">{% for k, v in nb.req.parameters.items() %}{{ k }}={{ v }} {% endfor %}</dd>{% endif %}
       {% else %}
@@ -29,18 +29,18 @@
 
 <h2>History</h2>
 <div class="table-wrap"><table>
-  <thead><tr><th scope="col">When</th><th scope="col">Phase</th><th scope="col">Status</th><th scope="col">Target</th><th scope="col">Image</th><th scope="col">Why</th><th scope="col">Turns</th><th scope="col">Cost</th><th scope="col">Run</th></tr></thead>
+  <thead><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Status</th><th scope="col">Runner</th><th scope="col">Image</th><th scope="col">Why</th><th scope="col" class="num">Agent turns</th><th scope="col" class="num">Cost</th><th scope="col">Run</th></tr></thead>
   <tbody>
   {% for h in history %}
     <tr>
-      <td><a href="/result/{{ h.id }}">{{ h.recorded_at | ts }}</a><br><span class="dim">{{ h.recorded_at | age }}</span></td>
-      <td>{{ h.phase }}</td>
+      <td class="ts"><a href="/result/{{ h.id }}">{{ h.recorded_at | ts }}</a><br><span class="dim">{{ h.recorded_at | age }}</span></td>
+      <td>{{ h.phase | kind }}</td>
       <td>{{ status_badge(h.status | verdict) }}</td>
       <td class="mono">{{ h.server or "—" }}</td>
       <td class="mono dim" style="word-break: break-all">{{ h.docker_image or "—" }}</td>
-      <td>{% if (h.status | verdict) != 'pass' %}<div class="clamp">{{ h | why }}</div>{% endif %}{% if h.issues %}<span class="dim">{{ h.issues | length }} issue{{ 's' if h.issues | length > 1 }}</span>{% endif %}</td>
-      <td>{{ h.num_turns or "—" }}</td>
-      <td>{{ h.cost_usd | cost }}</td>
+      <td>{% if (h.status | verdict) != 'pass' %}<div class="clamp">{{ h | why | codespans }}</div>{% endif %}{% if h.issues %}<span class="dim">{{ h.issues | length }} issue{{ 's' if h.issues | length > 1 }}</span>{% endif %}</td>
+      <td class="num">{{ h.num_turns or "—" }}</td>
+      <td class="num">{{ h.cost_usd | cost }}</td>
       <td class="mono">{% if h.run_id %}<a href="/run/{{ h.run_id }}">{{ h.run_id }}</a>{% else %}<span class="dim" title="imported from a result file; not tied to a recorded batch">imported</span>{% endif %}</td>
     </tr>
   {% else %}

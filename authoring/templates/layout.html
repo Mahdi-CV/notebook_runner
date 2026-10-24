@@ -1,12 +1,12 @@
 {% extends "base.html" %}
-{% block site %}Notebook authoring{% endblock %}
-{% block brand %}<div class="brand">Notebook <span>authoring</span></div>{% endblock %}
+{% block site %}Notebook CI · Authoring{% endblock %}
+{% block brand %}<div class="brand">Notebook <span>CI</span></div>{% endblock %}
 {% block nav %}
 {% set here = 'submit' if request.url.path in ('/', prefix + '/') else 'jobs' if '/jobs' in request.url.path else 'runners' if request.url.path.endswith('/runners') else '' %}
 <a href="{{ prefix }}/" class="{{ 'active' if here == 'submit' }}"{% if here == 'submit' %} aria-current="page"{% endif %}>Submit</a>
 <a href="{{ prefix }}/jobs" class="{{ 'active' if here == 'jobs' }}"{% if here == 'jobs' %} aria-current="page"{% endif %}>Jobs</a>
 <a href="{{ prefix }}/runners" class="{{ 'active' if here == 'runners' }}"{% if here == 'runners' %} aria-current="page"{% endif %}>Runners</a>
-{% if dashboard_url %}<a href="{{ dashboard_url }}">Regression dashboard</a>{% endif %}
+{% if dashboard_url %}<a href="{{ dashboard_url }}">Nightly results</a>{% endif %}
 {% endblock %}
 {% block head %}
 <style>
@@ -14,10 +14,15 @@
   form.submit label { display: grid; gap: 4px; font-weight: 600; font-size: 13px; }
   form.submit label span { font-weight: 400; color: var(--muted); }
   input[type=text], input[type=url], select { font: inherit; padding: 7px 9px; border: 1px solid #8a8f99; border-radius: 6px; background: #fff; }
-  input[type=file] { font: inherit; }
-  .or { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .4px; }
-  button, .button { font: inherit; font-weight: 600; padding: 8px 14px; border-radius: 6px; border: 1px solid #1c1d21; background: #1c1d21; color: #fff; cursor: pointer; text-decoration: none; display: inline-block; }
-  button.secondary, .button.secondary { background: #fff; color: var(--fg); border-color: var(--line); }
+  input[type=file] { font: inherit; width: 100%; padding: 10px; border: 1px dashed #8a8f99; border-radius: 6px; background: #fff; color: var(--muted); }
+  input[type=file]::file-selector-button { font: inherit; font-weight: 600; margin-right: 10px; padding: 5px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); cursor: pointer; }
+  .or { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; }
+  .or::before, .or::after { content: ''; flex: 1; border-top: 1px solid var(--line); }
+  input[type=text], input[type=url], select { min-height: 36px; }
+  .grid2 > .card { display: flex; flex-direction: column; } .grid2 > .card form { margin-top: auto; }
+  .card pre.log { max-height: 320px; margin: 12px 0 0; }
+  details.log-wrap > summary, details.cell-change > summary { cursor: pointer; }
+  details.log-wrap > summary { font-weight: 600; margin: 24px 0 8px; }
   .error { background: var(--bad-bg); color: var(--bad); border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; }
   pre.log { max-height: 460px; overflow-y: auto; background: #16171a; color: #d6d8de; border: none; font-size: 12px; line-height: 1.5; }
   .stage { font-size: 15px; font-weight: 600; }
@@ -25,13 +30,12 @@
   .meter > div { height: 100%; background: var(--info); }
   .meter.full > div { background: var(--warn); }
   .steps { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 2px; list-style: none; padding: 0; }
-  .steps li { font-size: 12px; padding: 2px 9px; border-radius: 10px; background: var(--muted-bg); color: var(--muted); }
+  .steps li { font-size: 12px; padding: 2px 9px; border-radius: 10px; background: var(--muted-bg); color: #585c66; }
   .steps li.done { background: var(--ok-bg); color: var(--ok); }
   .steps li.now { background: var(--info-bg); color: var(--info); font-weight: 600; }
   .steps li.bad { background: var(--bad-bg); color: var(--bad); font-weight: 600; }
   .steps li.warn { background: var(--warn-bg); color: var(--warn); font-weight: 600; }
   .steps li.muted { background: var(--muted-bg); color: #585c66; font-weight: 600; }
-  button:disabled { opacity: .5; cursor: not-allowed; }
   .diff { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; white-space: pre-wrap; word-break: break-word; background: #f7f7f8; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; margin: 6px 0 14px; }
   .diff .add { color: var(--ok); background: var(--ok-bg); display: block; }
   .diff .del { color: var(--bad); background: var(--bad-bg); display: block; }

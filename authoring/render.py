@@ -25,7 +25,7 @@ STYLE = """
 body { margin: 0; padding: 16px 20px; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color: #1c1d21; background: #fff; }
 .cell { display: grid; grid-template-columns: 64px 1fr; gap: 0 10px; margin: 0 0 14px; scroll-margin-top: 12px; }
 .n { color: #6b6f7a; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; text-align: right; padding-top: 6px; }
-.cell.flag { box-shadow: -4px 0 0 #a3222b; background: #fdf3f4; border-radius: 4px; }
+.cell.flag { box-shadow: -3px 0 0 #a3222b; border-radius: 4px; }
 .cell.flag .n { color: #a3222b; font-weight: 700; }
 .md { padding: 0 2px; overflow-x: auto; }
 .md img { max-width: 100%; }
@@ -40,6 +40,13 @@ body { margin: 0; padding: 16px 20px; font: 14px/1.5 system-ui, -apple-system, "
 .out td, .out th { border: 1px solid #e2e3e7; padding: 2px 6px; }
 .more { color: #6b6f7a; font-size: 12px; }
 .warn-mark { display: block; margin-top: 2px; }
+.md { max-width: 80ch; }
+.md h1 { font-size: 20px; margin: 4px 0 8px; } .md h2 { font-size: 17px; margin: 14px 0 6px; }
+.md h3, .md h4 { font-size: 15px; margin: 12px 0 4px; } .md p, .md li { line-height: 1.55; }
+.md code { font: .88em ui-monospace, SFMono-Regular, Menlo, monospace; background: #eceef1; padding: 1px 4px; border-radius: 4px; }
+.md pre { background: #f4f5f7; border: 1px solid #e2e3e7; border-radius: 6px; padding: 8px 10px; }
+.md pre code { background: none; padding: 0; font-size: inherit; }
+.out pre { max-height: 26em; overflow: auto; }
 @media (max-width: 500px) { .cell { grid-template-columns: 32px 1fr; } body { padding: 12px; } }
 """
 

@@ -12,11 +12,11 @@
   <tbody>
   {% for t in availability.targets %}
   <tr>
-    <td class="nowrap"><b>{{ t.name }}</b><div class="eyebrow">{{ target_type(t.type) }}</div></td>
-    <td class="nowrap">{{ t.hardware }}<div class="eyebrow">up to {{ t.gpus_per_run }} GPU{{ 's' if (t.gpus_per_run or 1) > 1 }} per run</div></td>
+    <td class="nowrap"><b>{{ t.name }}</b><div class="meta">{{ target_type(t.type) }}</div></td>
+    <td class="nowrap">{{ t.hardware }}<div class="meta">up to {{ (t.gpus_per_run or 1) | plural('GPU') }} per run</div></td>
     <td class="nowrap" style="min-width: 150px">
-      <div class="meter {{ 'full' if t.used >= t.total }}"><div style="width: {{ (100 * t.used / t.total) | round }}%"></div></div>
-      <div class="eyebrow" style="margin-top: 4px">{{ t.used }} of {{ t.total }} {{ t.unit }} in use</div>
+      <div class="meter {{ 'full' if t.used >= t.total }}" style="margin-top: 6px"><div style="width: {{ (100 * t.used / t.total) | round }}%"></div></div>
+      <div class="meta" style="margin-top: 4px">{{ t.used }} of {{ t.total | plural('GPU' if t.unit == 'gpus' else 'slot') }} busy</div>
     </td>
     <td>
       {% for j in t.jobs %}<div><a href="{{ prefix }}/jobs/{{ j.id }}">{{ j.notebook.split('/')[-1] }}</a> <span class="dim">· {{ 'nightly pass' if j.kind == 'regression' else j.author }} · since {{ j.started_at[11:16] }} UTC</span></div>
@@ -29,8 +29,8 @@
   </tbody>
 </table></div>
 <p class="dim" style="margin-top: 8px" aria-live="polite">
-  {{ availability.queue.authors_waiting }} author job(s) and {{ availability.queue.regression_waiting }} nightly-pass notebook(s) waiting for a GPU.
-  {% if availability.nightly %}The nightly pass ({{ availability.nightly.run_id }}) has {{ availability.nightly.remaining }} notebook(s) left; author jobs run first.{% endif %}
+  Waiting for a GPU: {{ availability.queue.authors_waiting | plural('author job') }} and {{ availability.queue.regression_waiting | plural('nightly notebook') }}.
+  {% if availability.nightly %}The nightly pass has {{ availability.nightly.remaining | plural('notebook') }} left; author jobs always go first.{% endif %}
   Updated {{ availability.updated_at[11:19] }} UTC.
 </p>
 {% endif %}
@@ -45,9 +45,9 @@
       {% for key, name in categories.items() %}<option value="{{ key }}">{{ name }}</option>{% endfor %}
     </select>
   </label>
-  <label>Notebook <input type="file" name="notebook" accept=".ipynb"></label>
-  <div class="or">or</div>
-  <label>GitHub URL <span>a pull request, or a notebook file on a branch</span>
+  <label>Notebook <span>An .ipynb file.</span> <input type="file" name="notebook" accept=".ipynb"></label>
+  <div class="or">or paste a GitHub link</div>
+  <label>GitHub URL <span>A pull request, or a notebook on a branch.</span>
     <input type="url" name="url" placeholder="https://github.com/AMD-ROCm-Internal/gpuaidev-internal/pull/123"></label>
   <div><button type="submit">{{ label }}</button></div>
 </form>

@@ -3,15 +3,15 @@
 {% block title %}Runners{% endblock %}
 {% block content %}
 <h1>Runners</h1>
-<p class="sub">The GPU targets notebooks run on, how much of each is in use, and the queue. Author jobs run before the nightly regression pass.</p>
+<p class="sub">The GPU machines (runners) notebooks run on, how busy each one is, and the queue. Author jobs run before the nightly pass.</p>
 {{ runner_rows(availability) }}
 {% if availability and availability.estimates %}
 <h2>Typical durations</h2>
 <div class="table-wrap" style="max-width: 520px"><table>
-  <thead><tr><th scope="col">Job</th><th scope="col">Median of recent jobs</th></tr></thead>
+  <thead><tr><th scope="col">Job</th><th scope="col" class="num">Median of recent jobs</th></tr></thead>
   <tbody>
   {% for kind, minutes in availability.estimates.items() %}
-  <tr><td>{{ {'validate': 'Validate', 'annotate': 'Annotate', 'regression': 'Nightly notebook'}[kind] }}</td><td>{{ minutes }} min</td></tr>
+  <tr><td>{{ {'validate': 'Validate', 'annotate': 'Annotate', 'regression': 'Nightly notebook'}[kind] }}</td><td class="num">{{ minutes }} min</td></tr>
   {% endfor %}
   </tbody>
 </table></div>

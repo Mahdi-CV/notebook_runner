@@ -141,7 +141,7 @@ def _structure(cells: list[dict], ci: dict) -> list[dict]:
     elif isinstance(gpus, int) and int(m.group(1)) != gpus:
         out.append(finding(
             "gpus-required", "error", idx,
-            f"The Prerequisites say {m.group(1)} GPU(s) are required, but metadata.ci.gpus is "
+            f"The Prerequisites say {m.group(1)} GPUs are required, but metadata.ci.gpus is "
             f"{gpus}. CI must test at the documented minimum.",
             "Make the GPUs-required line and ci.gpus agree."))
     return out

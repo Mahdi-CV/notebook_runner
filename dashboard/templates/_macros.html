@@ -1,7 +1,7 @@
 {% macro status_badge(status) -%}
 {%- set cls = {"pass": "ok", "blocked": "warn", "fail": "bad",
                "never-tested": "muted", "skip": "muted"}.get(status, "bad") -%}
-<span class="badge {{ cls }}">{{ status }}</span>
+<span class="badge {{ cls }}">{{ status | statuslabel }}</span>
 {%- endmacro %}
 
 {% macro requirements(req) -%}
@@ -13,7 +13,7 @@
 {%- endmacro %}
 
 {% macro fixability_badge(f) -%}
-{%- if f -%}<span class="badge {{ {'auto_fixable': 'info', 'needs_author': 'warn', 'infra_blocked': 'muted'}.get(f, 'muted') }}">{{ f | replace('_', ' ') }}</span>{%- endif -%}
+{%- if f -%}<span class="badge {{ {'auto_fixable': 'info', 'needs_author': 'warn', 'infra_blocked': 'muted'}.get(f, 'muted') }}">{{ {'auto_fixable': 'Auto-fixable', 'needs_author': 'Needs the author', 'infra_blocked': 'Platform issue'}.get(f, f | replace('_', ' ')) }}</span>{%- endif -%}
 {%- endmacro %}
 
 {% macro nb_link(key) -%}
@@ -22,4 +22,23 @@
 
 {% macro target_type(t) -%}
 {{ {"k8s": "Kubernetes pod", "radeon": "Radeon Global instance"}.get(t, "SSH host") }}
+{%- endmacro %}
+
+{# One issues table for both apps: cell (linked into the notebook view when
+   cell_href is given), type, what broke, the fix, and who fixes it. #}
+{% macro issues_table(issues, cell_href=None) -%}
+<div class="table-wrap"><table>
+  <thead><tr><th scope="col">Cell</th><th scope="col">Type</th><th scope="col" class="col-issue">What broke</th><th scope="col">Proposed fix</th><th scope="col">Who fixes it</th></tr></thead>
+  <tbody>
+  {% for i in issues %}
+    <tr>
+      <td>{% if i.cell_index is not none and cell_href %}<a href="{{ cell_href }}#cell-{{ i.cell_index }}" target="nbview" onclick="document.getElementById('notebook').scrollIntoView()">{{ i.cell_index }}</a>{% else %}{{ i.cell_index if i.cell_index is not none else "—" }}{% endif %}</td>
+      <td class="nowrap">{{ i.error_type | issue_type }}</td>
+      <td class="wrap">{{ i.description | codespans }}</td>
+      <td class="wrap">{{ i.proposed_fix | codespans }}</td>
+      <td>{{ fixability_badge(i.fixability) }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
 {%- endmacro %}

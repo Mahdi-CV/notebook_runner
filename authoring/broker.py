@@ -178,7 +178,7 @@ def check(tool: str, argv: list[str], job: dict) -> str:
     if verb == "up":
         gpus = int(option(argv, "--gpus") or 1)
         if gpus > int(job.get("gpus") or 1):
-            raise HTTPException(403, f"this job may use at most {job.get('gpus')} GPU(s)")
+            raise HTTPException(403, f"this job may use at most {job.get('gpus')} GPUs")
     if verb == "pull":
         remote = argv[-2]
         if not remote.startswith(WORKSPACE + "/") or ".." in remote.split("/"):

@@ -45,6 +45,11 @@ RUN_PY = Path(os.environ.get("NBR_RUN_PY") or REPO_ROOT / "run.py")  # overridab
 GITHUB_API = "https://api.github.com"
 
 
+def plural(n: int, word: str) -> str:
+    # authoring.labels has the same, but needs markupsafe, which the worker's venv lacks.
+    return f"{n} {word if n == 1 else word + 's'}"
+
+
 class Stop(Exception):
     """End the job with this status and message."""
 
@@ -246,7 +251,7 @@ def static_checks(job: Job, nb: dict, nb_path: Path, extra: list[dict]) -> dict:
     counts = {s: sum(f["severity"] == s for f in findings) for s in ("error", "warning", "info")}
     for name, c in checkers.items():
         job.log(f"{name}: {'pass' if c['ok'] else 'not run' if c['ok'] is None else 'problems'}")
-    job.log(f"Guideline checks: {counts['error']} error(s), {counts['warning']} warning(s)")
+    job.log(f"Guideline checks: {plural(counts['error'], 'error')}, {plural(counts['warning'], 'warning')}")
     result = {"findings": findings, "counts": counts, "checkers": checkers}
     (job.dir / "static.json").write_text(json.dumps(result, indent=1, ensure_ascii=False))
     return result
@@ -276,7 +281,7 @@ def prepare(job: Job) -> None:
         job.final("blocked", "Cannot run: no runner fits this notebook",
                   {"static": static, "message": reason})
         return
-    job.log(f"Needs {req.gpus} GPU(s) on {'/'.join(req.hardware)}")
+    job.log(f"Needs {plural(req.gpus, 'GPU')} on {'/'.join(req.hardware)}")
     job.state(stage="Waiting for a GPU", next="gpu", gpus=req.gpus)
 
 
@@ -426,7 +431,7 @@ def annotate(job: Job, nb: dict, static: dict) -> None:
     if not diff["cells"] and diff["metadata_before"] == diff["metadata_after"]:
         job.final("done", "Done: no changes were needed", summary)
     else:
-        job.final("done", f"Done: {len(diff['cells'])} cell change(s)", summary)
+        job.final("done", f"Done: {plural(len(diff['cells']), 'cell')} changed", summary)
 
 
 def agent_line(raw: str) -> str:

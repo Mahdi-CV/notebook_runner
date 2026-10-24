@@ -102,9 +102,11 @@ def verdict(executed: Path | None) -> dict:
         return result("blocked", f"papermill exited with status {exit_status} without a "
                                  f"cell error", counts)
     if counts["not_run"]:
-        return result("blocked", f"execution stopped without an error; {counts['not_run']} "
-                                 f"code cell(s) never ran", counts)
-    return result("pass", f"{counts['executed']} code cell(s) ran without an error", counts)
+        n = counts["not_run"]
+        return result("blocked", f"execution stopped without an error; {n} code "
+                                 f"cell{'' if n == 1 else 's'} never ran", counts)
+    n = counts["executed"]
+    return result("pass", f"{n} code cell{'' if n == 1 else 's'} ran without an error", counts)
 
 
 def main() -> int:

@@ -184,7 +184,7 @@ class Worker:
             conn = results_db.connect()
             n = results_db.merge(conn, db)
             conn.close()
-            store.log(job["id"], f"Recorded {n} result(s) in the regression database")
+            store.log(job["id"], f"Recorded {n} result{'' if n == 1 else 's'} in the regression database")
         except Exception as exc:  # noqa: BLE001 — the JSON results are on disk regardless
             store.log(job["id"], f"warning: could not record the result in runs.db: {exc}")
 
