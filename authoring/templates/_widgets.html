@@ -15,8 +15,8 @@
   <tbody>
   {% for t in availability.targets %}
   <tr>
-    <td class="nowrap"><b>{{ t.name }}</b><div class="meta">{{ target_type(t.type) }}</div></td>
-    <td class="nowrap" data-label="Hardware">{{ t.hardware }}<div class="meta">up to {{ (t.gpus_per_run or 1) | plural('GPU') }} per run</div></td>
+    <td class="nowrap"><b>{{ t.name }}</b><div class="meta">{{ target_type(t.type) }}{% if t.where %}<br><span class="mono">{{ t.where }}</span>{% endif %}</div></td>
+    <td class="nowrap" data-label="Hardware">{{ t.hardware }}<div class="meta">up to {{ (t.gpus_per_run or 1) | plural('GPU') }} per run{% if t.gpu_memory_gb %} · {{ t.gpu_memory_gb }} GB each{% endif %}{% if t.provides %}<br>provides {{ t.provides | join(', ') }}{% endif %}</div></td>
     <td class="nowrap" data-label="In use" style="min-width: 150px">
       <div class="meter {{ 'full' if t.used >= t.total }}" style="margin-top: 6px"><div style="width: {{ (100 * t.used / t.total) | round }}%"></div></div>
       <div class="meta" style="margin-top: 4px">{{ t.used }} of {{ t.total | plural('GPU' if t.unit == 'gpus' else 'slot') }} busy</div>

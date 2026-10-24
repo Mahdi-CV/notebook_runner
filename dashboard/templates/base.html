@@ -115,6 +115,7 @@
     {% set here = 'notebooks' if path == '/' or path.startswith('/notebook') or path.startswith('/result') else 'runs' if path.startswith('/run') else 'targets' if path == '/targets' else '' %}
     <a href="/" class="{{ 'active' if here == 'notebooks' }}"{% if here == 'notebooks' %} aria-current="page"{% endif %}>Notebooks</a>
     <a href="/runs" class="{{ 'active' if here == 'runs' }}"{% if here == 'runs' %} aria-current="page"{% endif %}>Runs</a>
+    {% if authoring_url %}<a href="{{ authoring_url }}runners">Runners</a>{% endif %}
     <a href="/targets" class="{{ 'active' if here == 'targets' }}"{% if here == 'targets' %} aria-current="page"{% endif %}>Routing</a>
     {% if authoring_url %}<a href="{{ authoring_url }}">Check a notebook</a>{% endif %}
     {% endblock %}

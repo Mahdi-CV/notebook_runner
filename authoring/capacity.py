@@ -196,6 +196,15 @@ def estimate_starts(targets: dict, running: list[dict], waiting: list[dict],
     return starts
 
 
+def where(target: dict) -> str:
+    """Where a target's runs happen, as the dashboard's Routing page used to say."""
+    if target.get("type") == "k8s":
+        return f"{target.get('context') or 'cluster'} / {target.get('namespace', 'notebook-runner')}"
+    if target.get("type") == "radeon":
+        return f"{target.get('user_name')} · pool {target.get('pod_type')}"
+    return f"{target.get('user')}@{target.get('host')}"
+
+
 def snapshot(targets: dict, jobs: list[dict], probes: dict[str, str],
              estimates: dict[str, float]) -> dict:
     """What the web UI shows on the Runners page."""
@@ -208,6 +217,9 @@ def snapshot(targets: dict, jobs: list[dict], probes: dict[str, str],
         rows.append({
             "name": name, "type": target.get("type", "ssh"),
             "hardware": target.get("hardware"), "gpus_per_run": target.get("gpus"),
+            "gpu_memory_gb": target.get("gpu_memory_gb"), "where": where(target),
+            "provides": (target.get("capabilities") or [])
+                        + (["docker"] if target.get("type") in (None, "ssh") else []),
             "unit": unit, "total": total, "used": used.get(name, 0),
             "jobs": [{"id": j["id"], "kind": j["kind"], "notebook": j["notebook"],
                       "author": j.get("author"), "started_at": j.get("started_at")}

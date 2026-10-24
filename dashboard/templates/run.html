@@ -4,7 +4,7 @@
 {% block content %}
 <p class="crumbs"><a href="/runs">Runs</a></p>
 <h1>{{ run | runname }}</h1>
-<p class="sub">Run <span class="mono">{{ run.run_id }}</span> · {{ run.mode | kind }} · started {{ run.started_at | ts }}{% if run.finished_at %} · finished {{ run.finished_at | ts }} after {{ run.started_at | elapsed(run.finished_at) | dur }}{% endif %}</p>
+<p class="sub">Run <span class="mono">{{ run.run_id }}</span> · {{ run.mode | kind }} · started {{ run.started_at | ts }}{% if run.finished_at and not live %} · finished {{ run.finished_at | ts }} after {{ run.started_at | elapsed(run.finished_at) | dur }}{% endif %}</p>
 
 <div class="tiles">
   <div class="tile"><div class="n">{{ counts.pass }}</div><div class="l">Passed</div></div>
@@ -16,7 +16,8 @@
 
 <div class="card">
   <dl class="kv">
-    {% if not run.finished_at %}<dt>Finished</dt><dd><span class="badge warn">unfinished</span> <span class="dim">still running, or interrupted before it recorded a finish time</span></dd>{% endif %}
+    {% if live %}<dt>Progress</dt><dd><span class="badge pending">in progress</span> {{ live.remaining | plural('notebook') }} still queued or running: see <a href="{{ authoring_url }}runners">Runners</a>. Results appear here as each one finishes.</dd>
+    {% elif not run.finished_at %}<dt>Finished</dt><dd><span class="badge warn">unfinished</span> <span class="dim">still running, or interrupted before it recorded a finish time</span></dd>{% endif %}
     <dt>Runners</dt><dd class="mono">{{ run.host or "—" }}</dd>
     <dt>Command</dt><dd class="mono dim">{{ argv or "—" }}</dd>
   </dl>

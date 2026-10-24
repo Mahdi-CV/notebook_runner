@@ -12,6 +12,7 @@
   Submitted {{ job.created_at | ts }}
   {% if job.source_url %}· <a href="{{ job.source_url }}"{% if source %} title="{{ source.title }}">{{ source.label }}{% else %}>{{ job.source_url }}{% endif %}</a>{% endif %}
   {% if job.target %}· {{ 'ran' if final else 'runs' }} on <b>{{ job.target }}</b>{% endif %}
+  {% if job.kind == 'regression' and job.run_id and dashboard_url %}· part of <a href="{{ dashboard_url.rstrip('/') }}/run/{{ job.run_id }}">this nightly pass</a>{% endif %}
   {% if job.finished_at and job.started_at %}· {{ 'stopped' if job.status in ('cancelled', 'error') else 'finished' }} {{ job.finished_at | ts }} after {{ job.started_at | elapsed(job.finished_at) | dur }}
   {%- elif job.status == 'running' and job.started_at %}· started {{ job.started_at | ts }}{% endif %}
 </p>
@@ -76,7 +77,7 @@
   {% endif %}
   <p class="dim" id="position" role="status" aria-live="polite" style="margin: 0"{% if not position %} hidden{% endif %}>
     <span id="posn">{% if position %}Number {{ position }} in the queue for a GPU.{% endif %}</span>
-    {% if estimates.validate %}Validate jobs usually take about {{ estimates.validate | dur('min') }} once they start.{% endif %}
+    {% if estimates[job.kind] %}{{ {'validate': 'Validate jobs', 'annotate': 'Annotate jobs', 'regression': 'Nightly notebooks'}[job.kind] }} usually take about {{ estimates[job.kind] | dur('min') }} once they start.{% endif %}
     <a href="{{ prefix }}/runners">See the runners</a>.
   </p>
   {% if not final and job.kind != 'regression' %}

@@ -3,9 +3,12 @@
 {% block title %}Routing{% endblock %}
 {% block content %}
 <h1>Routing</h1>
-<p class="sub">The GPU machines notebooks run on (from <code>runner.yaml</code>, in preference order), and which one each notebook is routed to.</p>
+<p class="sub">Which runner (GPU machine, from <code>runner.yaml</code>) each notebook is routed to.</p>
 
 <h2>Runners ({{ targets | length }})</h2>
+{% if authoring_url and targets %}
+<p>In preference order: {% for name in targets %}<span class="mono">{{ name }}</span>{{ ', ' if not loop.last }}{% endfor %}. <a href="{{ authoring_url }}runners">Runners</a> shows each one's hardware, how busy it is and the queue.</p>
+{% else %}
 <div class="table-wrap"><table>
   <thead><tr><th scope="col">Name</th><th scope="col">Type</th><th scope="col">Hardware</th><th scope="col">GPUs</th><th scope="col">Where</th><th scope="col">Scheduling</th><th scope="col">Provides</th></tr></thead>
   <tbody>
@@ -28,6 +31,7 @@
   {% endfor %}
   </tbody>
 </table></div>
+{% endif %}
 
 {% for category, items in groups.items() %}
 <h2>{{ category | category }} ({{ items | length }})</h2>

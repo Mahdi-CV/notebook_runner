@@ -35,6 +35,7 @@ ROOT = Path(os.environ.get("NBR_ROOT") or Path(__file__).resolve().parent.parent
 DB_PATH = ROOT / "results" / "runs.db"
 NOTEBOOKS_DIR = ROOT / "notebooks"
 CONFIG_PATH = ROOT / "runner.yaml"
+JOBS_DIR = Path(os.environ.get("NBR_JOBS_DIR") or ROOT / "jobs")  # the scheduler's (authoring/store.py)
 STALE_AFTER = timedelta(days=7)  # matches tools/status.py --gap
 # The authoring service (authoring/app.py). With NBR_AUTHORING_UPSTREAM set, this
 # app serves it under /authoring/ on its own port, so both share one address.
@@ -132,6 +133,29 @@ def notebook_row(key: str, latest: dict | None) -> dict:
         "latest": latest,
         "stale": stale,
     }
+
+
+def live_pass() -> dict | None:
+    """The nightly pass the scheduler is running now, from the snapshot it
+    writes for the Runners page (authoring/capacity.py): {run_id, remaining}."""
+    try:
+        snap = json.loads((JOBS_DIR / "availability.json").read_text())
+    except (OSError, ValueError):
+        return None
+    age = labels.elapsed(snap.get("updated_at"))
+    if not AUTHORING_URL or age is None or age > 300:
+        return None  # the worker is not reporting: say nothing rather than something stale
+    return snap.get("nightly")
+
+
+def queued_run(run_id: str) -> dict:
+    """A queued pass before its first notebook finishes, when it has no runs row
+    yet; tools/ci_run.py names it by its start time (20261024T060003)."""
+    stamp = run_id if len(run_id) == 15 and run_id[8] == "T" else ""
+    return {"run_id": run_id, "mode": "verify", "argv": json.dumps(["--run-id", run_id]),
+            "started_at": stamp and f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}T"
+                                    f"{stamp[9:11]}:{stamp[11:13]}:{stamp[13:]}Z" or None,
+            "finished_at": None, "host": None, "total_cost_usd": None}
 
 
 def render(request: Request, template: str, **ctx) -> HTMLResponse:
@@ -312,13 +336,20 @@ def runs(request: Request):
             by_run.setdefault(r["run_id"], []).append(dict(r))
     for r in rows:
         r["counts"] = run_counts(by_run.get(r["run_id"], []))
-    return render(request, "runs.html", runs=rows)
+    live = live_pass()
+    if live and live.get("run_id") not in {r["run_id"] for r in rows}:
+        rows.insert(0, queued_run(live["run_id"]) | {"counts": run_counts([])})
+    return render(request, "runs.html", runs=rows, live=live)
 
 
 @app.get("/run/{run_id}", response_class=HTMLResponse)
 def run(request: Request, run_id: str):
     conn = db()
     run_row, results = results_db.run_results(conn, run_id) if conn else (None, [])
+    live = live_pass()
+    live = live if live and live.get("run_id") == run_id else None
+    if run_row is None and live:
+        run_row = queued_run(run_id)
     if run_row is None:
         raise HTTPException(404, f"There is no run {run_id}.")
     try:
@@ -328,7 +359,7 @@ def run(request: Request, run_id: str):
     order = {"fail": 0, "blocked": 1}
     results = sorted(results, key=lambda r: (order.get(verdict_status(r["status"]), 2), r["notebook"]))
     return render(request, "run.html", run=run_row, results=results, argv=argv,
-                  counts=run_counts(results))
+                  counts=run_counts(results), live=live)
 
 
 @app.get("/targets", response_class=HTMLResponse)

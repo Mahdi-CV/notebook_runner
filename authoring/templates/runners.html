@@ -3,14 +3,14 @@
 {% block title %}Runners{% endblock %}
 {% block content %}
 <h1>Runners</h1>
-<p class="sub">The GPU machines (runners) notebooks run on, how busy each one is, and the queue. Author jobs run before the nightly pass.</p>
+<p class="sub">The GPU machines (runners) notebooks run on, in preference order, how busy each one is, and the queue. Author jobs run before the nightly pass.{% if dashboard_url %} <a href="{{ dashboard_url.rstrip('/') }}/targets">Routing</a> shows which runner each notebook goes to.{% endif %}</p>
 {% if availability %}
 {% set q = availability.queue %}
 <div class="tiles" aria-live="polite">
   <div class="tile"><div class="n">{{ q.running }}</div><div class="l">Running</div></div>
   <div class="tile"><div class="n">{{ q.authors_waiting }}</div><div class="l">Author jobs waiting</div></div>
   <div class="tile"><div class="n">{{ q.regression_waiting }}</div><div class="l">Nightly notebooks waiting</div>
-    {% if availability.nightly %}<div class="meta">{{ availability.nightly.remaining | plural('notebook') }} left in the pass</div>{% endif %}</div>
+    {% if availability.nightly %}<div class="meta">{{ availability.nightly.remaining | plural('notebook') }} left in {% if dashboard_url and availability.nightly.run_id %}<a href="{{ dashboard_url.rstrip('/') }}/run/{{ availability.nightly.run_id }}">the pass</a>{% else %}the pass{% endif %}</div>{% endif %}</div>
 </div>
 {% endif %}
 {{ runner_rows(availability, summary=False) }}
