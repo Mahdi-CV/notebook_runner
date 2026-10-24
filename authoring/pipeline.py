@@ -461,13 +461,17 @@ def cell_diff(old: dict, new: dict) -> dict:
         return (c.get("cell_type"), lint.source(c), tuple(lint.tags(c)))
 
     def entry(change, o, n, i, j):
+        diff = "\n".join(difflib.unified_diff(
+            lint.source(o).splitlines() if o else [],
+            lint.source(n).splitlines() if n else [], lineterm="", n=2))
+        if len(diff) > DIFF_CHARS:
+            # Cut at a line, and say so: diff_rows shows the marker line as a note.
+            diff = diff[:diff.rfind("\n", 0, DIFF_CHARS)] + "\n\\ The rest of this change is not shown."
         return {
             "change": change, "old_index": i, "new_index": j,
             "cell_type": (n or o).get("cell_type"),
             "tags_before": lint.tags(o) if o else [], "tags_after": lint.tags(n) if n else [],
-            "diff": "\n".join(difflib.unified_diff(
-                lint.source(o).splitlines() if o else [],
-                lint.source(n).splitlines() if n else [], lineterm="", n=2))[0:20000],
+            "diff": diff,
         }
 
     a, b = [key(c) for c in old["cells"]], [key(c) for c in new["cells"]]
@@ -502,6 +506,41 @@ def cell_diff(old: dict, new: dict) -> dict:
     return {"cells": cells,
             "metadata_before": (old.get("metadata") or {}).get("ci"),
             "metadata_after": (new.get("metadata") or {}).get("ci")}
+
+
+DIFF_CHARS = 20000
+HUNK = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+
+def diff_rows(diff: str) -> dict:
+    """One cell's unified diff (from cell_diff) as rows for the review page:
+    each line with its old and new line numbers, a gap row where unchanged
+    lines are left out, and the counts of added and removed lines."""
+    rows, added, removed, old, new = [], 0, 0, 0, 0
+    lines = diff.splitlines()
+    if len(lines) > 1 and lines[0].startswith("---") and lines[1].startswith("+++"):
+        lines = lines[2:]
+    for line in lines:
+        if line.startswith("@@"):
+            m = HUNK.match(line)
+            if not m:
+                continue
+            # A side with no lines in the hunk is numbered from the line before it.
+            old, new = int(m[1]) + (m[2] == "0"), int(m[3]) + (m[4] == "0")
+            if rows or old > 1 or new > 1:
+                rows.append({"kind": "gap", "old": None, "new": None, "text": line})
+        elif line.startswith("+"):
+            rows.append({"kind": "add", "old": None, "new": new, "text": line[1:]})
+            new, added = new + 1, added + 1
+        elif line.startswith("-"):
+            rows.append({"kind": "del", "old": old, "new": None, "text": line[1:]})
+            old, removed = old + 1, removed + 1
+        elif line.startswith("\\"):
+            rows.append({"kind": "note", "old": None, "new": None, "text": line[1:].strip()})
+        else:
+            rows.append({"kind": "ctx", "old": old, "new": new, "text": line[1:]})
+            old, new = old + 1, new + 1
+    return {"rows": rows, "added": added, "removed": removed}
 
 
 # ── entry point ──────────────────────────────────────────────────────────────
