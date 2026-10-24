@@ -29,6 +29,20 @@
   .meter { height: 8px; background: var(--muted-bg); border-radius: 4px; overflow: hidden; min-width: 120px; }
   .meter > div { height: 100%; background: var(--info); }
   .meter.full > div { background: var(--warn); }
+  /* Runner and queue tables: below 600px wide each row becomes a card, its
+     first cell the title and every other cell labelled from data-label. */
+  @media (max-width: 600px) {
+    table.stack thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+    table.stack, table.stack tbody, table.stack tr, table.stack td { display: block; }
+    table.stack tr { padding: 10px 12px; border-bottom: 1px solid var(--line); }
+    table.stack tr:last-child { border-bottom: 0; }
+    table.stack td { position: relative; border: 0; padding: 3px 0 3px 7.5rem; white-space: normal; text-align: left; }
+    table.stack td:first-child { padding: 0 0 4px; }
+    table.stack td[data-label]::before { content: attr(data-label); position: absolute; left: 0; top: 4px; width: 7rem; font-size: 12px; color: var(--muted); }
+    table.stack td.pos, table.stack td.pos + td { display: inline; padding: 0 6px 0 0; }
+    table.stack td.pos::before { content: "#"; }
+    table.stack td.pos + td::before { content: none; }
+  }
   .steps { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 2px; list-style: none; padding: 0; }
   .steps li { font-size: 12px; padding: 2px 9px; border-radius: 10px; background: var(--muted-bg); color: #585c66; }
   .steps li.done { background: var(--ok-bg); color: var(--ok); }

@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from . import store
@@ -118,9 +119,87 @@ def kubectl(args: list[str]) -> subprocess.CompletedProcess:
         capture_output=True, text=True, timeout=60)
 
 
+def job_notebook(job: dict) -> Path:
+    """Where a job's notebook is once its prepare phase has fetched it."""
+    if job["kind"] == "regression":
+        return store.NOTEBOOKS_DIR / job["notebook"]
+    return (store.job_dir(job["id"]) / "repo" / "docs" / "notebooks"
+            / (job.get("category") or "") / job["notebook"])
+
+
+def fitting(job: dict, targets: dict) -> tuple[list[str], int]:
+    """(targets a waiting job could run on, GPUs it needs), as the scheduler
+    would pick them. A notebook that cannot be read counts as fitting every
+    target its kind may use: this only feeds the estimates."""
+    allowed = {n: t for n, t in targets.items()
+               if job["kind"] == "regression" or t.get("type", "ssh") != "ssh"}
+    if job.get("only_target"):
+        allowed = {n: t for n, t in allowed.items() if n == job["only_target"]}
+    try:
+        req = requirements(job_notebook(job))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return list(allowed), int(job.get("gpus") or 1)
+    return [n for n, t in allowed.items() if not routing.unmet(req, t)], req.gpus
+
+
+def minutes_between(start: str | None, end: str) -> float:
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    try:
+        return max((datetime.strptime(end, fmt) - datetime.strptime(start, fmt)).total_seconds() / 60, 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def estimate_starts(targets: dict, running: list[dict], waiting: list[dict],
+                    estimates: dict[str, float], now: str) -> dict[str, float | None]:
+    """Minutes until each waiting job is likely to start, by replaying the
+    queue in order. A running job ends after its kind's typical duration (one
+    already past it is assumed a quarter of that from done); a waiting job
+    takes the earliest room on a target it fits, never before a job ahead of
+    it there (the scheduler holds a busy target for the older job). None when
+    no job has finished yet to time, or no target fits."""
+    if not estimates:
+        return {j["id"]: None for j in waiting}
+
+    def typical(kind: str) -> float:
+        return estimates.get(kind) or max(estimates.values())
+
+    # Per target: when its busy slots free up (minutes from now, how many),
+    # and the latest start given out on it so far.
+    frees: dict[str, list[tuple[float, int]]] = {n: [] for n in targets}
+    floor = {n: 0.0 for n in targets}
+    for job in running:
+        if job.get("target") in frees:
+            unit, _ = slots(targets[job["target"]])
+            full = typical(job["kind"])
+            left = max(full - minutes_between(job.get("started_at"), now), full / 4)
+            frees[job["target"]].append((left, int(job.get("gpus") or 1) if unit == "gpus" else 1))
+    starts: dict[str, float | None] = {}
+    for job in waiting:
+        names, gpus = fitting(job, targets)
+        best = None
+        for name in names:
+            unit, total = slots(targets[name])
+            need = gpus if unit == "gpus" else 1
+            if need > total:
+                continue
+            for at in sorted({floor[name], *(t for t, _ in frees[name] if t > floor[name])}):
+                if total - sum(n for t, n in frees[name] if t > at) >= need:
+                    if best is None or at < best[0]:
+                        best = (at, name, need)
+                    break
+        starts[job["id"]] = round(best[0], 1) if best else None
+        if best:
+            at, name, need = best
+            frees[name].append((at + typical(job["kind"]), need))
+            floor[name] = at
+    return starts
+
+
 def snapshot(targets: dict, jobs: list[dict], probes: dict[str, str],
              estimates: dict[str, float]) -> dict:
     """What the web UI shows on the Runners page."""
+    now = store.now()
     running = [j for j in jobs if j["status"] == "running" and j.get("target")]
     used = usage(targets, running)
     rows = []
@@ -135,18 +214,25 @@ def snapshot(targets: dict, jobs: list[dict], probes: dict[str, str],
                      for j in running if j["target"] == name],
             "probe": probes.get(name, "not checked yet"),
         })
-    waiting = [j for j in jobs if j["status"] == "queued"
+    # The GPU queue in the scheduler's order (store.active: author jobs first).
+    # A job still in its prepare phase does not need a GPU yet.
+    waiting = [j for j in jobs if (j["status"] == "queued" and j.get("phase") == "gpu")
                or (j["status"] == "running" and not j.get("target")
                    and j["stage"] == "Waiting for a GPU")]
+    starts = estimate_starts(targets, running, waiting, estimates, now)
     nightly = [j for j in jobs if j["kind"] == "regression"]
     return {
-        "updated_at": store.now(),
+        "updated_at": now,
         "targets": rows,
         "queue": {
             "authors_waiting": sum(j["kind"] != "regression" for j in waiting),
             "regression_waiting": sum(j["kind"] == "regression" for j in waiting),
             "running": len(running),
         },
+        "waiting": [{"id": j["id"], "kind": j["kind"], "notebook": j["notebook"],
+                     "author": j.get("author"), "gpus": j.get("gpus") or 1,
+                     "queued_at": j.get("created_at"), "start_in": starts[j["id"]]}
+                    for j in waiting],
         "nightly": {"run_id": nightly[0]["run_id"], "remaining": len(nightly)} if nightly else None,
         "estimates": estimates,
     }
