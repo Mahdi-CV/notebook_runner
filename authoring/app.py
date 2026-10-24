@@ -335,6 +335,7 @@ def job_class(status: str) -> str:
 
 templates.env.filters["sevclass"] = severity_badge
 templates.env.filters["jobclass"] = job_class
+templates.env.filters["diffrows"] = pipeline.diff_rows
 # The same verdict words as the regression dashboard (pass/fail).
 templates.env.filters["joblabel"] = lambda s: labels.STATUSES.get(s, s)
 labels.register(templates.env)

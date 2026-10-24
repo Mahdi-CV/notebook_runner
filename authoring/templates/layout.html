@@ -64,9 +64,19 @@
     table.stack td.pos::before { content: "#"; }
     table.stack td.pos + td::before { content: none; }
   }
-  .diff { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; white-space: pre-wrap; word-break: break-word; background: #f7f7f8; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; margin: 6px 0 14px; }
-  .diff .add { color: var(--ok); background: var(--ok-bg); display: block; }
-  .diff .del { color: var(--bad); background: var(--bad-bg); display: block; }
-  .diff .hunk { color: var(--muted); display: block; }
+  /* One grid for the whole diff, so the old/new gutters line up across rows and wrapped lines. */
+  .diff { display: grid; grid-template-columns: auto auto auto minmax(0, 1fr); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.5; background: #f7f7f8; border: 1px solid var(--line); border-radius: 6px; padding: 6px 0; margin: 6px 0 14px; }
+  .diff > div { display: contents; }
+  .diff > div > span { padding: 0 6px; min-height: 1.5em; }
+  .diff .ln { min-width: 2ch; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); user-select: none; }
+  .diff .ln + .ln { border-right: 1px solid var(--line); }
+  .diff .sign { padding-right: 0; user-select: none; }
+  .diff .code { white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4; padding-right: 10px; }
+  .diff .add > span { color: var(--ok); background: var(--ok-bg); }
+  .diff .del > span { color: var(--bad); background: var(--bad-bg); }
+  .diff .add > .ln, .diff .del > .ln { color: inherit; }
+  .diff .gap > span, .diff .note > span { color: var(--muted); font-family: system-ui, -apple-system, "Segoe UI", sans-serif; font-style: italic; }
+  .diff .gap > .ln { font-style: normal; }
+  .diff-size .plus { color: var(--ok); } .diff-size .minus { color: var(--bad); }
 </style>
 {% endblock %}

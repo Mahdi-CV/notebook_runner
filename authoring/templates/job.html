@@ -80,13 +80,30 @@
   </div>
   {% endif %}
   <h2>Cell changes ({{ s.diff.cells | length }})</h2>
+  {# The first three are open; the rest are collapsed, so a long review stays scannable. #}
   {% for c in s.diff.cells %}
+  {% set d = c.diff | diffrows %}
   <details class="cell-change"{% if loop.index <= 3 %} open{% endif %}><summary class="meta">{{ c.change | capitalize }} {{ c.cell_type }} cell
     {%- if c.change == 'changed' and c.old_index != c.new_index %} {{ c.old_index }} → {{ c.new_index }}
     {%- else %} {{ c.new_index if c.new_index is not none else c.old_index }}{% endif %}
+    {% if d.added or d.removed %}· <span class="num diff-size"><span class="plus">+{{ d.added }}</span> <span class="minus">−{{ d.removed }}</span> lines</span>{% endif %}
     {% if c.tags_after != c.tags_before %}· tags {{ c.tags_before | join(', ') or 'none' }} → {{ c.tags_after | join(', ') or 'none' }}{% endif %}</summary>
-  <div class="diff">{% for line in c.diff.splitlines()[2:] %}<span class="{{ 'add' if line.startswith('+') else 'del' if line.startswith('-') else 'hunk' if line.startswith('@@') else '' }}">{{ line }}</span>{% if not (line.startswith('+') or line.startswith('-') or line.startswith('@@')) %}
-{% endif %}{% endfor %}</div></details>
+  {% if d.rows %}
+  {# Old and new line numbers in the gutter; the sign and the numbers are not selected when copying code. #}
+  <div class="diff">
+    {%- for r in d.rows %}
+    <div class="{{ r.kind }}">
+      {%- if r.kind == 'gap' -%}
+      <span class="ln">⋯</span><span class="ln">⋯</span><span class="sign"></span><span class="code" title="{{ r.text }}">unchanged lines not shown</span>
+      {%- elif r.kind == 'note' -%}
+      <span class="ln"></span><span class="ln"></span><span class="sign"></span><span class="code">{{ r.text }}</span>
+      {%- else -%}
+      <span class="ln">{{ r.old if r.old is not none }}</span><span class="ln">{{ r.new if r.new is not none }}</span><span class="sign">{{ '+' if r.kind == 'add' else '−' if r.kind == 'del' }}</span><span class="code">{{ r.text }}</span>
+      {%- endif -%}
+    </div>
+    {%- endfor %}
+  </div>
+  {% endif %}</details>
   {% endfor %}
   {% endif %}
 {% endif %}
