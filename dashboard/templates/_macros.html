@@ -19,3 +19,7 @@
 {% macro nb_link(key) -%}
 <a href="/notebook/{{ key }}">{{ key.split('/')[-1] }}</a>
 {%- endmacro %}
+
+{% macro target_type(t) -%}
+{{ {"k8s": "Kubernetes pod", "radeon": "Radeon Global instance"}.get(t, "SSH host") }}
+{%- endmacro %}

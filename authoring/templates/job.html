@@ -4,6 +4,8 @@
 {% block title %}{{ job.notebook }}{% endblock %}
 {% block content %}
 {% set s = job.summary or {} %}
+{% set nbview = (prefix ~ '/jobs/' ~ job.id ~ '/view/' ~ views[0]) if views else None %}
+<p class="sub"><a href="{{ prefix }}/jobs">Jobs</a> / {{ job.notebook }}</p>
 <div class="eyebrow">{{ {'validate': 'Validate', 'annotate': 'Annotate', 'regression': 'Nightly pass'}[job.kind] }} · {{ categories.get(job.category, job.category or '') }}{% if job.author %} · {{ job.author }}{% endif %}</div>
 <h1>{{ job.notebook }} <span id="status">{{ job_badge(job.status) }}</span></h1>
 <p class="sub">
@@ -13,34 +15,26 @@
   {% if job.finished_at and job.started_at %}· finished {{ job.finished_at[11:16] }} UTC{% endif %}
 </p>
 
-{% set steps = ['Queued', 'Static checks', 'Waiting for a GPU', 'Running', 'Done'] if job.kind == 'validate'
-          else ['Queued', 'Static checks', 'Annotating', 'Checking the result', 'Done'] if job.kind == 'annotate'
-          else ['Queued', 'Waiting for a GPU', 'Running', 'Done'] %}
-{% set st = job.stage or '' %}
-{% set now = 4 if final else
-     (3 if job.kind == 'annotate' and st.startswith('Checking') else
-      2 if job.kind == 'annotate' and st.startswith('Annotating') else
-      3 if job.phase == 'gpu' and job.status == 'running' and job.kind == 'validate' else
-      2 if job.phase == 'gpu' and job.kind == 'validate' else
-      2 if job.phase == 'gpu' and job.status == 'running' else
-      1 if job.phase == 'gpu' else
-      1 if job.status == 'running' else 0) %}
-{% if job.kind == 'regression' and final %}{% set now = 3 %}{% endif %}
 <div class="card">
-  <div class="steps">{% for name in steps %}<span class="{{ 'done' if loop.index0 < now or (final and loop.last) else 'now' if loop.index0 == now else '' }}">{{ name }}</span>{% endfor %}</div>
-  <p class="stage" id="stage" style="margin: 12px 0 4px">{{ job.stage }}</p>
-  <p class="dim" id="position" style="margin: 0">
-    {% if position %}Number {{ position }} in the queue for a GPU.{% if estimates.validate %} Validate jobs usually take about {{ estimates.validate }} minutes once they start.{% endif %} <a href="{{ prefix }}/runners">See the runners</a>.{% endif %}
+  <ol class="steps" aria-label="Progress">
+    {% for step in steps %}<li class="{{ step.state }}"{% if step.state == 'now' or (final and step.state not in ('done', '') and not loop.last) %} aria-current="step"{% endif %}>{% if step.state == 'done' %}✓ {% endif %}{{ step.name }}</li>{% endfor %}
+  </ol>
+  <p class="stage" id="stage" role="status" aria-live="polite" style="margin: 12px 0 4px">{{ job.stage }}</p>
+  <p class="dim" id="position" role="status" aria-live="polite" style="margin: 0"{% if not position %} hidden{% endif %}>
+    <span id="posn">{% if position %}Number {{ position }} in the queue for a GPU.{% endif %}</span>
+    {% if estimates.validate %}Validate jobs usually take about {{ estimates.validate }} minutes once they start.{% endif %}
+    <a href="{{ prefix }}/runners">See the runners</a>.
   </p>
   {% if not final and job.kind != 'regression' %}
   <form method="post" action="{{ prefix }}/jobs/{{ job.id }}/cancel" style="margin-top: 12px">
-    <button class="secondary" type="submit" {{ 'disabled title="Only the author can cancel it"' if author != job.author }}>Cancel job</button>
+    <button class="secondary" type="submit"{% if author != job.author %} disabled aria-describedby="cancel-why"{% endif %}>Cancel job</button>
+    {% if author != job.author %}<span id="cancel-why" class="dim"> Only {{ job.author }} can cancel this job.</span>{% endif %}
   </form>
   {% endif %}
 </div>
 
 {% if final %}
-  {% if s.message %}<h2>What happened</h2><pre>{{ s.message }}</pre>{% endif %}
+  {% if s.message %}<h2>What happened</h2><pre>{{ s.message | replace('no target fits:', 'No runner fits this notebook:') }}</pre>{% endif %}
 
   {% if job.kind in ('validate', 'regression') and s.run %}
   <h2>Run on a GPU</h2>
@@ -56,13 +50,15 @@
   </div>
   {% if s.run.issues %}
   <h2>Issues to fix ({{ s.run.issues | length }})</h2>
-  <table>
-    <tr><th>Cell</th><th>Type</th><th class="col-issue">What broke</th><th>Proposed fix</th><th>Fixability</th></tr>
+  <div class="table-wrap"><table>
+    <thead><tr><th scope="col">Cell</th><th scope="col">Type</th><th scope="col" class="col-issue">What broke</th><th scope="col">Proposed fix</th><th scope="col">Fixability</th></tr></thead>
+    <tbody>
     {% for i in s.run.issues %}
     <tr><td>{% if i.cell_index is not none and 'executed' in views %}<a href="{{ prefix }}/jobs/{{ job.id }}/view/executed#cell-{{ i.cell_index }}" target="nbview" onclick="document.getElementById('notebook').scrollIntoView()">{{ i.cell_index }}</a>{% else %}{{ i.cell_index if i.cell_index is not none else '—' }}{% endif %}</td><td class="nowrap">{{ (i.error_type or '') | replace('_', ' ') }}</td>
-        <td class="wrap">{{ i.description }}</td><td class="wrap">{{ i.proposed_fix }}</td><td>{{ fixability_badge(i.fixability) }}</td></tr>
+        <td class="wrap">{{ i.description | codespans }}</td><td class="wrap">{{ i.proposed_fix | codespans }}</td><td>{{ fixability_badge(i.fixability) }}</td></tr>
     {% endfor %}
-  </table>
+    </tbody>
+  </table></div>
   {% elif job.status == 'passed' %}
   <p>Every code cell ran without an error.</p>
   {% endif %}
@@ -82,48 +78,57 @@
   {% endif %}
   <h2>Cell changes ({{ s.diff.cells | length }})</h2>
   {% for c in s.diff.cells %}
-  <div class="eyebrow">{{ c.change }} {{ c.cell_type }} cell {{ c.new_index if c.new_index is not none else c.old_index }}
+  <div class="eyebrow">{{ c.change }} {{ c.cell_type }} cell
+    {%- if c.change == 'changed' and c.old_index != c.new_index %} {{ c.old_index }} → {{ c.new_index }}
+    {%- else %} {{ c.new_index if c.new_index is not none else c.old_index }}{% endif %}
     {% if c.tags_after != c.tags_before %}· tags {{ c.tags_before | join(', ') or 'none' }} → {{ c.tags_after | join(', ') or 'none' }}{% endif %}</div>
   <div class="diff">{% for line in c.diff.splitlines()[2:] %}<span class="{{ 'add' if line.startswith('+') else 'del' if line.startswith('-') else 'hunk' if line.startswith('@@') else '' }}">{{ line }}</span>{% if not (line.startswith('+') or line.startswith('-') or line.startswith('@@')) %}
 {% endif %}{% endfor %}</div>
   {% endfor %}
   {% endif %}
+{% endif %}
 
-  {% if s.static %}
-  <h2>Static checks {% if job.kind == 'annotate' %}on the annotated notebook{% endif %}</h2>
-  <p class="dim">{{ s.static.counts.error }} error(s), {{ s.static.counts.warning }} warning(s). Errors must be fixed before the tutorial can be published; warnings need your judgment.</p>
-  {% if s.static.findings %}
-  <table>
-    <tr><th>Severity</th><th>Check</th><th>Cell</th><th class="col-issue">Finding</th><th>How to fix it</th></tr>
-    {% for f in s.static.findings | sort(attribute='severity') %}
-    <tr><td><span class="badge {{ f.severity | sevclass }}">{{ f.severity }}</span></td><td class="nowrap">{{ f.check }}</td>
-        <td>{{ f.cell if f.cell is not none else '—' }}</td><td class="wrap">{{ f.message }}</td><td class="wrap">{{ f.fix }}</td></tr>
-    {% endfor %}
-  </table>
-  {% endif %}
-  <h2>Repository checks</h2>
-  <table>
-    {% for name, c in s.static.checkers.items() %}
-    <tr><td class="nowrap"><b>{{ name }}</b></td>
-        <td><span class="badge {{ 'ok' if c.ok else 'muted' if c.ok is none else 'bad' }}">{{ 'pass' if c.ok else 'not run' if c.ok is none else 'problems' }}</span></td>
-        <td class="wrap mono">{{ c.output }}</td></tr>
-    {% endfor %}
-  </table>
-  {% endif %}
+{% if static %}
+<h2>Static checks {% if job.kind == 'annotate' and final %}on the annotated notebook{% endif %}</h2>
+<p class="dim">{{ static.counts.error }} error(s), {{ static.counts.warning }} warning(s). Errors must be fixed before the tutorial can be published; warnings need your judgment.{% if not final and job.kind == 'validate' %} You can start fixing these now; the GPU run continues.{% endif %}</p>
+{% if static.findings %}
+<div class="table-wrap"><table>
+  <thead><tr><th scope="col">Severity</th><th scope="col">Check</th><th scope="col">Cell</th><th scope="col" class="col-issue">Finding</th><th scope="col">How to fix it</th></tr></thead>
+  <tbody>
+  {% for f in static.findings | sort(attribute='severity') %}
+  <tr><td><span class="badge {{ f.severity | sevclass }}">{{ f.severity }}</span></td><td class="nowrap">{{ f.check }}</td>
+      <td>{% if f.cell is not none and nbview %}<a href="{{ nbview }}#cell-{{ f.cell }}" target="nbview" onclick="document.getElementById('notebook').scrollIntoView()">{{ f.cell }}</a>{% else %}{{ f.cell if f.cell is not none else '—' }}{% endif %}</td>
+      <td class="wrap">{{ f.message | codespans }}</td><td class="wrap">{{ f.fix | codespans }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% endif %}
+<h2>Repository checks</h2>
+<div class="table-wrap"><table>
+  <thead><tr><th scope="col">Check</th><th scope="col">Result</th><th scope="col">Output</th></tr></thead>
+  <tbody>
+  {% for name, c in static.checkers.items() %}
+  <tr><td class="nowrap"><b>{{ name }}</b></td>
+      <td><span class="badge {{ 'ok' if c.ok else 'muted' if c.ok is none else 'bad' }}">{{ 'pass' if c.ok else 'not run' if c.ok is none else 'problems' }}</span></td>
+      <td class="wrap mono">{{ c.output }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table></div>
 {% endif %}
 
 {% if views %}
 <h2 id="notebook">Notebook</h2>
 <div class="filters">
-  {% for v in views %}<a href="{{ prefix }}/jobs/{{ job.id }}/view/{{ v }}" target="nbview" class="{{ 'on' if loop.first }}" onclick="for (const a of this.parentNode.children) a.classList.toggle('on', a === this)">{{ view_names[v] }}</a>{% endfor %}
-  {% if 'executed' in views %}<span class="dim" style="align-self: center">Cells with an error or an issue are marked in red.</span>{% endif %}
+  {% for v in views %}<a href="{{ prefix }}/jobs/{{ job.id }}/view/{{ v }}" target="nbview" class="{{ 'on' if loop.first }}"{% if loop.first %} aria-current="true"{% endif %}
+     onclick="for (const a of this.parentNode.querySelectorAll('a')) { a.classList.toggle('on', a === this); a === this ? a.setAttribute('aria-current', 'true') : a.removeAttribute('aria-current'); } document.querySelector('iframe[name=nbview]').title = '{{ view_names[v] }} notebook: {{ job.notebook }}'">{{ view_names[v] }}</a>{% endfor %}
+  {% if 'executed' in views %}<span class="dim" style="align-self: center">Cells with an error or an issue are marked in red with ⚠.</span>{% endif %}
 </div>
-<iframe name="nbview" src="{{ prefix }}/jobs/{{ job.id }}/view/{{ views[0] }}" sandbox title="Notebook"
-        style="width: 100%; height: 820px; resize: vertical; border: 1px solid var(--line); border-radius: 8px; background: #fff"></iframe>
+<iframe name="nbview" src="{{ nbview }}" sandbox title="{{ view_names[views[0]] }} notebook: {{ job.notebook }}"
+        style="width: 100%; height: min(820px, 75vh); resize: vertical; border: 1px solid var(--line); border-radius: 8px; background: #fff"></iframe>
 {% endif %}
 
 <h2>Progress log</h2>
-<pre class="log" id="log">{{ log }}</pre>
+<pre class="log" id="log" role="log" tabindex="0" aria-label="Progress log">{{ log }}</pre>
 
 {% if not final %}
 <script>
@@ -141,8 +146,9 @@
       }
       next = d.next;
       document.getElementById('stage').textContent = d.stage;
-      document.getElementById('position').textContent = d.position ? 'Number ' + d.position + ' in the queue for a GPU.' : '';
-      if (d.final || d.status !== '{{ job.status }}') { location.reload(); return; }
+      document.getElementById('posn').textContent = d.position ? 'Number ' + d.position + ' in the queue for a GPU.' : '';
+      document.getElementById('position').hidden = !d.position;
+      if (d.final || d.status !== '{{ job.status }}' || d.phase !== '{{ job.phase }}') { location.reload(); return; }
     } catch (e) {}
     setTimeout(poll, 3000);
   }

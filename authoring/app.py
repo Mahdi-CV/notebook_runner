@@ -24,9 +24,12 @@ from urllib.parse import quote
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from fastapi.exception_handlers import http_exception_handler
 from jinja2 import ChoiceLoader, FileSystemLoader
+from markupsafe import Markup, escape
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import capacity, store
+from . import capacity, pipeline, store
 from . import render as nbrender
 
 HERE = Path(__file__).resolve().parent
@@ -154,8 +157,25 @@ def job_page(request: Request, job_id: str):
     conn, job = load_job(job_id)
     d = store.job_dir(job_id)
     log_text, log_next = read_log(job_id)
+    final = job["status"] in store.FINAL
+    # Recompute an annotate job's diff, so jobs from before a cell_diff change show it too.
+    if job["kind"] == "annotate" and (job.get("summary") or {}).get("diff") \
+            and (d / "input.ipynb").exists() and (d / "annotated.ipynb").exists():
+        try:
+            job["summary"]["diff"] = pipeline.cell_diff(json.loads((d / "input.ipynb").read_text()),
+                                                        json.loads((d / "annotated.ipynb").read_text()))
+        except ValueError:
+            pass
+    # The static checks are ready before the GPU run; show them as soon as they are.
+    static = (job.get("summary") or {}).get("static")
+    if static is None and (d / "static.json").exists():
+        try:
+            static = json.loads((d / "static.json").read_text())
+        except ValueError:
+            static = None
     return render(request, "job.html", job=job, position=queue_position(conn, job),
-                  log=log_text, log_next=log_next, final=job["status"] in store.FINAL,
+                  log=log_text, log_next=log_next, final=final, steps=job_steps(job, final),
+                  static=static,
                   has={name: (d / name).exists() for name in
                        ("annotated.ipynb", "static.json", "CHANGES.md")},
                   executed=executed_path(job), views=list(notebook_views(job)), view_names=VIEWS,
@@ -170,6 +190,7 @@ def job_api(job_id: str, since: int = 0):
     except OSError:
         lines = []
     return JSONResponse({"status": job["status"], "stage": job["stage"], "target": job["target"],
+                         "phase": job["phase"],
                          "final": job["status"] in store.FINAL,
                          "position": queue_position(conn, job),
                          "log": lines[since:since + 2000], "next": min(len(lines), since + 2000)})
@@ -270,11 +291,68 @@ def executed_path(job: dict) -> Path | None:
     return path if path.is_file() else None
 
 
+OUTCOME = {"passed": "Pass", "done": "Done", "failed": "Fail", "blocked": "Blocked",
+           "cancelled": "Cancelled", "error": "Error"}
+
+
+def job_steps(job: dict, final: bool) -> list[dict]:
+    """The job page's progress steps: [{"name", "state"}], where state is done,
+    now, or (where a job stopped short) its outcome's badge class."""
+    kind, phase, status, stage = job["kind"], job["phase"], job["status"], job.get("stage") or ""
+    names = {"validate": ["Queued", "Static checks", "Waiting for a GPU", "Running"],
+             "annotate": ["Queued", "Static checks", "Annotating", "Checking the result"],
+             "regression": ["Queued", "Waiting for a GPU", "Running"]}[kind]
+    names = names + [OUTCOME.get(status, "Done") if final else "Done"]
+    gpu_wait = names.index("Waiting for a GPU") if "Waiting for a GPU" in names else None
+    if kind == "annotate":
+        reached = 3 if stage.startswith("Checking") else 2 if stage.startswith("Annotating") \
+            else 1 if status == "running" or job.get("started_at") else 0
+    elif phase == "gpu":
+        ran = status == "running" or (job.get("summary") or {}).get("run")
+        reached = gpu_wait + 1 if ran else gpu_wait
+    else:
+        reached = 1 if status == "running" or job.get("started_at") else 0
+    if final and status in ("passed", "done"):
+        return [{"name": n, "state": "done"} for n in names]
+    if final:
+        reached = min(reached, len(names) - 2)
+        cls = job_class(status)
+        return [{"name": n, "state": "done" if i < reached else cls if i in (reached, len(names) - 1)
+                 else ""} for i, n in enumerate(names)]
+    return [{"name": n, "state": "done" if i < reached else "now" if i == reached else ""}
+            for i, n in enumerate(names)]
+
+
+def codespans(text) -> Markup:
+    """Escape text, then show `backticked` spans as code."""
+    escaped = str(escape(text or ""))
+    return Markup(re.sub(r"`([^`\n]+)`", r"<code>\1</code>", escaped))
+
+
 def severity_badge(sev: str) -> str:
     return {"error": "bad", "warning": "warn", "info": "muted"}.get(sev, "muted")
 
 
+def job_class(status: str) -> str:
+    return {"passed": "ok", "done": "ok", "failed": "bad", "error": "bad", "blocked": "warn",
+            "cancelled": "muted", "queued": "muted", "running": "info"}.get(status, "muted")
+
+
 templates.env.filters["sevclass"] = severity_badge
-templates.env.filters["jobclass"] = lambda s: {
-    "passed": "ok", "done": "ok", "failed": "bad", "error": "bad", "blocked": "warn",
-    "cancelled": "muted", "queued": "muted", "running": "info"}.get(s, "muted")
+templates.env.filters["jobclass"] = job_class
+# The same verdict words as the regression dashboard (pass/fail).
+templates.env.filters["joblabel"] = lambda s: {"passed": "pass", "failed": "fail"}.get(s, s)
+templates.env.filters["codespans"] = codespans
+
+
+@app.exception_handler(StarletteHTTPException)
+async def html_errors(request: Request, exc: StarletteHTTPException):
+    """A page for people, JSON for the live API and scripts."""
+    if "text/html" in request.headers.get("accept", "") and "/api/" not in request.url.path:
+        title = {404: "Not found", 403: "Not allowed"}.get(exc.status_code, "Something went wrong")
+        return templates.TemplateResponse(request, "error.html", {
+            "db_missing": False, "dashboard_url": DASHBOARD_URL, "prefix": PREFIX,
+            "author": request.cookies.get("author", ""), "title": title, "detail": exc.detail,
+            "back_url": f"{PREFIX}/jobs", "back_label": "Back to the jobs", "layout": "layout.html"},
+            status_code=exc.status_code)
+    return await http_exception_handler(request, exc)

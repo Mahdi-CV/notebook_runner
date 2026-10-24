@@ -6,27 +6,26 @@
 <p class="sub">Latest verified result for every notebook a target can run. Last activity: {{ summary.last | ts }}{% if summary.last %} ({{ summary.last | age }}){% endif %}.</p>
 
 <div class="tiles">
-  <div class="tile"><div class="n">{{ summary.passing }}/{{ summary.total }}</div><div class="l">Passing</div></div>
-  <div class="tile"><div class="n">{{ summary.pass }}</div><div class="l">Pass</div></div>
-  <div class="tile"><div class="n">{{ summary.fail }}</div><div class="l">Fail</div></div>
-  <div class="tile"><div class="n">{{ summary.blocked }}</div><div class="l">Blocked</div></div>
-  <div class="tile"><div class="n">{{ summary.never }}</div><div class="l">Never tested</div></div>
-  <div class="tile"><div class="n">{{ summary.stale }}</div><div class="l">Stale (&gt;7d)</div></div>
-  <div class="tile"><div class="n">{{ summary.no_target }}</div><div class="l">No target</div></div>
+  <a class="tile" href="/?status=pass"><div class="n">{{ summary.passing }}/{{ summary.total }}</div><div class="l">Passing</div></a>
+  <a class="tile{{ ' bad' if summary.fail }}" href="/?status=fail"><div class="n">{{ summary.fail }}</div><div class="l">Fail</div></a>
+  <a class="tile{{ ' warn' if summary.blocked }}" href="/?status=blocked"><div class="n">{{ summary.blocked }}</div><div class="l">Blocked</div></a>
+  <a class="tile" href="/?status=never-tested"><div class="n">{{ summary.never }}</div><div class="l">Never tested</div></a>
+  <a class="tile" href="/?status=stale"><div class="n">{{ summary.stale }}</div><div class="l">Stale (&gt;7d)</div></a>
+  <a class="tile" href="/#no-target"><div class="n">{{ summary.no_target }}</div><div class="l">No target</div></a>
 </div>
 
 <div class="filters">
-  <a href="/?status={{ status }}" class="{{ 'on' if not category }}">All categories</a>
-  {% for c in categories %}<a href="/?category={{ c }}&status={{ status }}" class="{{ 'on' if category == c }}">{{ c }}</a>{% endfor %}
+  <a href="/?status={{ status }}" class="{{ 'on' if not category }}"{% if not category %} aria-current="true"{% endif %}>All categories</a>
+  {% for c in categories %}<a href="/?category={{ c }}&status={{ status }}" class="{{ 'on' if category == c }}"{% if category == c %} aria-current="true"{% endif %}>{{ c }}</a>{% endfor %}
 </div>
 <div class="filters">
-  {% for s, label in [("", "Any status"), ("pass", "Pass"), ("fail", "Fail"), ("blocked", "Blocked"), ("never-tested", "Never tested")] %}
-  <a href="/?category={{ category }}&status={{ s }}" class="{{ 'on' if status == s }}">{{ label }}</a>
+  {% for s, label in [("", "Any status"), ("pass", "Pass"), ("fail", "Fail"), ("blocked", "Blocked"), ("never-tested", "Never tested"), ("stale", "Stale")] %}
+  <a href="/?category={{ category }}&status={{ s }}" class="{{ 'on' if status == s }}"{% if status == s %} aria-current="true"{% endif %}>{{ label }}</a>
   {% endfor %}
 </div>
 
-<table>
-  <thead><tr><th>Notebook</th><th>Status</th><th>Target</th><th>Last verified</th><th>Image</th><th class="col-issue">Top issue</th></tr></thead>
+<div class="table-wrap"><table>
+  <thead><tr><th scope="col">Notebook</th><th scope="col">Status</th><th scope="col">Target</th><th scope="col">Last verified</th><th scope="col">Image</th><th scope="col" class="col-issue">Top issue</th></tr></thead>
   <tbody>
   {% for r in rows %}
     <tr>
@@ -43,13 +42,13 @@
     <tr><td colspan="6" class="dim">No notebooks match this filter.</td></tr>
   {% endfor %}
   </tbody>
-</table>
+</table></div>
 
 {% if no_target %}
-<h2>No target ({{ no_target | length }})</h2>
+<h2 id="no-target">No target ({{ no_target | length }})</h2>
 <p class="sub">Notebooks whose declared requirements no configured target meets.</p>
-<table>
-  <thead><tr><th>Notebook</th><th>Category</th><th>Why</th><th>Last result</th></tr></thead>
+<div class="table-wrap"><table>
+  <thead><tr><th scope="col">Notebook</th><th scope="col">Category</th><th scope="col">Why</th><th scope="col">Last result</th></tr></thead>
   <tbody>
   {% for s in no_target %}
     <tr>
@@ -60,6 +59,6 @@
     </tr>
   {% endfor %}
   </tbody>
-</table>
+</table></div>
 {% endif %}
 {% endblock %}

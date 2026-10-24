@@ -15,6 +15,10 @@ except ImportError:  # the page still works, with markdown shown as text
     _markdown = None
 
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+# Cells papermill adds to an executed notebook. They are not shown, and the
+# rest are numbered as in the original notebook, as tools/verdict.py and the
+# agents' issues number them.
+INSERTED_TAGS = {"injected-parameters", "papermill-error-cell-tag"}
 CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'"
 
 STYLE = """
@@ -35,6 +39,8 @@ body { margin: 0; padding: 16px 20px; font: 14px/1.5 system-ui, -apple-system, "
 .out table { border-collapse: collapse; font-size: 12.5px; }
 .out td, .out th { border: 1px solid #e2e3e7; padding: 2px 6px; }
 .more { color: #6b6f7a; font-size: 12px; }
+.warn-mark { display: block; margin-top: 2px; }
+@media (max-width: 500px) { .cell { grid-template-columns: 32px 1fr; } body { padding: 12px; } }
 """
 
 MAX_OUTPUT_CHARS = 20000
@@ -47,7 +53,10 @@ def _text(value) -> str:
 def _markdown_html(source: str) -> str:
     if _markdown is None:
         return f"<pre>{html.escape(source)}</pre>"
-    return _markdown.markdown(source, extensions=["fenced_code", "tables"])
+    try:  # superfences also handles code blocks inside list items
+        return _markdown.markdown(source, extensions=["pymdownx.superfences", "tables"])
+    except ImportError:
+        return _markdown.markdown(source, extensions=["fenced_code", "tables"])
 
 
 def _clip(text: str) -> str:
@@ -58,7 +67,7 @@ def _clip(text: str) -> str:
             "not shown …</span>\n" + html.escape(text[-MAX_OUTPUT_CHARS // 2:]))
 
 
-def _output(out: dict) -> str:
+def _output(out: dict, cell: int) -> str:
     kind = out.get("output_type")
     if kind == "stream":
         return f"<div class=out><pre>{_clip(ANSI.sub('', _text(out.get('text'))))}</pre></div>"
@@ -69,7 +78,8 @@ def _output(out: dict) -> str:
     data = out.get("data") or {}
     for mime in ("image/png", "image/jpeg", "image/gif"):
         if mime in data:
-            return f"<div class=out><img src='data:{mime};base64,{_text(data[mime]).strip()}'></div>"
+            return (f"<div class=out><img alt='Cell {cell} output image' "
+                    f"src='data:{mime};base64,{_text(data[mime]).strip()}'></div>")
     if "text/html" in data:  # inert in the sandbox: no scripts, no external loads
         return f"<div class=out>{_text(data['text/html'])[:MAX_OUTPUT_CHARS]}</div>"
     if "text/markdown" in data:
@@ -101,7 +111,11 @@ def notebook_html(nb: dict, title: str, flagged: set[int] = frozenset()) -> str:
     """The notebook as a page; cells in `flagged` (the issues' cells, and any
     cell with an error output) are marked, and every cell has an #cell-N anchor."""
     parts = []
-    for i, cell in enumerate(nb.get("cells", [])):
+    i = -1
+    for cell in nb.get("cells", []):
+        if set((cell.get("metadata") or {}).get("tags") or []) & INSERTED_TAGS:
+            continue
+        i += 1
         src = _text(cell.get("source"))
         outputs = _coalesce(cell.get("outputs") or [])
         flag = i in flagged or any(o.get("output_type") == "error" for o in outputs)
@@ -114,8 +128,11 @@ def notebook_html(nb: dict, title: str, flagged: set[int] = frozenset()) -> str:
             count = cell.get("execution_count")
             label = f"[{count if count is not None else ' '}]"
             body = (f"<div>{tag_line}<pre class=src>{html.escape(src)}</pre>"
-                    + "".join(_output(o) for o in outputs) + "</div>")
+                    + "".join(_output(o, i) for o in outputs) + "</div>")
+        mark = "<span class=warn-mark title='error or issue'>⚠</span>" if flag else ""
         parts.append(f"<div class='cell{' flag' if flag else ''}' id=cell-{i}>"
-                     f"<div class=n>{i}<br>{label}</div>{body}</div>")
-    return (f"<!doctype html><html><head><meta charset=utf-8><title>{html.escape(title)}</title>"
+                     f"<div class=n>{i}<br>{label}{mark}</div>{body}</div>")
+    return (f"<!doctype html><html lang=en><head><meta charset=utf-8>"
+            f"<meta name=viewport content='width=device-width, initial-scale=1'>"
+            f"<title>{html.escape(title)}</title>"
             f"<style>{STYLE}</style></head><body>{''.join(parts)}</body></html>")

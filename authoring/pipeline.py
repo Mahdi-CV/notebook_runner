@@ -449,28 +449,51 @@ def agent_line(raw: str) -> str:
 
 
 def cell_diff(old: dict, new: dict) -> dict:
-    """Cell-level changes between two notebooks, for the review page."""
+    """Cell-level changes between two notebooks, for the review page. Within a
+    changed stretch, each old cell is paired with the most similar new cell of
+    the same type (at least half alike); the rest are added or removed cells."""
     def key(c):
         return (c.get("cell_type"), lint.source(c), tuple(lint.tags(c)))
+
+    def entry(change, o, n, i, j):
+        return {
+            "change": change, "old_index": i, "new_index": j,
+            "cell_type": (n or o).get("cell_type"),
+            "tags_before": lint.tags(o) if o else [], "tags_after": lint.tags(n) if n else [],
+            "diff": "\n".join(difflib.unified_diff(
+                lint.source(o).splitlines() if o else [],
+                lint.source(n).splitlines() if n else [], lineterm="", n=2))[0:20000],
+        }
+
     a, b = [key(c) for c in old["cells"]], [key(c) for c in new["cells"]]
     cells = []
     for op, i1, i2, j1, j2 in difflib.SequenceMatcher(a=a, b=b, autojunk=False).get_opcodes():
         if op == "equal":
             continue
-        olds, news = old["cells"][i1:i2], new["cells"][j1:j2]
-        for k in range(max(len(olds), len(news))):
-            o = olds[k] if k < len(olds) else None
-            n = news[k] if k < len(news) else None
-            change = "changed" if o and n else "added" if n else "removed"
-            cells.append({
-                "change": change, "old_index": i1 + k if o else None,
-                "new_index": j1 + k if n else None,
-                "cell_type": (n or o).get("cell_type"),
-                "tags_before": lint.tags(o) if o else [], "tags_after": lint.tags(n) if n else [],
-                "diff": "\n".join(difflib.unified_diff(
-                    lint.source(o).splitlines() if o else [],
-                    lint.source(n).splitlines() if n else [], lineterm="", n=2))[0:20000],
-            })
+        pairs = []
+        for i in range(i1, i2):
+            for j in range(j1, j2):
+                o, n = old["cells"][i], new["cells"][j]
+                if o.get("cell_type") == n.get("cell_type"):
+                    ratio = difflib.SequenceMatcher(None, lint.source(o), lint.source(n)).ratio()
+                    if ratio >= 0.5:
+                        pairs.append((ratio, i, j))
+        paired_old, paired_new, matched = set(), set(), {}
+        for _, i, j in sorted(pairs, reverse=True):
+            if i not in paired_old and j not in paired_new:
+                paired_old.add(i)
+                paired_new.add(j)
+                matched[j] = i
+        for i in range(i1, i2):
+            if i not in paired_old:
+                cells.append(entry("removed", old["cells"][i], None, i, None))
+        for j in range(j1, j2):
+            if j in matched:
+                i = matched[j]
+                cells.append(entry("changed", old["cells"][i], new["cells"][j], i, j))
+            else:
+                cells.append(entry("added", None, new["cells"][j], None, j))
+    cells.sort(key=lambda c: (c["new_index"] if c["new_index"] is not None else c["old_index"] - 0.5))
     return {"cells": cells,
             "metadata_before": (old.get("metadata") or {}).get("ci"),
             "metadata_after": (new.get("metadata") or {}).get("ci")}

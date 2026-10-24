@@ -1,18 +1,18 @@
 {% extends "base.html" %}
-{% from "_macros.html" import nb_link, requirements %}
+{% from "_macros.html" import nb_link, requirements, target_type %}
 {% block title %}Targets{% endblock %}
 {% block content %}
 <h1>Targets</h1>
 <p class="sub">Where the runner can execute notebooks (<span class="mono">runner.yaml</span>, in preference order), and where each notebook's declared requirements route it.</p>
 
 <h2>Targets ({{ targets | length }})</h2>
-<table>
-  <thead><tr><th>Name</th><th>Type</th><th>Hardware</th><th>GPUs</th><th>Where</th><th>Scheduling</th><th>Provides</th></tr></thead>
+<div class="table-wrap"><table>
+  <thead><tr><th scope="col">Name</th><th scope="col">Type</th><th scope="col">Hardware</th><th scope="col">GPUs</th><th scope="col">Where</th><th scope="col">Scheduling</th><th scope="col">Provides</th></tr></thead>
   <tbody>
   {% for name, t in targets.items() %}
     <tr>
       <td class="mono">{{ name }}</td>
-      <td>{{ {"k8s": "Kubernetes pod", "radeon": "Radeon Global instance"}.get(t.type, "SSH host") }}</td>
+      <td>{{ target_type(t.type) }}</td>
       <td>{{ t.hardware or "—" }}</td>
       <td>{{ t.gpus or 1 }}{% if t.gpu_memory_gb %} × {{ t.gpu_memory_gb }} GB{% endif %}</td>
       <td class="mono">{% if t.type == "k8s" %}{{ t.context }} / {{ t.namespace }}{% elif t.type == "radeon" %}{{ t.user_name }} · pool {{ t.pod_type }}{% else %}{{ t.user }}@{{ t.host }}{% endif %}</td>
@@ -27,12 +27,12 @@
     <tr><td colspan="7" class="dim">No runner.yaml on this host: routes are not shown.</td></tr>
   {% endfor %}
   </tbody>
-</table>
+</table></div>
 
 {% for category, items in groups.items() %}
 <h2>{{ category }} ({{ items | length }})</h2>
-<table>
-  <thead><tr><th>Notebook</th><th>Needs</th><th>Runs on</th></tr></thead>
+<div class="table-wrap"><table>
+  <thead><tr><th scope="col">Notebook</th><th scope="col">Needs</th><th scope="col">Runs on</th></tr></thead>
   <tbody>
   {% for n in items %}
     <tr>
@@ -42,6 +42,6 @@
     </tr>
   {% endfor %}
   </tbody>
-</table>
+</table></div>
 {% endfor %}
 {% endblock %}

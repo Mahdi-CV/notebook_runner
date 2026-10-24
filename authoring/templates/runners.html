@@ -7,12 +7,19 @@
 {{ runner_rows(availability) }}
 {% if availability and availability.estimates %}
 <h2>Typical durations</h2>
-<table style="max-width: 520px">
-  <tr><th>Job</th><th>Median of recent jobs</th></tr>
+<div class="table-wrap" style="max-width: 520px"><table>
+  <thead><tr><th scope="col">Job</th><th scope="col">Median of recent jobs</th></tr></thead>
+  <tbody>
   {% for kind, minutes in availability.estimates.items() %}
   <tr><td>{{ {'validate': 'Validate', 'annotate': 'Annotate', 'regression': 'Nightly notebook'}[kind] }}</td><td>{{ minutes }} min</td></tr>
   {% endfor %}
-</table>
+  </tbody>
+</table></div>
 {% endif %}
-<script>setTimeout(() => location.reload(), 20000)</script>
+<script>
+  // Refresh the figures, but never while someone is reading further down or using the page.
+  setInterval(() => {
+    if (!document.hidden && document.activeElement === document.body && window.scrollY === 0) location.reload();
+  }, 20000);
+</script>
 {% endblock %}

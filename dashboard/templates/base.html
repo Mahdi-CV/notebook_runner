@@ -13,31 +13,38 @@
   }
   * { box-sizing: border-box; }
   body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--fg); }
-  header { background: #1c1d21; color: #fff; padding: 0 24px; display: flex; align-items: center; gap: 28px; height: 52px; }
+  header { background: #1c1d21; color: #fff; padding: 8px 24px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 28px; min-height: 52px; }
   header .brand { font-weight: 600; letter-spacing: .2px; }
-  header .brand span { color: var(--accent); }
-  header nav a { color: #c9ccd3; text-decoration: none; margin-right: 18px; }
+  header .brand span { color: #ff5a5f; }
+  header nav { display: flex; flex-wrap: wrap; gap: 4px 18px; }
+  header nav a { color: #c9ccd3; text-decoration: none; padding: 4px 0; }
+  header nav a.active { box-shadow: inset 0 -2px 0 #ff5a5f; }
   header nav a:hover, header nav a.active { color: #fff; }
   main { max-width: 1280px; margin: 0 auto; padding: 24px; }
-  h1 { font-size: 22px; margin: 0 0 4px; }
+  h1 { font-size: 22px; margin: 0 0 4px; overflow-wrap: anywhere; }
   h2 { font-size: 16px; margin: 28px 0 10px; }
   .sub { color: var(--muted); margin: 0 0 20px; }
   a { color: var(--info); }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 16px 18px; }
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; margin-bottom: 20px; }
   .tile { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+  a.tile { color: inherit; text-decoration: none; }
+  a.tile:hover { border-color: var(--muted); }
+  .tile.bad .n { color: var(--bad); }
+  .tile.warn .n { color: var(--warn); }
   .tile .n { font-size: 24px; font-weight: 600; }
   .tile .l { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .4px; }
-  table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  table { width: 100%; border-collapse: collapse; background: var(--card); }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--card); margin-bottom: 4px; }
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { background: #fafafb; font-weight: 600; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .3px; }
   tr:last-child td { border-bottom: none; }
-  td.wrap { white-space: pre-wrap; word-break: break-word; }
+  td.wrap { white-space: pre-wrap; word-break: break-word; min-width: 14rem; }
   .eyebrow { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; line-height: 1.2; }
   .nowrap { white-space: nowrap; }
   .clip { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .col-issue { width: 380px; min-width: 380px; max-width: 380px; }
-  .clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
+  .col-issue { min-width: 16rem; }
+  .clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; overflow-wrap: anywhere; }
   .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; white-space: nowrap; }
   .ok { color: var(--ok); background: var(--ok-bg); }
   .ok-soft { color: var(--ok); background: var(--ok-soft-bg); }
@@ -45,6 +52,8 @@
   .bad { color: var(--bad); background: var(--bad-bg); }
   .info { color: var(--info); background: var(--info-bg); }
   .muted { color: var(--muted); background: var(--muted-bg); }
+  .badge.muted { color: #585c66; }
+  :focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
   .dim { color: var(--muted); }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
   pre { background: #f2f3f5; border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; font-size: 12.5px; }
@@ -58,6 +67,7 @@
   details summary { cursor: pointer; color: var(--info); }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
   @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } dl.kv { grid-template-columns: 1fr; } }
+  @media (max-width: 600px) { main { padding: 16px; } }
 </style>
 {% block head %}{% endblock %}
 </head>
@@ -66,9 +76,11 @@
   {% block brand %}<div class="brand">Notebook <span>regression</span></div>{% endblock %}
   <nav>
     {% block nav %}
-    <a href="/" class="{{ 'active' if request.url.path == '/' or request.url.path.startswith('/notebook') or request.url.path.startswith('/result') }}">Notebooks</a>
-    <a href="/runs" class="{{ 'active' if request.url.path.startswith('/run') }}">Runs</a>
-    <a href="/targets" class="{{ 'active' if request.url.path == '/targets' }}">Targets</a>
+    {% set path = request.url.path %}
+    {% set here = 'notebooks' if path == '/' or path.startswith('/notebook') or path.startswith('/result') else 'runs' if path.startswith('/run') else 'targets' if path == '/targets' else '' %}
+    <a href="/" class="{{ 'active' if here == 'notebooks' }}"{% if here == 'notebooks' %} aria-current="page"{% endif %}>Notebooks</a>
+    <a href="/runs" class="{{ 'active' if here == 'runs' }}"{% if here == 'runs' %} aria-current="page"{% endif %}>Runs</a>
+    <a href="/targets" class="{{ 'active' if here == 'targets' }}"{% if here == 'targets' %} aria-current="page"{% endif %}>Targets</a>
     {% if authoring_url %}<a href="{{ authoring_url }}">Validate a notebook</a>{% endif %}
     {% endblock %}
   </nav>

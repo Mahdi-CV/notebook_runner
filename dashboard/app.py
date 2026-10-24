@@ -25,7 +25,9 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.exception_handlers import http_exception_handler
 from starlette.concurrency import run_in_threadpool
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.templating import Jinja2Templates
 
 ROOT = Path(os.environ.get("NBR_ROOT") or Path(__file__).resolve().parent.parent)
@@ -117,7 +119,14 @@ def why(result: dict | None) -> str:
         payload = json.loads(result.get("payload_json") or "{}")
     except json.JSONDecodeError:
         payload = {}
-    return result_reason({**result, **payload}, width=110)
+    merged = {**result, **payload}
+    reason = result_reason(merged, width=110)
+    summary = (merged.get("summary") or "").strip()
+    if verdict_status(merged.get("status")) != "pass" and not merged.get("issues") and summary:
+        first = summary.split(". ")[0][:160]
+        if first and first not in reason:
+            reason = f"{reason} — {first}"
+    return reason
 
 
 for name, fn in {"ts": fmt_ts, "age": fmt_age, "cost": fmt_cost, "why": why,
@@ -160,6 +169,10 @@ def overview(request: Request, category: str = "", status: str = ""):
                               "reason": nb["reason"], "latest": latest.get(key)})
             continue
         rows.append({**notebook_row(key, latest.get(key)), "target": nb["target"]})
+    # What needs attention first: failures, then blocked, untested and stale results.
+    rank = {"fail": 0, "blocked": 1, "never-tested": 2}
+    rows.sort(key=lambda r: (rank.get(r["status"], 4 if not r["stale"] else 3),
+                             r["category"], r["name"]))
 
     summary = {
         "total": len(rows),
@@ -175,7 +188,8 @@ def overview(request: Request, category: str = "", status: str = ""):
     categories = sorted({r["category"] for r in rows})
     shown = [r for r in rows
              if (not category or r["category"] == category)
-             and (not status or r["status"] == status)]
+             and (not status or r["status"] == status or (status == "stale" and r["stale"]))]
+    no_target = [] if status else [n for n in no_target if not category or n["category"] == category]
     return render(request, "overview.html", rows=shown, no_target=no_target, summary=summary,
                   categories=categories, category=category, status=status)
 
@@ -248,10 +262,35 @@ def executed_notebook_view(result_id: int):
                                        "X-Content-Type-Options": "nosniff"})
 
 
+def run_counts(results: list[dict]) -> dict:
+    """pass / fail / blocked by each notebook's last result in a run, and no-target skips."""
+    last: dict[str, dict] = {}
+    skipped = set()
+    for r in sorted(results, key=lambda r: r["id"]):
+        if r["phase"] == "skip":
+            skipped.add(r["notebook"])
+        else:
+            last[r["notebook"]] = r
+    counts = {"pass": 0, "fail": 0, "blocked": 0}
+    for r in last.values():
+        counts[verdict_status(r["status"])] = counts.get(verdict_status(r["status"]), 0) + 1
+    counts["skipped"] = len(skipped - set(last))
+    return counts
+
+
 @app.get("/runs", response_class=HTMLResponse)
 def runs(request: Request):
     conn = db()
-    return render(request, "runs.html", runs=results_db.list_runs(conn, 200) if conn else [])
+    rows = results_db.list_runs(conn, 200) if conn else []
+    by_run: dict[str, list] = {}
+    if rows:
+        marks = ", ".join("?" * len(rows))
+        for r in conn.execute(f"SELECT id, run_id, notebook, phase, status FROM results "
+                              f"WHERE run_id IN ({marks})", [r["run_id"] for r in rows]):
+            by_run.setdefault(r["run_id"], []).append(dict(r))
+    for r in rows:
+        r["counts"] = run_counts(by_run.get(r["run_id"], []))
+    return render(request, "runs.html", runs=rows)
 
 
 @app.get("/run/{run_id}", response_class=HTMLResponse)
@@ -264,7 +303,8 @@ def run(request: Request, run_id: str):
         argv = " ".join(json.loads(run_row.get("argv") or "[]"))
     except json.JSONDecodeError:
         argv = run_row.get("argv") or ""
-    return render(request, "run.html", run=run_row, results=results, argv=argv)
+    return render(request, "run.html", run=run_row, results=results, argv=argv,
+                  counts=run_counts(results))
 
 
 @app.get("/targets", response_class=HTMLResponse)
@@ -324,6 +364,18 @@ async def authoring(path: str, request: Request):
                if k.lower() in ("content-type", "cookie", "accept", "user-agent")}
     return await run_in_threadpool(_relay, request.method, f"{AUTHORING_UPSTREAM}/{path}{query}",
                                    body, headers)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def html_errors(request: Request, exc: StarletteHTTPException):
+    """A page for people, JSON for scripts."""
+    if "text/html" in request.headers.get("accept", ""):
+        title = {404: "Not found", 403: "Not allowed"}.get(exc.status_code, "Something went wrong")
+        return templates.TemplateResponse(request, "error.html", {
+            "db_missing": False, "authoring_url": AUTHORING_URL, "title": title,
+            "detail": exc.detail, "back_url": "/", "back_label": "Back to the notebooks"},
+            status_code=exc.status_code)
+    return await http_exception_handler(request, exc)
 
 
 @app.get("/healthz", response_class=PlainTextResponse)

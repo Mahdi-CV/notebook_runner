@@ -1,16 +1,18 @@
+{% from "_macros.html" import target_type %}
 {% macro job_badge(status) -%}
-<span class="badge {{ status | jobclass }}">{{ status }}</span>
+<span class="badge {{ status | jobclass }}">{{ status | joblabel }}</span>
 {%- endmacro %}
 
 {% macro runner_rows(availability) -%}
 {% if not availability %}
 <p class="dim">The worker has not reported yet: runner availability appears once it is running.</p>
 {% else %}
-<table>
-  <tr><th>Runner</th><th>Hardware</th><th>In use</th><th>Running now</th><th>Status</th></tr>
+<div class="table-wrap"><table>
+  <thead><tr><th scope="col">Runner</th><th scope="col">Hardware</th><th scope="col">In use</th><th scope="col">Running now</th><th scope="col">Status</th></tr></thead>
+  <tbody>
   {% for t in availability.targets %}
   <tr>
-    <td class="nowrap"><b>{{ t.name }}</b><div class="eyebrow">{{ t.type }}</div></td>
+    <td class="nowrap"><b>{{ t.name }}</b><div class="eyebrow">{{ target_type(t.type) }}</div></td>
     <td class="nowrap">{{ t.hardware }}<div class="eyebrow">up to {{ t.gpus_per_run }} GPU{{ 's' if (t.gpus_per_run or 1) > 1 }} per run</div></td>
     <td class="nowrap" style="min-width: 150px">
       <div class="meter {{ 'full' if t.used >= t.total }}"><div style="width: {{ (100 * t.used / t.total) | round }}%"></div></div>
@@ -24,8 +26,9 @@
       {% if not ok or t.probe != 'ok' %}<div class="dim" style="font-size: 12px">{{ t.probe }}</div>{% endif %}</td>
   </tr>
   {% endfor %}
-</table>
-<p class="dim" style="margin-top: 8px">
+  </tbody>
+</table></div>
+<p class="dim" style="margin-top: 8px" aria-live="polite">
   {{ availability.queue.authors_waiting }} author job(s) and {{ availability.queue.regression_waiting }} nightly-pass notebook(s) waiting for a GPU.
   {% if availability.nightly %}The nightly pass ({{ availability.nightly.run_id }}) has {{ availability.nightly.remaining }} notebook(s) left; author jobs run first.{% endif %}
   Updated {{ availability.updated_at[11:19] }} UTC.

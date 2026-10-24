@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import status_badge, fixability_badge, nb_link %}
+{% from "_macros.html" import status_badge, fixability_badge, nb_link, target_type %}
 {% block title %}Result {{ res.id }}{% endblock %}
 {% block content %}
 <p class="sub"><a href="/">Notebooks</a> / {{ nb_link(res.notebook) }} / result {{ res.id }}</p>
@@ -11,7 +11,7 @@
     <dl class="kv">
       <dt>Status</dt><dd>{{ status_badge(status) }}</dd>
       {% if verdict %}
-      <dt>Verdict</dt><dd>{{ verdict.reason }}{% if verdict.agent_disagrees %}<br><span class="badge warn">agent said {{ payload.agent_status }}</span>{% endif %}</dd>
+      <dt>Verdict</dt><dd>{% if executed and verdict.failed_cell is not none %}{% set parts = verdict.reason.split('cell ' ~ verdict.failed_cell, 1) %}{{ parts[0] }}<a href="/result/{{ res.id }}/view#cell-{{ verdict.failed_cell }}" target="nbview" onclick="document.getElementById('notebook').scrollIntoView()">cell {{ verdict.failed_cell }}</a>{{ parts[1] if parts | length > 1 else '' }}{% else %}{{ verdict.reason }}{% endif %}{% if verdict.agent_disagrees %}<br><span class="badge warn">agent said {{ payload.agent_status }}</span>{% endif %}</dd>
       <dt>Cells</dt><dd>{{ verdict.cells.executed }} ran · {{ verdict.cells.failed }} failed · {{ verdict.cells.skipped }} skipped · {{ verdict.cells.not_run }} not run</dd>
       {% else %}
       <dt>Verdict</dt><dd class="dim">set by the agent (recorded before verdicts were computed from the executed notebook)</dd>
@@ -20,7 +20,7 @@
       <dt>Phase</dt><dd>{{ res.phase }}</dd>
       <dt>Agent</dt><dd class="mono">{{ res.agent or "—" }}</dd>
       <dt>Recorded</dt><dd>{{ res.recorded_at | ts }}</dd>
-      <dt>Batch</dt><dd class="mono">{% if res.run_id %}<a href="/run/{{ res.run_id }}">{{ res.run_id }}</a>{% else %}<span class="dim">imported from a result file</span>{% endif %}</dd>
+      <dt>Run</dt><dd class="mono">{% if res.run_id %}<a href="/run/{{ res.run_id }}">{{ res.run_id }}</a>{% else %}<span class="dim">imported from a result file</span>{% endif %}</dd>
       <dt>Turns</dt><dd>{{ res.num_turns or "—" }}</dd>
       <dt>Cost</dt><dd>{{ res.cost_usd | cost }}</dd>
     </dl>
@@ -29,7 +29,7 @@
     <dl class="kv">
       <dt>Target</dt><dd class="mono">{{ res.server or "—" }}</dd>
       {% if target %}
-        <dt>Target type</dt><dd>{{ "Kubernetes pod" if target.type == "k8s" else "SSH host" }}</dd>
+        <dt>Target type</dt><dd>{{ target_type(target.type) }}</dd>
         {% if target.type == "k8s" %}
           <dt>Cluster</dt><dd class="mono">{{ target.context }} / {{ target.namespace }}</dd>
           <dt>Node selector</dt><dd class="mono">{% for k, v in (target.node_selector or {}).items() %}{{ k }}={{ v }}<br>{% endfor %}</dd>
@@ -47,15 +47,15 @@
 <div class="card wrap">{{ res.summary }}</div>
 {% endif %}
 
-{% if res.message %}
+{% if res.message and not (verdict and verdict.reason == res.message) %}
 <h2>Runner message</h2>
 <pre>{{ res.message }}</pre>
 {% endif %}
 
 <h2>Issues ({{ res.issues | length }})</h2>
 {% if res.issues %}
-<table>
-  <thead><tr><th>Cell</th><th>Type</th><th>Fixability</th><th>What broke</th><th>Proposed fix</th></tr></thead>
+<div class="table-wrap"><table>
+  <thead><tr><th scope="col">Cell</th><th scope="col">Type</th><th scope="col">Fixability</th><th scope="col">What broke</th><th scope="col">Proposed fix</th></tr></thead>
   <tbody>
   {% for i in res.issues %}
     <tr>
@@ -67,15 +67,15 @@
     </tr>
   {% endfor %}
   </tbody>
-</table>
+</table></div>
 {% else %}
 <p class="dim">No issues recorded.</p>
 {% endif %}
 
 {% if fixes %}
 <h2>Fixes applied ({{ fixes | length }})</h2>
-<table>
-  <thead><tr><th>Cell</th><th>Fix</th><th>Validated</th></tr></thead>
+<div class="table-wrap"><table>
+  <thead><tr><th scope="col">Cell</th><th scope="col">Fix</th><th scope="col">Validated</th></tr></thead>
   <tbody>
   {% for f in fixes %}
     <tr>
@@ -85,14 +85,14 @@
     </tr>
   {% endfor %}
   </tbody>
-</table>
+</table></div>
 {% endif %}
 
 {% if executed %}
 <h2 id="notebook">Executed notebook</h2>
-<p class="dim">Every cell's output from this run; cells with an error or an issue are marked in red. <a href="/result/{{ res.id }}/notebook">Download it</a>.</p>
+<p class="dim">Every cell's output from this run; cells with an error or an issue are marked in red with ⚠. <a href="/result/{{ res.id }}/notebook">Download it</a>.</p>
 <iframe name="nbview" src="/result/{{ res.id }}/view" sandbox title="Executed notebook"
-        style="width: 100%; height: 820px; resize: vertical; border: 1px solid var(--line); border-radius: 8px; background: #fff"></iframe>
+        style="width: 100%; height: min(820px, 75vh); resize: vertical; border: 1px solid var(--line); border-radius: 8px; background: #fff"></iframe>
 {% endif %}
 
 <h2>Raw result</h2>

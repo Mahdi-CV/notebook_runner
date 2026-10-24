@@ -11,14 +11,14 @@
     <dt>Finished</dt><dd>{% if run.finished_at %}{{ run.finished_at | ts }}{% else %}<span class="badge warn">unfinished</span> <span class="dim">still running, or interrupted before it recorded a finish time</span>{% endif %}</dd>
     <dt>Mode</dt><dd>{{ run.mode or "—" }}</dd>
     <dt>Targets</dt><dd class="mono">{{ run.host or "—" }}</dd>
-    <dt>Totals</dt><dd>{{ run.passed if run.passed is not none else "—" }} pass · {{ run.failed if run.failed is not none else "—" }} not passing · {{ run.skipped if run.skipped is not none else "—" }} no target · {{ run.total_cost_usd | cost }}</dd>
+    <dt>Totals</dt><dd>{{ counts.pass }} pass · {{ counts.fail }} fail · {{ counts.blocked }} blocked · {{ counts.skipped }} no target · {{ run.total_cost_usd | cost }}</dd>
     <dt>Command</dt><dd class="mono dim">{{ argv or "—" }}</dd>
   </dl>
 </div>
 
 <h2>Notebooks in this run ({{ results | length }})</h2>
-<table>
-  <thead><tr><th>Notebook</th><th>Phase</th><th>Status</th><th>Target</th><th>Recorded</th><th>Turns</th><th>Cost</th><th>Top issue</th></tr></thead>
+<div class="table-wrap"><table>
+  <thead><tr><th scope="col">Notebook</th><th scope="col">Phase</th><th scope="col">Status</th><th scope="col">Target</th><th scope="col">Recorded</th><th scope="col">Turns</th><th scope="col">Cost</th><th scope="col">Top issue</th></tr></thead>
   <tbody>
   {% for r in results %}
     <tr>
@@ -35,5 +35,5 @@
     <tr><td colspan="8" class="dim">No notebook results recorded for this run.</td></tr>
   {% endfor %}
   </tbody>
-</table>
+</table></div>
 {% endblock %}
