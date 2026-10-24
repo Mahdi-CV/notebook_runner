@@ -30,7 +30,7 @@
 
 <h2>History</h2>
 <div class="table-wrap"><table>
-  <thead><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Status</th><th scope="col">Runner</th><th scope="col">Image</th><th scope="col">Why</th><th scope="col" class="num">Agent turns</th><th scope="col" class="num">Cost</th><th scope="col">Run</th></tr></thead>
+  <thead><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Status</th><th scope="col">Runner</th><th scope="col">Image</th><th scope="col" class="col-issue">Why</th><th scope="col" class="num">Agent turns</th><th scope="col" class="num">Cost</th><th scope="col">Run</th></tr></thead>
   <tbody>
   {% for h in history %}
     <tr>
@@ -38,8 +38,8 @@
       <td>{{ h.phase | kind }}</td>
       <td>{{ status_badge(h.status | verdict) }}</td>
       <td class="mono">{{ h.server or "—" }}</td>
-      <td class="mono dim" style="word-break: break-all">{{ h.docker_image or "—" }}</td>
-      <td>{% if (h.status | verdict) != 'pass' %}<div class="clamp">{{ h | why | codespans }}</div>{% endif %}{% if h.issues %}<span class="dim">{{ h.issues | length }} issue{{ 's' if h.issues | length > 1 }}</span>{% endif %}</td>
+      <td class="mono dim"><div class="clip" title="{{ h.docker_image or '' }}">{{ h.docker_image or "—" }}</div></td>
+      <td class="col-issue">{% if (h.status | verdict) != 'pass' %}<div class="clamp">{{ h | why | codespans }}</div>{% endif %}{% if h.issues %}<span class="dim">{{ h.issues | length }} issue{{ 's' if h.issues | length > 1 }}</span>{% endif %}</td>
       <td class="num">{{ h.num_turns or "—" }}</td>
       <td class="num">{{ h.cost_usd | cost }}</td>
       <td class="mono">{% if h.run_id %}<a href="/run/{{ h.run_id }}">{{ h.run_id }}</a>{% else %}<span class="dim" title="imported from a result file; not tied to a recorded batch">imported</span>{% endif %}</td>

@@ -48,13 +48,13 @@
 <h2 id="no-target">No runner fits ({{ no_target | length }})</h2>
 <p class="sub">Notebooks whose declared requirements no configured runner meets.</p>
 <div class="table-wrap"><table>
-  <thead><tr><th scope="col">Notebook</th><th scope="col">Category</th><th scope="col">Why</th><th scope="col">Last result</th></tr></thead>
+  <thead><tr><th scope="col">Notebook</th><th scope="col">Category</th><th scope="col" class="col-issue">Why</th><th scope="col">Last result</th></tr></thead>
   <tbody>
   {% for s in no_target %}
     <tr>
       <td>{{ nb_link(s.key) }}</td>
       <td class="dim">{{ s.category | category }}</td>
-      <td>{{ no_runner(s.reason, s.misses) }}</td>
+      <td class="col-issue">{{ no_runner(s.reason, s.misses) }}</td>
       <td class="ts">{% if s.latest %}<a href="/result/{{ s.latest.id }}">{{ s.latest.recorded_at | ts }}</a> · {{ s.latest.status | verdict | statuslabel }}{% else %}<span class="dim">—</span>{% endif %}</td>
     </tr>
   {% endfor %}

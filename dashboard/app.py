@@ -289,10 +289,11 @@ def run_name(run: dict) -> str:
         return f"Nightly pass, {day}"
     kind = labels.KINDS.get(run.get("mode"), run.get("mode") or "Run")
     named = [Path(a).stem for a in argv if isinstance(a, str) and a.endswith(".ipynb")]
-    if len(named) == 1:
+    ran = int(run.get("passed") or 0) + int(run.get("failed") or 0)
+    if len(named) == 1 and ran <= 1:
         kind += f" of {named[0]}"
-    elif named:
-        kind += f" of {len(named)} notebooks"
+    elif named or ran > 1:
+        kind += f" of {max(len(named), ran)} notebooks"
     return f"{kind}, {day}"
 
 

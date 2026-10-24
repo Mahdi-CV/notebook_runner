@@ -50,7 +50,7 @@
     {%- elif job.status == 'cancelled' -%}
       Run it again when you are ready.
     {%- elif blocked_by == 'no_runner' -%}
-      Next: no runner has the hardware your <code>metadata.ci</code> asks for. Change it to hardware listed on the <a href="{{ prefix }}/runners">Runners</a> page, or ask the Notebook CI maintainers for a runner, then run again.
+      Next: no runner has the hardware your <code>metadata.ci</code> asks for. Change it to hardware listed on the <a href="{{ prefix }}/runners">Runners</a> page, then {% if from_github %}run again{% else %}<a href="{{ submit_again }}">submit the fixed notebook</a>{% endif %}; or ask the Notebook CI maintainers for a runner with that hardware, and run again once it is added.
     {%- elif blocked_by == 'metadata' -%}
       Next: fix <code>metadata.ci</code> so it reads as the hardware list and GPU count that gpuaidev's <span class="mono">.github/CI_METADATA.md</span> describes, then {% if from_github %}run again{% else %}<a href="{{ submit_again }}">submit the fixed notebook</a>{% endif %}.
     {%- elif blocked_by == 'fetch' -%}
@@ -62,7 +62,7 @@
     {% if again %}
     <form method="post" action="{{ prefix }}/jobs/{{ job.id }}/again">
       {% set why = 'Only ' ~ job.author ~ ' can run this job again.' if again.not_author else '' %}
-      <button class="{{ '' if job.status in ('error', 'cancelled') else 'secondary' }}" type="submit"
+      <button{% if job.status not in ('error', 'cancelled') %} class="secondary"{% endif %} type="submit"
               {%- if why or again.blocking %} disabled aria-describedby="again-why"{% endif %}
               title="{{ 'Fetches the latest version from GitHub' if from_github else 'Runs the same file again' }}">Run again</button>
       {% if why %}<span id="again-why" class="dim"> {{ why }}</span>

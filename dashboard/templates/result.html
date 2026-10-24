@@ -19,7 +19,7 @@
 <div class="grid2">
   <div class="card">
     <dl class="kv">
-      <dt>Executed notebook</dt><dd>{% if executed %}{{ download_button('/result/' ~ res.id ~ '/notebook', 'Download executed notebook') }}{% else %}<span class="dim">—</span>{% endif %}</dd>
+      <dt>Executed notebook</dt><dd>{% if executed %}<a href="#notebook">Shown below</a>{% else %}<span class="dim">—</span>{% endif %}</dd>
       <dt>Kind</dt><dd>{{ res.phase | kind }}</dd>
       <dt>Agent</dt><dd class="mono">{{ res.agent or "—" }}</dd>
       <dt>Recorded</dt><dd>{{ res.recorded_at | ts }}</dd>

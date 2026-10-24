@@ -22,7 +22,7 @@
       <div class="meta" style="margin-top: 4px">{{ t.used }} of {{ t.total | plural('GPU' if t.unit == 'gpus' else 'slot') }} busy</div>
     </td>
     <td data-label="Running now">
-      {% for j in t.jobs %}<div><a href="{{ prefix }}/jobs/{{ j.id }}">{{ j.notebook.split('/')[-1] }}</a> <span class="dim">· {{ 'nightly pass' if j.kind == 'regression' else j.author }} · since {{ j.started_at | ts }} (for {{ j.started_at | elapsed | dur }})</span></div>
+      {% for j in t.jobs %}<div><a href="{{ prefix }}/jobs/{{ j.id }}">{{ j.notebook.split('/')[-1] }}</a> <span class="dim">· {{ 'nightly pass' if j.kind == 'regression' else j.author }} · since {{ j.started_at | ts }}{% set ran = j.started_at | elapsed %}{% if ran and ran > 0 %} (for {{ ran | dur }}){% endif %}</span></div>
       {% else %}<span class="dim">idle</span>{% endfor %}
     </td>
     <td data-label="Status">{% set ok = t.probe.startswith('ok') %}<span class="badge {{ 'ok' if ok else 'warn' if t.probe == 'not checked yet' else 'bad' }}">{{ 'reachable' if ok else t.probe.split(':')[0] }}</span>

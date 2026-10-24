@@ -23,7 +23,7 @@ CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'"
 
 STYLE = """
 body { margin: 0; padding: 16px 20px; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color: #1c1d21; background: #fff; }
-.cell { display: grid; grid-template-columns: 64px 1fr; gap: 0 10px; margin: 0 0 14px; scroll-margin-top: 12px; }
+.cell { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 0 10px; margin: 0 0 14px; scroll-margin-top: 12px; }
 .n { color: #6b6f7a; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; text-align: right; padding-top: 6px; }
 .cell.flag { box-shadow: -3px 0 0 #a3222b; border-radius: 4px; }
 .cell.flag .n { color: #a3222b; font-weight: 700; }
@@ -40,7 +40,7 @@ body { margin: 0; padding: 16px 20px; font: 14px/1.5 system-ui, -apple-system, "
 .out td, .out th { border: 1px solid #e2e3e7; padding: 2px 6px; }
 .more { color: #6b6f7a; font-size: 12px; }
 .warn-mark { display: block; margin-top: 2px; }
-.md { max-width: 80ch; }
+.md { max-width: 80ch; overflow-wrap: anywhere; }
 .md h1 { font-size: 20px; margin: 4px 0 8px; } .md h2 { font-size: 17px; margin: 14px 0 6px; }
 .md h3, .md h4 { font-size: 15px; margin: 12px 0 4px; } .md p, .md li { line-height: 1.55; }
 .md code { font: .88em ui-monospace, SFMono-Regular, Menlo, monospace; background: #eceef1; padding: 1px 4px; border-radius: 4px; }
@@ -56,7 +56,7 @@ body { margin: 0; padding: 16px 20px; font: 14px/1.5 system-ui, -apple-system, "
 .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; white-space: nowrap; }
 .badge.info { color: #1d4f91; background: #e2ecf9; } .badge.warn { color: #8a5a00; background: #fdf1d8; }
 .badge.muted { color: #585c66; background: #eceef1; }
-@media (max-width: 500px) { .cell { grid-template-columns: 32px 1fr; } body { padding: 12px; } }
+@media (max-width: 500px) { .cell { grid-template-columns: 32px minmax(0, 1fr); } body { padding: 12px; } }
 """
 
 MAX_OUTPUT_CHARS = 20000
