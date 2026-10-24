@@ -3,8 +3,9 @@
 Authors upload a notebook or paste a GitHub URL, then watch the job's stage
 and log until it ends with a summary: pass, or each issue with its fix. A
 failed validate job with issues the fixer agent can fix offers a fix job,
-which returns a fixed notebook and its changes. The Runners page shows how
-busy each GPU target is and how long the queue is.
+which returns a fixed notebook and its changes; so does a failed nightly
+result, from the regression dashboard. The Runners page shows how busy each
+GPU target is and how long the queue is.
 
 There is no login: the author's name identifies their jobs and is remembered
 in a cookie. This app holds no credentials; the worker and the job containers
@@ -20,6 +21,7 @@ Environment:
 import json
 import os
 import re
+import sqlite3
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -30,6 +32,7 @@ from jinja2 import ChoiceLoader, FileSystemLoader
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import capacity, labels, pipeline, store
+import results_db  # tools/, on the path through capacity
 from .labels import CATEGORIES
 from . import render as nbrender
 
@@ -42,6 +45,8 @@ DASHBOARD_URL = os.environ.get("NBR_DASHBOARD_URL")
 PREFIX = (os.environ.get("NBR_AUTHORING_PREFIX") or "").rstrip("/")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._@'-]{0,59}$")
 FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.ipynb$")
+# Where the nightly pass's notebooks are published (as the dashboard links them).
+PUBLISHED_NOTEBOOKS = "https://github.com/ROCm/gpuaidev/blob/main/docs/notebooks/"
 
 app = FastAPI(title="Notebook CI · Authoring", docs_url=None, redoc_url=None, openapi_url=None)
 templates = Jinja2Templates(directory=str(HERE / "templates"))
@@ -206,8 +211,10 @@ def job_page(request: Request, job_id: str):
     run = (job.get("summary") or {}).get("run") or {}
     return render(request, "job.html", job=job, position=queue_position(conn, job),
                   fix=fix_state(conn, job, request.cookies.get("author", "")),
-                  fix_jobs=store.children(conn, job_id) if job["kind"] == "validate" else [],
+                  fix_jobs=store.children(conn, parent=job_id) if job["kind"] == "validate" else [],
                   parent=store.get(conn, job["parent"]) if job.get("parent") else None,
+                  nightly_url=(f"{DASHBOARD_URL.rstrip('/')}/result/{job['result_id']}"
+                               if job.get("result_id") and DASHBOARD_URL else None),
                   open_issues=open_issues(run) if job["kind"] == "fix" else None,
                   log=log_text, log_next=log_next, final=final, steps=job_steps(job, final, log_text),
                   static=static,
@@ -291,6 +298,40 @@ def start_fix(request: Request, job_id: str):
     (dest / pipeline.VERIFICATION).write_bytes(state["diagnosis"].read_bytes())
     store.log(new_id, f"Fixes the issues found by job {job_id}")
     return RedirectResponse(f"{PREFIX}/jobs/{new_id}", status_code=303)
+
+
+@app.post("/nightly/{result_id}/fix")
+def start_nightly_fix(request: Request, result_id: int, author: str = Form(...)):
+    """A fix job for a failed nightly result (from the dashboard's result page),
+    on the notebook as published, with that result's diagnosis."""
+    author = author.strip()
+    if not NAME_RE.match(author):
+        raise HTTPException(400, "Enter your name or email (letters, digits, spaces, . _ @ ' -).")
+    conn = db()
+    state = nightly_fix_state(conn, result_id)
+    if "problem" in state:
+        raise HTTPException(409, state["problem"])
+    blocking = active_job(conn, author, "fix")
+    if blocking:
+        return RedirectResponse(f"{PREFIX}/jobs/{blocking['id']}", status_code=303)
+    key = state["key"]
+    new_id = store.create(conn, "fix", Path(key).name, author=author, category=state["category"],
+                          source="checkout", source_url=PUBLISHED_NOTEBOOKS + key,
+                          result_id=result_id)
+    dest = store.job_dir(new_id)
+    (dest / "input.ipynb").write_bytes(state["path"].read_bytes())
+    (dest / pipeline.VERIFICATION).write_text(json.dumps(state["payload"], indent=1, ensure_ascii=False))
+    store.log(new_id, f"Fixes the issues the nightly check found (result {result_id})")
+    resp = RedirectResponse(f"{PREFIX}/jobs/{new_id}", status_code=303)
+    resp.set_cookie("author", author, max_age=365 * 24 * 3600, samesite="lax")
+    return resp
+
+
+@app.get("/api/nightly/{result_id}/fixes")
+def nightly_fixes(result_id: int):
+    """The fix jobs for a nightly result, for the dashboard's result page."""
+    return JSONResponse([{k: j[k] for k in ("id", "status", "author", "created_at")}
+                         for j in store.children(db(), result_id=result_id)])
 
 
 @app.get("/jobs/{job_id}/fixed.ipynb")
@@ -418,6 +459,35 @@ def fix_state(conn, job: dict, author: str) -> dict | None:
     return {"not_author": author != job["author"], "diagnosis": results[-1],
             "count": sum(i.get("fixability") == "auto_fixable" for i in issues),
             "blocking": active_job(conn, job["author"], "fix")}
+
+
+def nightly_fix_state(conn, result_id: int) -> dict:
+    """What a fix job for a nightly result needs, or {"problem": why not}. Only
+    the notebook's latest result, failed, with an issue the fixer may fix, and
+    the notebook still in the checkout: the fixer works on it as published."""
+    try:
+        rdb = sqlite3.connect(f"file:{results_db.DEFAULT_DB}?mode=ro", uri=True)
+        rdb.row_factory = sqlite3.Row
+        res = results_db.get_result(rdb, result_id)
+        latest = res and rdb.execute("SELECT MAX(id) FROM results WHERE notebook = ? AND phase != 'skip'",
+                                     (res["notebook"],)).fetchone()[0]
+        rdb.close()
+    except sqlite3.Error as exc:
+        return {"problem": f"The nightly results cannot be read ({exc})."}
+    if res is None:
+        return {"problem": f"There is no nightly result {result_id}."}
+    if res["phase"] != "verify" or res["status"] not in ("fail", "partial"):
+        return {"problem": "Only a failed nightly check can have its issues fixed."}
+    if latest != result_id:
+        return {"problem": "The notebook has a newer result: fix the issues from that one."}
+    if not any(i.get("fixability") == "auto_fixable" for i in res["issues"]):
+        return {"problem": "This result has no issue the fixer can fix."}
+    key = res["notebook"]
+    category, path = key.split("/", 1)[0], store.NOTEBOOKS_DIR / key
+    if category not in CATEGORIES or not path.is_file():
+        return {"problem": f"{key} is not in the published notebooks any more."}
+    return {"key": key, "category": category, "path": path,
+            "payload": json.loads(res["payload_json"] or "{}")}
 
 
 def open_issues(run: dict) -> list[dict]:

@@ -62,6 +62,23 @@
 <p class="dim">No issues recorded.</p>
 {% endif %}
 
+{% if fixable or fix_jobs %}
+<div class="card fix-offer">
+  {% if fixable %}
+  {% set n = res.issues | selectattr('fixability', 'equalto', 'auto_fixable') | list | length %}
+  <h2 style="margin-top: 0">Try the automatic fixes</h2>
+  <p>The fixer agent can try the {{ n | plural('fix', 'fixes') }} marked auto-fixable on the notebook as published: it changes only those cells and runs the notebook again on a GPU, in the authoring service. You get the fixed notebook and each change to review, to propose upstream. This nightly result stays as it is.</p>
+  <form method="post" action="{{ authoring_url }}nightly/{{ res.id }}/fix" class="inline-form">
+    <label>Your name or email <input type="text" name="author" value="{{ author }}" required maxlength="60"></label>
+    <button type="submit">Try the automatic fixes</button>
+  </form>
+  {% endif %}
+  {% if fix_jobs %}
+  <p class="meta"{% if fixable %} style="margin-top: 10px"{% endif %}>Fix jobs for this result: {% for j in fix_jobs %}<a href="{{ authoring_url }}jobs/{{ j.id }}">{{ j.created_at | ts }}</a> ({{ j.author }}, {{ j.status | statuslabel | lower }}){{ ', ' if not loop.last }}{% endfor %}.</p>
+  {% endif %}
+</div>
+{% endif %}
+
 {% if fixes %}
 <h2>Fixes applied ({{ fixes | length }})</h2>
 <div class="table-wrap"><table>

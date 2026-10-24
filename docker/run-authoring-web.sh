@@ -5,6 +5,9 @@
 # job containers and the nightly pass write jobs/ as. It holds no credentials;
 # authoring/worker.py does the work.
 #
+# It reads the nightly results (results/runs.db) and the published notebooks,
+# read-only, to start fix jobs for failed nightly results.
+#
 # It listens on 127.0.0.1 only: the regression dashboard serves it under
 # /authoring/ on its own port (NBR_AUTHORING_UPSTREAM on the dashboard's unit).
 # NBR_AUTHORING_BIND=0.0.0.0 NBR_AUTHORING_PREFIX= serves it on its own port instead.
@@ -41,6 +44,8 @@ docker run -d \
   -v "$REPO_ROOT/dashboard/templates:/work/dashboard/templates:ro" \
   -v "$REPO_ROOT/runner.yaml:/work/runner.yaml:ro" \
   -v "$REPO_ROOT/jobs:/work/jobs:rw" \
+  -v "$REPO_ROOT/results:/work/results:ro" \
+  -v "$(readlink -f "$REPO_ROOT/notebooks"):/work/notebooks:ro" \
   "$IMAGE" \
   uvicorn authoring.app:app --host 0.0.0.0 --port 8081 >/dev/null
 echo "notebook-authoring: listening on ${NBR_AUTHORING_BIND:-127.0.0.1}:$PORT (prefix ${NBR_AUTHORING_PREFIX-/authoring})"

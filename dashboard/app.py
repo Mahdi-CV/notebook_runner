@@ -231,7 +231,17 @@ def result(request: Request, result_id: int):
     except json.JSONDecodeError:
         payload = {}
     targets = routing.load_config(CONFIG_PATH)["targets"]
+    latest = conn.execute("SELECT MAX(id) FROM results WHERE notebook = ? AND phase != 'skip'",
+                          (res["notebook"],)).fetchone()[0]
+    # The authoring service can run the fixer on the notebook's latest failed
+    # check, when a runner fits it now (author jobs never use SSH targets).
+    route = (catalog()["notebooks"].get(res["notebook"]) or {}).get("target")
+    fixable = bool(AUTHORING_URL and res["phase"] == "verify" and res["status"] in ("fail", "partial")
+                   and latest == res["id"] and route and targets.get(route, {}).get("type") in ("k8s", "radeon")
+                   and any(i.get("fixability") == "auto_fixable" for i in res["issues"]))
     return render(request, "result.html", res=res, payload=payload,
+                  fixable=fixable, fix_jobs=fix_jobs(result_id) if AUTHORING_URL else [],
+                  author=request.cookies.get("author", ""),
                   payload_pretty=json.dumps(payload, indent=2, ensure_ascii=False),
                   fixes=payload.get("fixes") or [], status=verdict_status(res["status"]),
                   verdict=payload.get("verdict"), executed=_executed_path(payload) is not None,
@@ -243,6 +253,18 @@ def _executed_path(payload: dict) -> Path | None:
     name = Path(payload.get("executed_notebook") or "").name
     path = (ROOT / "results" / "executed" / name) if name else None
     return path if path and path.is_file() else None
+
+
+def fix_jobs(result_id: int) -> list[dict]:
+    """The authoring service's fix jobs for a nightly result (none if it is down)."""
+    if not AUTHORING_UPSTREAM:
+        return []
+    try:
+        with urllib.request.urlopen(f"{AUTHORING_UPSTREAM}/api/nightly/{result_id}/fixes",
+                                    timeout=3) as r:
+            return json.loads(r.read())
+    except (OSError, ValueError):
+        return []
 
 
 @app.get("/result/{result_id}/notebook")

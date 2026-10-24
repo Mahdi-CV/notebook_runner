@@ -92,6 +92,10 @@
   .outcome .head { font-weight: 600; font-size: 16px; } .outcome p { color: var(--fg); margin: 4px 0 0; max-width: 80ch; overflow-wrap: anywhere; } .outcome .dim { margin-top: 4px; color: #585c66; }
   /* Buttons and interactive states, for both apps. */
   button, .button { font: inherit; font-weight: 600; padding: 8px 14px; min-height: 36px; border-radius: 6px; border: 1px solid #1c1d21; background: #1c1d21; color: #fff; cursor: pointer; text-decoration: none; display: inline-block; }
+  input[type=text], input[type=url], select { font: inherit; padding: 7px 9px; min-height: 36px; border: 1px solid #8a8f99; border-radius: 6px; background: #fff; }
+  /* A one-line form: labelled fields, then the button, wrapping on narrow screens. */
+  .inline-form { display: flex; flex-wrap: wrap; align-items: end; gap: 8px 12px; }
+  .inline-form label { display: grid; gap: 4px; font-weight: 600; font-size: 13px; }
   button.secondary, .button.secondary { background: #fff; color: var(--fg); border-color: var(--line); }
   button:hover:not(:disabled), .button:hover { background: #33353b; border-color: #33353b; }
   button.secondary:hover:not(:disabled), .button.secondary:hover { background: var(--bg); border-color: var(--muted); }

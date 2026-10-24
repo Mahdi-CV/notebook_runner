@@ -8,6 +8,7 @@ A job's kind is one of:
   validate    static checks, then a verify run on a GPU target (author)
   annotate    the annotate-notebook-for-ci skill on the notebook, no GPU (author)
   fix         the fixer agent on a failed validate job's notebook (its parent),
+              or on a failed nightly result's (result_id in results/runs.db),
               then a re-run on a GPU target (author)
   regression  one notebook of the nightly pass on a GPU target (tools/ci_run.py)
 
@@ -56,6 +57,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     gpus          INTEGER,
     target        TEXT,            -- runner.yaml target it runs on
     parent        TEXT,            -- fix: the validate job whose issues it fixes
+    result_id     INTEGER,         -- fix: or the nightly result (results/runs.db)
     created_at    TEXT NOT NULL,
     started_at    TEXT,
     finished_at   TEXT,
@@ -85,8 +87,9 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
             conn.executescript(SCHEMA)
             # Columns added since the table was first created.
             have = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
-            if "parent" not in have:
-                conn.execute("ALTER TABLE jobs ADD COLUMN parent TEXT")
+            for column, kind in (("parent", "TEXT"), ("result_id", "INTEGER")):
+                if column not in have:
+                    conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {kind}")
             break
         except sqlite3.OperationalError as exc:
             if "locked" not in str(exc) or attempt == 49:
@@ -121,7 +124,8 @@ def create(conn: sqlite3.Connection, kind: str, notebook: str, **fields) -> str:
            "phase": "gpu" if kind == "regression" else "prepare", **fields}
     # What the job's container reads: it never opens jobs.db.
     request = {k: row.get(k) for k in ("kind", "notebook", "category", "source",
-                                         "source_url", "mode", "run_id", "author", "parent")}
+                                         "source_url", "mode", "run_id", "author", "parent",
+                                         "result_id")}
     (job_dir(job_id) / "request.json").write_text(json.dumps(request, indent=1))
     cols = ", ".join(row)
     conn.execute(f"INSERT INTO jobs ({cols}) VALUES ({', '.join('?' * len(row))})",
@@ -192,9 +196,11 @@ def active_for_author(conn: sqlite3.Connection, author: str, kind: str) -> int:
         "AND status IN ('queued', 'running')", (author, kind)).fetchone()[0]
 
 
-def children(conn: sqlite3.Connection, parent: str) -> list[dict]:
-    """The fix jobs started from a validate job, newest first."""
-    rows = conn.execute("SELECT * FROM jobs WHERE parent = ? ORDER BY created_at DESC", (parent,))
+def children(conn: sqlite3.Connection, parent: str | None = None,
+             result_id: int | None = None) -> list[dict]:
+    """The fix jobs started from a validate job or a nightly result, newest first."""
+    column, value = ("parent", parent) if parent else ("result_id", result_id)
+    rows = conn.execute(f"SELECT * FROM jobs WHERE {column} = ? ORDER BY created_at DESC", (value,))
     return [_with_summary(r) for r in rows]
 
 

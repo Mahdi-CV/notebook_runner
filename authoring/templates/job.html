@@ -13,6 +13,7 @@
   {% if job.source_url %}· <a href="{{ job.source_url }}"{% if source %} title="{{ source.title }}">{{ source.label }}{% else %}>{{ job.source_url }}{% endif %}</a>{% endif %}
   {% if job.target %}· {{ 'ran' if final else 'runs' }} on <b>{{ job.target }}</b>{% endif %}
   {% if parent %}· fixes the issues found by <a href="{{ prefix }}/jobs/{{ parent.id }}">its validate job</a>{% endif %}
+  {% if nightly_url %}· fixes the issues found by <a href="{{ nightly_url }}">the nightly check</a>{% endif %}
   {% if job.kind == 'regression' and job.run_id and dashboard_url %}· part of <a href="{{ dashboard_url.rstrip('/') }}/run/{{ job.run_id }}">this nightly pass</a>{% endif %}
   {% if job.finished_at and job.started_at %}· {{ 'stopped' if job.status in ('cancelled', 'error') else 'finished' }} {{ job.finished_at | ts }} after {{ job.started_at | elapsed(job.finished_at) | dur }}
   {%- elif job.status == 'running' and job.started_at %}· started {{ job.started_at | ts }}{% endif %}
@@ -41,7 +42,8 @@
     {%- if job.kind == 'fix' and job.status in ('passed', 'failed') and s.diff -%}
       Next: download the fixed notebook and review each change below; they are suggestions, so keep only what you agree with.
       {% if open_issues %}Then fix the {{ open_issues | length | plural('issue') }} still open yourself. {% endif %}
-      {%- if from_github %}Push the result to {{ 'the pull request' if '/pull/' in job.source_url else 'the branch' }} and validate it again.{% else %}<a href="{{ submit_again }}">Validate</a> the result again.{% endif %}
+      {%- if job.source == 'checkout' %}Then open a pull request to <span class="mono">ROCm/gpuaidev</span> with it; the nightly pass checks it again once it is merged.
+      {%- elif from_github %}Push the result to {{ 'the pull request' if '/pull/' in job.source_url else 'the branch' }} and validate it again.{% else %}<a href="{{ submit_again }}">Validate</a> the result again.{% endif %}
     {%- elif job.kind == 'fix' and job.status in ('passed', 'failed') -%}
       Next: none of the fixes worked, so there is no fixed notebook. Fix the issues below yourself, then validate the notebook again.
     {%- elif job.status == 'passed' -%}
@@ -53,8 +55,8 @@
       {%- else %}then <a href="{{ submit_again }}">submit the fixed notebook</a>.{% endif %}
     {%- elif job.status == 'done' -%}
       Next: {% if s.diff and s.diff.cells %}download the annotated notebook, review the cell changes below, then {% endif %}<a href="{{ prefix }}/?category={{ job.category | urlencode }}#validate">validate it</a> on a GPU.
-    {%- elif job.kind == 'fix' and job.status in ('error', 'cancelled') and parent -%}
-      {{ 'This is a fault in Notebook CI, not in your notebook. ' if job.status == 'error' }}You can try the fixes again from <a href="{{ prefix }}/jobs/{{ parent.id }}">the validate job</a>.
+    {%- elif job.kind == 'fix' and job.status in ('error', 'cancelled') and (parent or nightly_url) -%}
+      {{ 'This is a fault in Notebook CI, not in your notebook. ' if job.status == 'error' }}You can try the fixes again from {% if parent %}<a href="{{ prefix }}/jobs/{{ parent.id }}">the validate job</a>{% else %}<a href="{{ nightly_url }}">the nightly result</a>{% endif %}.
     {%- elif job.status == 'error' -%}
       This is a fault in Notebook CI, not in your notebook. Run it again; if it crashes again, tell the Notebook CI maintainers and quote job <span class="mono">{{ job.id }}</span>.
     {%- elif job.status == 'cancelled' -%}
