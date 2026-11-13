@@ -14,6 +14,9 @@
 # Any arguments are passed straight through to tools/ci_run.py.
 
 set -euo pipefail
+# The notebooks checkout this refreshes is read by the containers (uid 1001),
+# so its files must be world-readable whatever umask cron or root has.
+umask 022
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
