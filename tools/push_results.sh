@@ -11,22 +11,30 @@
 # Usage:
 #   tools/push_results.sh
 # Environment:
-#   NBR_DASHBOARD_HOST  ssh target (default: root@xcovdashdbd01)
+#   NBR_DASHBOARD_HOST  ssh target (default: atlvaimciapp01; the user needs sudo there,
+#                       since the host takes no root logins)
 #   NBR_DASHBOARD_ROOT  pipeline root on that host (default: /data/notebook_runner)
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-HOST="${NBR_DASHBOARD_HOST:-root@xcovdashdbd01}"
+HOST="${NBR_DASHBOARD_HOST:-atlvaimciapp01}"
 ROOT="${NBR_DASHBOARD_ROOT:-/data/notebook_runner}"
 
-# No -o/-g/-p: files must arrive owned by uid 1001 (the daily pass's uid), not this machine's uid.
-rsync -rt --ignore-existing --no-owner --no-group \
-  --chown=1001:1001 --chmod=D755,F644 \
-  --include='*.json' --exclude='*' \
+# No -o/-g: the files arrive as root (sudo rsync) and are handed to the owner of
+# results/ below, the uid the daily pass writes as (1001 under Docker, the
+# service account under rootless podman).
+rsync -rt --ignore-existing --no-owner --no-group --chmod=D755,F644 \
+  --include='*.json' --exclude='*' --rsync-path='sudo rsync' \
   "$REPO_ROOT/results/" "$HOST:$ROOT/results/"
 
 # The import runs as root and may leave a root-owned journal or new database,
-# so hand the results directory and database back to uid 1001 afterwards.
-ssh "$HOST" "cd '$ROOT' && .venv-dashboard/bin/python tools/results_db.py import \
-  && chown 1001:1001 \"\$(readlink -f results)\" results/runs.db*"
+# so hand the results back to their owner afterwards.
+# The script goes on stdin: the remote login shell may not be bash.
+ssh "$HOST" sudo bash -s <<EOF
+set -e
+cd '$ROOT'
+.venv-dashboard/bin/python tools/results_db.py import
+owner=\$(stat -c %u:%g "\$(readlink -f results)")
+chown "\$owner" results/*.json results/runs.db*
+EOF

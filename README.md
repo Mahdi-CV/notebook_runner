@@ -330,7 +330,7 @@ diagnosis. A result whose agent claimed a different status is flagged
 ### Dashboard
 
 A read-only web view of `results/runs.db` and the notebooks' routes runs on the
-orchestrator host at **http://xcovdashdbd01:8080**: every notebook's latest
+orchestrator host at **http://atlvaimciapp01.amd.com/**: every notebook's latest
 status and when it was last verified, each notebook's history of runs, a page
 per result (runner, image, cost, turns, summary, every issue with its proposed
 fix), the batch runs, and the targets with where each notebook runs. It opens the
@@ -343,16 +343,16 @@ uv run --with-requirements dashboard/requirements.txt uvicorn dashboard.app:app 
 tools/push_results.sh
 ```
 
-On the host it's the `notebook-dashboard` systemd unit
-(`dashboard/notebook-dashboard.service`, venv in `.venv-dashboard`). There,
-`results/` is a symlink to `/aig_dashboard/notebook_runner/results` on the
-snapshotted NFS share, so the history survives the host's local disk. The daily
-pass writes the host's `runs.db` directly; runs made elsewhere only appear once
+On the host (everything under `/data/notebook_runner`; the containers run under
+rootless podman as `notebook-runner`, see `docker/README.md`) it's the `notebook-dashboard` systemd unit
+(`dashboard/notebook-dashboard.service`, venv in `.venv-dashboard`) on
+127.0.0.1:8080, behind Caddy on port 80 (`dashboard/Caddyfile`). The daily pass
+writes the host's `runs.db` directly; runs made elsewhere only appear once
 pushed.
 
 ### Authoring service
 
-Self-serve tools for tutorial authors, at **http://xcovdashdbd01:8080/authoring/**:
+Self-serve tools for tutorial authors, at **http://atlvaimciapp01.amd.com/authoring/**:
 the dashboard relays `/authoring/` to the service (`NBR_AUTHORING_UPSTREAM` on
 its unit), which listens on 127.0.0.1:8081. There is no login: an author's name
 identifies their jobs.

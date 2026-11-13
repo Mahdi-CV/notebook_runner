@@ -1,0 +1,30 @@
+# Serves the dashboard (and, through it, /authoring/) on atlvaimciapp01.
+#
+# https://notebooks-dashboard.amd.com/ uses the AMD internal certificate
+# (RITM1286649, valid to 2027-10-28); plain HTTP on that name redirects to it.
+# Any other name, such as http://atlvaimciapp01.amd.com/ or the IP, is still
+# served over plain HTTP. Caddy must not try to get certificates itself.
+#
+# Install (as root). The certificate and key live in ~edwzhou/ssl, which is on
+# NFS that root cannot read, so copy them to local disk as edwzhou first:
+#   mkdir -m 700 /tmp/nbd-cert && cp ~/ssl/notebooks-dashboard.amd.com.{fullchain.pem,key} /tmp/nbd-cert/
+#   install -d -m 750 -g caddy /etc/caddy/certs
+#   install -m 640 -g caddy /tmp/nbd-cert/* /etc/caddy/certs/ && rm -rf /tmp/nbd-cert
+#   cp dashboard/Caddyfile /etc/caddy/Caddyfile && systemctl reload caddy
+
+{
+	auto_https off
+}
+
+https://notebooks-dashboard.amd.com {
+	tls /etc/caddy/certs/notebooks-dashboard.amd.com.fullchain.pem /etc/caddy/certs/notebooks-dashboard.amd.com.key
+	reverse_proxy 127.0.0.1:8080
+}
+
+http://notebooks-dashboard.amd.com {
+	redir https://{host}{uri} permanent
+}
+
+:80 {
+	reverse_proxy 127.0.0.1:8080
+}
