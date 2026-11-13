@@ -1,0 +1,23 @@
+{# The sidebar menu, shared by both apps so each lists the other's pages too.
+   results_url and authoring_url are each app's root (with a trailing slash), or
+   none when that app isn't reachable, which hides its group. here is the key of
+   the current page. #}
+{% macro sidebar_nav(here, results_url, authoring_url) %}
+{% macro item(key, href, label) %}<li><a href="{{ href }}" class="{{ 'active' if here == key }}"{% if here == key %} aria-current="page"{% endif %}>{{ label }}</a></li>{% endmacro %}
+{% if results_url %}
+<h2 id="nav-results">Nightly results</h2>
+<ul aria-labelledby="nav-results">
+  {{ item('notebooks', results_url, 'Notebooks') }}
+  {{ item('runs', results_url ~ 'runs', 'Runs') }}
+  {{ item('targets', results_url ~ 'targets', 'Routing') }}
+</ul>
+{% endif %}
+{% if authoring_url %}
+<h2 id="nav-authoring">Authoring</h2>
+<ul aria-labelledby="nav-authoring">
+  {{ item('submit', authoring_url, 'Check a notebook') }}
+  {{ item('jobs', authoring_url ~ 'jobs', 'Jobs') }}
+  {{ item('runners', authoring_url ~ 'runners', 'Runners') }}
+</ul>
+{% endif %}
+{% endmacro %}

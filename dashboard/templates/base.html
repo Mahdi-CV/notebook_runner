@@ -13,14 +13,28 @@
   }
   * { box-sizing: border-box; }
   body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--fg); }
-  header { background: #1c1d21; color: #fff; padding: 8px 24px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 28px; min-height: 52px; }
-  header .brand { font-weight: 600; letter-spacing: .2px; }
-  header .brand span { color: #ff5a5f; }
-  header nav { display: flex; flex-wrap: wrap; gap: 4px 18px; }
-  header nav a { color: #c9ccd3; text-decoration: none; padding: 4px 0; }
-  header nav a.active { box-shadow: inset 0 -2px 0 #ff5a5f; }
-  header nav a:hover, header nav a.active { color: #fff; }
-  main { max-width: 1280px; margin: 0 auto; padding: 24px; }
+  /* Sidebar beside the page; on narrow screens it folds into a bar on top. */
+  .shell { display: grid; grid-template-columns: 216px minmax(0, 1fr); min-height: 100vh; }
+  .side { background: #1c1d21; color: #fff; position: sticky; top: 0; height: 100vh; overflow-y: auto; padding: 16px 12px; }
+  .side .brand { font-weight: 600; letter-spacing: .2px; padding: 4px 10px 8px; }
+  .side .brand span { color: #ff5a5f; }
+  .side h2 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; color: #8a8f99; margin: 18px 10px 6px; }
+  .side ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+  .side a { display: block; color: #c9ccd3; text-decoration: none; padding: 6px 10px; border-radius: 6px; }
+  .side a:hover { background: #2a2c31; color: #fff; }
+  .side a.active { background: #33353b; color: #fff; box-shadow: inset 3px 0 0 #ff5a5f; }
+  main { width: 100%; max-width: 1280px; margin: 0 auto; padding: 24px; }
+  @media (max-width: 900px) {
+    .shell { display: block; }
+    .side { position: static; height: auto; padding: 10px 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 24px; }
+    .side .brand { padding: 0; }
+    .side nav { display: flex; flex-wrap: wrap; gap: 4px 24px; }
+    .side h2 { display: none; }
+    .side ul { display: flex; flex-wrap: wrap; gap: 2px 16px; }
+    .side a { padding: 4px 0; border-radius: 0; }
+    .side a:hover { background: none; }
+    .side a.active { background: none; box-shadow: inset 0 -2px 0 #ff5a5f; }
+  }
   h1 { font-size: 22px; margin: 0 0 4px; overflow-wrap: anywhere; }
   h2 { font-size: 16px; margin: 28px 0 10px; }
   .sub { color: var(--muted); margin: 0 0 20px; max-width: 75ch; }
@@ -114,28 +128,27 @@
   .button.download svg { width: 16px; height: 16px; flex: none; }
   .filters a:hover:not(.on) { border-color: var(--muted); }
   button, .button, .filters a, a.tile { transition: background-color .12s, border-color .12s; }
-  header :focus-visible { outline-color: #fff; outline-offset: 4px; border-radius: 2px; }
+  .side :focus-visible { outline-color: #fff; outline-offset: 2px; }
 </style>
 {% block head %}{% endblock %}
 </head>
 <body>
-<header>
+<div class="shell">
+<aside class="side">
   {% block brand %}<div class="brand">Notebook <span>CI</span></div>{% endblock %}
-  <nav>
+  <nav aria-label="Main">
     {% block nav %}
+    {% from "_nav.html" import sidebar_nav %}
     {% set path = request.url.path %}
     {% set here = 'notebooks' if path == '/' or path.startswith('/notebook') or path.startswith('/result') else 'runs' if path.startswith('/run') else 'targets' if path == '/targets' else '' %}
-    <a href="/" class="{{ 'active' if here == 'notebooks' }}"{% if here == 'notebooks' %} aria-current="page"{% endif %}>Notebooks</a>
-    <a href="/runs" class="{{ 'active' if here == 'runs' }}"{% if here == 'runs' %} aria-current="page"{% endif %}>Runs</a>
-    {% if authoring_url %}<a href="{{ authoring_url }}runners">Runners</a>{% endif %}
-    <a href="/targets" class="{{ 'active' if here == 'targets' }}"{% if here == 'targets' %} aria-current="page"{% endif %}>Routing</a>
-    {% if authoring_url %}<a href="{{ authoring_url }}">Check a notebook</a>{% endif %}
+    {{ sidebar_nav(here, '/', authoring_url) }}
     {% endblock %}
   </nav>
-</header>
+</aside>
 <main>
 {% if db_missing %}<div class="notice">No results database yet (<span class="mono">results/runs.db</span>). Pages will fill in after the first run.</div>{% endif %}
 {% block content %}{% endblock %}
 </main>
+</div>
 </body>
 </html>

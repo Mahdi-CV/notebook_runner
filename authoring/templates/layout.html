@@ -2,11 +2,9 @@
 {% block site %}Notebook CI · Authoring{% endblock %}
 {% block brand %}<div class="brand">Notebook <span>CI</span></div>{% endblock %}
 {% block nav %}
+{% from "_nav.html" import sidebar_nav %}
 {% set here = 'submit' if request.url.path in ('/', prefix + '/') else 'jobs' if '/jobs' in request.url.path else 'runners' if request.url.path.endswith('/runners') else '' %}
-<a href="{{ prefix }}/" class="{{ 'active' if here == 'submit' }}"{% if here == 'submit' %} aria-current="page"{% endif %}>Submit</a>
-<a href="{{ prefix }}/jobs" class="{{ 'active' if here == 'jobs' }}"{% if here == 'jobs' %} aria-current="page"{% endif %}>Jobs</a>
-<a href="{{ prefix }}/runners" class="{{ 'active' if here == 'runners' }}"{% if here == 'runners' %} aria-current="page"{% endif %}>Runners</a>
-{% if dashboard_url %}<a href="{{ dashboard_url }}">Nightly results</a>{% endif %}
+{{ sidebar_nav(here, dashboard_url, prefix + '/') }}
 {% endblock %}
 {% block head %}
 <style>
