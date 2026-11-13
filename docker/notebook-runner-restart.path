@@ -1,0 +1,14 @@
+# Restart the dashboard, the worker and the authoring web app when a deploy
+# asks: tools/deploy.sh --restart writes docker/.restart-request, which only
+# the deploy user can write (it owns docker/). No sudo, so no sudoers rule for
+# Puppet to revert. Install both units in /etc/systemd/system, then
+#   systemctl daemon-reload && systemctl enable --now notebook-runner-restart.path
+
+[Unit]
+Description=Restart notebook-runner when a deploy asks
+
+[Path]
+PathChanged=/data/notebook_runner/docker/.restart-request
+
+[Install]
+WantedBy=multi-user.target

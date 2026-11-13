@@ -1,0 +1,11 @@
+# Started by notebook-runner-restart.path; does only these restarts, whoever
+# touches the request file. The web app runs under the service account's
+# rootless podman (docker/README.md, "Rootless podman").
+
+[Unit]
+Description=Restart the notebook-runner dashboard, worker and authoring web app
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl restart notebook-dashboard.service notebook-authoring-worker.service
+ExecStart=/bin/sh -c 'cd / && exec runuser -u notebook-runner -- env XDG_RUNTIME_DIR=/run/user/$$(id -u notebook-runner) /usr/bin/podman restart notebook-authoring'
