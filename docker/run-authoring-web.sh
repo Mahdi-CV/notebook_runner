@@ -22,14 +22,17 @@ REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 IMAGE="${NOTEBOOK_RUNNER_IMAGE:-notebook-runner:latest}"
 PORT="${NBR_AUTHORING_PORT:-8081}"
 NAME=notebook-authoring
+# shellcheck source=docker/engine.sh
+source "$SCRIPT_DIR/engine.sh"
 
 mkdir -p "$REPO_ROOT/jobs"
-chown 1001:1001 "$REPO_ROOT/jobs" 2>/dev/null || true
+agent_owns "$REPO_ROOT/jobs" 2>/dev/null || true
 
-docker rm -f "$NAME" >/dev/null 2>&1 || true
-docker run -d \
+"$CLI" rm -f "$NAME" >/dev/null 2>&1 || true
+"$CLI" run -d \
   --name "$NAME" \
-  --restart unless-stopped \
+  "${RESTART[@]}" \
+  ${USERNS[@]+"${USERNS[@]}"} \
   --read-only \
   --tmpfs /tmp:rw,size=256m \
   --security-opt no-new-privileges \

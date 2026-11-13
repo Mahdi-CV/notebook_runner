@@ -89,7 +89,8 @@ class Local:
 
 
 class Docker:
-    """Phases as detached containers named nbr-job-<id>, started by run-job.sh."""
+    """Phases as detached containers named nbr-job-<id>, started by run-job.sh
+    (with docker, or podman: store.ENGINE)."""
 
     def start(self, job_id: str, phase: str, target: str | None, key: str | None = None) -> None:
         # The key goes through the environment, never argv (visible in ps).
@@ -100,17 +101,17 @@ class Docker:
             raise RuntimeError((proc.stderr or proc.stdout).strip()[-500:])
 
     def running(self, job_id: str) -> bool:
-        proc = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}",
+        proc = subprocess.run([store.ENGINE, "inspect", "-f", "{{.State.Running}}",
                                f"nbr-job-{job_id}"], capture_output=True, text=True, timeout=30)
         if proc.returncode != 0:
             return False
         if proc.stdout.strip() == "true":
             return True
-        subprocess.run(["docker", "rm", f"nbr-job-{job_id}"], capture_output=True, timeout=60)
+        subprocess.run([store.ENGINE, "rm", f"nbr-job-{job_id}"], capture_output=True, timeout=60)
         return False
 
     def stop(self, job_id: str) -> None:
-        subprocess.run(["docker", "stop", "-t", "30", f"nbr-job-{job_id}"],
+        subprocess.run([store.ENGINE, "stop", "-t", "30", f"nbr-job-{job_id}"],
                        capture_output=True, timeout=90)
 
 
@@ -225,7 +226,7 @@ class Worker:
         container) with the broker's credentials, inside its container."""
         cmd = ["-m", "authoring.broker", "cleanup", job_id]
         cmd = [sys.executable, *cmd] if LAUNCHER == "local" else \
-            ["docker", "exec", BROKER_CONTAINER, "python", *cmd]
+            [store.ENGINE, "exec", BROKER_CONTAINER, "python", *cmd]
         try:
             proc = subprocess.run(cmd, cwd=store.REPO_ROOT, capture_output=True, text=True,
                                   timeout=120)

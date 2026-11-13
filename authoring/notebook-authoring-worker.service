@@ -1,13 +1,24 @@
 [Unit]
 Description=notebook-runner job scheduler (authoring jobs and the nightly pass)
+# Wants, not Requires: a rootless podman host has no docker.service (its
+# drop-in, notebook-authoring-worker.podman.conf, cannot remove a Requires).
 After=network.target docker.service
-Requires=docker.service
+Wants=docker.service
 
 [Service]
 Type=simple
 WorkingDirectory=/data/notebook_runner
-# The worker starts each job phase in its own container (docker/run-job.sh), so
-# it needs the Docker daemon and runs as root; it never runs an agent itself.
+# The worker starts each job phase in its own container (docker/run-job.sh); it
+# never runs an agent itself. It runs as uid 1001, the owner of jobs/, results/
+# and logs/, which the web app, the nightly pass and the job containers also
+# write as. The docker group lets it start containers; that group is still
+# equivalent to root, so this guards against mistakes, not against an attacker.
+# .env and the kubeconfig it names must be readable by uid 1001.
+User=1001
+Group=1001
+SupplementaryGroups=docker
+StateDirectory=notebook-runner-worker
+Environment=HOME=/var/lib/notebook-runner-worker
 # From .env it uses NBR_GITHUB_TOKEN (fetching pull requests on the host, so the
 # token never enters a job container), NBR_KUBECONFIG and RADEON_CLOUD_API_TOKEN
 # (the Runners page's live checks) and passes the rest to run-job.sh.

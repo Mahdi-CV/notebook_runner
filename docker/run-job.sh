@@ -37,7 +37,8 @@ JOBS_DIR="${NBR_JOBS_DIR:-$REPO_ROOT/jobs}"
 JOB_DIR="$JOBS_DIR/$JOB_ID"
 CHECKOUT="$REPO_ROOT/checkouts/notebooks"
 NB_SUBDIR="${NBR_NOTEBOOKS_SUBDIR:-docs/notebooks}"
-NBR_AGENT_UID=1001
+# shellcheck source=docker/engine.sh
+source "$SCRIPT_DIR/engine.sh"
 
 [[ -d "$JOB_DIR" ]] || { echo "run-job: no job directory $JOB_DIR" >&2; exit 2; }
 [[ -d "$CHECKOUT/.git" ]] || { echo "run-job: no gpuaidev checkout at $CHECKOUT (run docker/run-ci.sh once)" >&2; exit 2; }
@@ -50,7 +51,7 @@ set +a
 
 # The container writes as uid 1001: its job directory, and Radeon's per-identity state.
 mkdir -p "$REPO_ROOT/logs/.radeon"
-chown -R "$NBR_AGENT_UID:$NBR_AGENT_UID" "$JOB_DIR" "$REPO_ROOT/logs/.radeon" 2>/dev/null || true
+agent_owns -R "$JOB_DIR" "$REPO_ROOT/logs/.radeon" 2>/dev/null || true
 
 ENV_ARGS=(-e ANTHROPIC_MODEL -e ANTHROPIC_DEFAULT_OPUS_MODEL -e ANTHROPIC_DEFAULT_SONNET_MODEL
           -e ANTHROPIC_DEFAULT_HAIKU_MODEL -e CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
@@ -60,7 +61,7 @@ if [[ "$KIND" == "regression" ]]; then
   ENV_ARGS+=(-e ANTHROPIC_API_KEY -e ANTHROPIC_BASE_URL -e ANTHROPIC_CUSTOM_HEADERS)
 else
   [[ -n "${NBR_JOB_KEY:-}" ]] || { echo "run-job: an author job needs NBR_JOB_KEY (from the worker)" >&2; exit 2; }
-  [[ "$(docker inspect -f '{{.State.Running}}' nbr-broker 2>/dev/null)" == "true" ]] \
+  [[ "$("$CLI" inspect -f '{{.State.Running}}' nbr-broker 2>/dev/null)" == "true" ]] \
     || { echo "run-job: the credential broker is not running (docker/run-broker.sh)" >&2; exit 2; }
   BROKER=http://nbr-broker:8790
   ENV_ARGS+=(-e "NBR_JOB_KEY=$NBR_JOB_KEY" -e "NBR_BROKER_URL=$BROKER"
@@ -92,7 +93,7 @@ if [[ "$PHASE" == "run" ]]; then
   if [[ "$KIND" == "regression" && -n "${NBR_KUBECONFIG:-}" ]]; then
     KUBE_STAGE="$JOB_DIR/.kubeconfig"
     install -m 600 "$NBR_KUBECONFIG" "$KUBE_STAGE"
-    chown "$NBR_AGENT_UID:$NBR_AGENT_UID" "$KUBE_STAGE" 2>/dev/null || chmod 644 "$KUBE_STAGE"
+    agent_owns "$KUBE_STAGE" 2>/dev/null || chmod 644 "$KUBE_STAGE"
     ENV_ARGS+=(-e KUBECONFIG="/work/jobs/$JOB_ID/.kubeconfig")
   fi
   CMD=(python -m authoring.pipeline run "$JOB_ID" --target "$TARGET")
@@ -100,13 +101,14 @@ else
   CMD=(python -m authoring.pipeline prepare "$JOB_ID")
 fi
 
-docker run -d \
+"$CLI" run -d \
   --name "nbr-job-$JOB_ID" \
   --label "notebook-runner/job=$JOB_ID" \
   --read-only \
   --tmpfs /tmp:rw,size=512m \
-  --tmpfs /home/agent:rw,exec,size=1g,uid=$NBR_AGENT_UID,gid=$NBR_AGENT_UID \
+  --tmpfs /home/agent:rw,exec,size=1g,$AGENT_TMPFS \
   --security-opt no-new-privileges \
+  ${USERNS[@]+"${USERNS[@]}"} \
   ${NETWORK_ARGS[@]+"${NETWORK_ARGS[@]}"} \
   "${LIMITS[@]}" \
   "${ENV_ARGS[@]}" \

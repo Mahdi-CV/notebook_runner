@@ -42,12 +42,19 @@ set -a
 # shellcheck disable=SC1091  # path is runtime-resolved
 source "$REPO_ROOT/.env"
 set +a
+# shellcheck source=docker/engine.sh
+source "$SCRIPT_DIR/engine.sh"
 
 # A full disk kills a pass before ci_run.py can post its summary card, so check
 # the repo and Docker's storage up front and alert Teams instead.
 MIN_FREE_GB="${NBR_MIN_FREE_GB:-2}"
 low_disk=""
-for path in "$REPO_ROOT" "$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)"; do
+if [[ "$CLI" == podman ]]; then
+  engine_root="$(podman info --format '{{.Store.GraphRoot}}' 2>/dev/null || true)"
+else
+  engine_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)"
+fi
+for path in "$REPO_ROOT" $engine_root; do
   [[ -e "$path" ]] || continue
   free_gb=$(df -P -BG "$path" | awk 'NR==2 {gsub("G","",$4); print $4}')
   if (( free_gb < MIN_FREE_GB )); then
@@ -64,9 +71,10 @@ if [[ -n "$low_disk" ]]; then
 fi
 
 # --- write-mount ownership guard ------------------------------------------
-# The container writes these paths as uid 1001. If any is owned by another uid
-# the agent cannot record its results, so don't start a pass that can't succeed.
-NBR_AGENT_UID=1001
+# The container writes these paths as uid 1001, which is AGENT_UID on the host
+# (the service account, under podman). If any is owned by another uid the agent
+# cannot record its results, so don't start a pass that can't succeed.
+NBR_AGENT_UID="$AGENT_UID"
 bad_owner=""
 for p in results fixes logs STATUS.md; do
   [[ -e "$REPO_ROOT/$p" ]] || continue
@@ -142,9 +150,9 @@ if [[ -e "$REPO_ROOT/notebooks" && ! -L "$REPO_ROOT/notebooks" ]]; then
   exit 1
 fi
 
-if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+if ! "$CLI" image inspect "$IMAGE" >/dev/null 2>&1; then
   echo "run-ci: image $IMAGE not found. Build it with:" >&2
-  echo "        docker build -f docker/Dockerfile -t $IMAGE ." >&2
+  echo "        $CLI build -f docker/Dockerfile -t $IMAGE ." >&2
   exit 1
 fi
 
@@ -161,7 +169,7 @@ if [[ -n "${NBR_KUBECONFIG:-}" ]]; then
   fi
   KUBE_STAGE="$REPO_ROOT/logs/.kubeconfig_stage"
   install -m 600 "$NBR_KUBECONFIG" "$KUBE_STAGE"
-  if ! chown 1001:1001 "$KUBE_STAGE" 2>/dev/null; then
+  if ! agent_owns "$KUBE_STAGE" 2>/dev/null; then
     # Unprivileged host user: world-readable inside logs/ for the pass only.
     chmod 644 "$KUBE_STAGE"
     echo "run-ci: warning — cannot chown the staged kubeconfig to uid 1001 (needs root)." >&2
@@ -173,10 +181,10 @@ if [[ -n "${NBR_KUBECONFIG:-}" ]]; then
 
   # Prove the API answers from this host, with the image's kubectl, before a
   # pass depends on it.
-  if ! docker run --rm "${KUBE_ARGS[@]}" --entrypoint kubectl "$IMAGE" \
+  if ! "$CLI" run --rm ${USERNS[@]+"${USERNS[@]}"} "${KUBE_ARGS[@]}" --entrypoint kubectl "$IMAGE" \
        version --request-timeout=10s >/dev/null 2>&1; then
     echo "run-ci: the Kubernetes API in $NBR_KUBECONFIG is unreachable from this host." >&2
-    echo "        Check: docker run --rm -v ...:/etc/notebook-runner/kubeconfig:ro \\" >&2
+    echo "        Check: $CLI run --rm -v ...:/etc/notebook-runner/kubeconfig:ro \\" >&2
     echo "               -e KUBECONFIG=/etc/notebook-runner/kubeconfig --entrypoint kubectl $IMAGE version" >&2
     exit 1
   fi
@@ -239,11 +247,12 @@ fi
 #
 # .env is not mounted: the agent runs with --dangerously-skip-permissions and
 # could read every secret in it. Only the variables it needs are passed with -e.
-docker run --rm \
+"$CLI" run --rm \
   --name "notebook-runner-${TS}" \
+  ${USERNS[@]+"${USERNS[@]}"} \
   --read-only \
   --tmpfs /tmp:rw,size=512m \
-  --tmpfs /home/agent:rw,exec,size=1g,uid=1001,gid=1001 \
+  --tmpfs /home/agent:rw,exec,size=1g,$AGENT_TMPFS \
   --security-opt no-new-privileges \
   --cpus 4 --memory 4g \
   -e ANTHROPIC_API_KEY \

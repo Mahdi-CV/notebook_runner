@@ -23,6 +23,37 @@ docker/notebook-runner-cron.sh   # the daily unattended pass (verify-only)
 Arguments pass through to `tools/ci_run.py`. Container passes never git-commit;
 results land in `results/` and the dashboard.
 
+## Rootless podman
+
+The scripts run under root's Docker by default. With `NBR_CONTAINER_CLI="podman"`
+in `.env` they run under rootless podman instead, as a local service account,
+and nothing runs as root: the containers still see uid 1001 (the image's
+`agent`), but everything they write belongs to the account on the host
+(`docker/engine.sh`). atlvaimciapp01 runs this way. Setting up a host (RHEL 8,
+as root):
+
+```bash
+dnf install podman netavark aardvark-dns fuse-overlayfs crun slirp4netns  # conflicts with docker-ce's containerd.io
+useradd --system --create-home --home-dir /data/notebook-runner-home --shell /sbin/nologin notebook-runner
+usermod --add-subuids 200000-265535 --add-subgids 200000-265535 notebook-runner
+loginctl enable-linger notebook-runner
+# ~notebook-runner/.config/containers/containers.conf: [network] network_backend = "netavark"
+# cgroup v2, so the jobs' --cpus/--memory apply (then reboot):
+grubby --update-kernel=ALL --args=systemd.unified_cgroup_hierarchy=1
+printf '[Service]\nDelegate=cpu cpuset io memory pids\n' > /etc/systemd/system/user@.service.d/delegate.conf
+```
+
+Then give `jobs/ results/ logs/ fixes/ checkouts/ STATUS.md .env` (and the
+kubeconfig `.env` names) to the account, add `NBR_CONTAINER_CLI="podman"` to
+`.env`, and as the account, with `XDG_RUNTIME_DIR=/run/user/<uid>` and
+`DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/<uid>/bus`: build or load the
+image, run `docker/run-broker.sh` and `docker/run-authoring-web.sh`, and
+`systemctl --user enable podman-restart.service` (they restart at boot). Install
+`authoring/notebook-authoring-worker.podman.conf` as the worker's drop-in, and
+put the daily `docker/notebook-runner-cron.sh` in the account's crontab with
+the same two variables. Build as the account:
+`podman build -f docker/Dockerfile -t notebook-runner:latest .`
+
 ---
 
 ## Claude credentials

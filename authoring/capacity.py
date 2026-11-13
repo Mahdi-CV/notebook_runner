@@ -116,11 +116,11 @@ def kubectl(args: list[str]) -> subprocess.CompletedProcess:
     if shutil.which("kubectl"):
         return subprocess.run(["kubectl", *args], capture_output=True, text=True, timeout=30)
     config = os.environ.get("KUBECONFIG") or os.environ.get("NBR_KUBECONFIG")
-    if not config or not shutil.which("docker"):
+    if not config or not shutil.which(store.ENGINE):
         return subprocess.CompletedProcess(args, 1, "", "kubectl is not installed on this host")
     image = os.environ.get("NOTEBOOK_RUNNER_IMAGE") or "notebook-runner:latest"
     return subprocess.run(
-        ["docker", "run", "--rm", "--network", "host", "-v",
+        [store.ENGINE, "run", "--rm", "--network", "host", "-v",
          f"{os.path.expanduser(config)}:/tmp/kubeconfig:ro", "-e", "KUBECONFIG=/tmp/kubeconfig",
          "-u", "0", "--entrypoint", "kubectl", image, *args],
         capture_output=True, text=True, timeout=60)

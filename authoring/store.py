@@ -28,6 +28,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 JOBS_DIR = Path(os.environ.get("NBR_JOBS_DIR") or REPO_ROOT / "jobs")
 # The regression notebooks (the gpuaidev checkout's docs/notebooks).
 NOTEBOOKS_DIR = Path(os.environ.get("NBR_NOTEBOOKS") or REPO_ROOT / "notebooks")
+# The container engine: docker, or podman running rootless (docker/engine.sh).
+ENGINE = os.environ.get("NBR_CONTAINER_CLI") or "docker"
 
 KINDS = ("validate", "annotate", "fix", "regression")
 AUTHOR_KINDS = ("validate", "annotate", "fix")
@@ -96,9 +98,9 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
                 raise
             time.sleep(0.1)
     if os.geteuid() == 0:
-        # The worker runs as root on the host; the web app, the nightly pass and
-        # the job containers write as uid 1001, the owner of jobs/. Keep the
-        # database theirs, or they could no longer write it.
+        # Run as root (as the worker once did): the web app, the nightly pass
+        # and the job containers write as uid 1001, the owner of jobs/. Keep
+        # the database theirs, or they could no longer write it.
         owner = path.parent.stat()
         for f in (path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")):
             if f.exists() and f.stat().st_uid != owner.st_uid:
