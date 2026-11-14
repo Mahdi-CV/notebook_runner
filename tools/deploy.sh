@@ -2,8 +2,9 @@
 #
 # Copy this checkout's code to the dashboard host, without sudo.
 #
-# Only code is copied: the apps, tools and docs. The host's own state (.env,
-# runner.yaml, jobs/, results/, logs/, checkouts/, the venvs) is never touched,
+# Copied: the apps, tools, docs and runner.yaml (the targets, which this
+# checkout is the source of: edit them here, not on the host). The host's
+# state (.env, jobs/, results/, logs/, checkouts/, the venvs) is never touched,
 # and files that exist only on the host are left alone. Templates take effect
 # at once: both apps reload them from disk. Python changes need --restart.
 #
@@ -11,7 +12,7 @@
 # have the services restarted without sudo:
 #   cd /data/notebook_runner
 #   chown -R <user>:<group> authoring dashboard docker tools run.py pyproject.toml uv.lock \
-#     README.md CLAUDE.md CLAUDE_FIX.md runner.example.yaml .env.example
+#     README.md CLAUDE.md CLAUDE_FIX.md runner.example.yaml .env.example runner.yaml
 #   install -m 644 docker/notebook-runner-restart.{path,service} /etc/systemd/system/
 #   systemctl daemon-reload && systemctl enable --now notebook-runner-restart.path
 # --restart then just writes docker/.restart-request, and the path unit
@@ -49,7 +50,7 @@ cd "$REPO_ROOT"
 rsync -rltp --inplace --itemize-changes --chmod=Dgo+rx,Fgo+r "${dry_run[@]}" \
   --exclude __pycache__ --exclude '*.pyc' \
   authoring dashboard docker tools run.py pyproject.toml uv.lock \
-  README.md CLAUDE.md CLAUDE_FIX.md runner.example.yaml .env.example \
+  README.md CLAUDE.md CLAUDE_FIX.md runner.example.yaml .env.example runner.yaml \
   "$HOST:$ROOT/"
 
 if (( restart )) && (( ${#dry_run[@]} == 0 )); then
