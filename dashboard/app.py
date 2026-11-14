@@ -251,8 +251,11 @@ def notebook(request: Request, key: str):
     targets = m["targets"]
     fits = [n for n, t in targets.items() if nb and nb["req"] and not routing.unmet(nb["req"], t)]
     can_hold = bool(AUTHORING_URL and nb and not nb["held"] and fits and row["status"] == "blocked")
+    # The authoring service runs it again (POST nightly/rerun), with the same checks.
+    can_rerun = bool(AUTHORING_URL and nb and not nb["held"] and fits
+                     and row["status"] in ("blocked", "fail"))
     return render(request, "notebook.html", key=key, nb=nb, row=row, history=history,
-                  check_url=check_url, can_hold=can_hold, fits=fits,
+                  check_url=check_url, can_hold=can_hold, can_rerun=can_rerun, fits=fits,
                   hold_server=(row["latest"] or {}).get("server"),
                   hold_log=hold_log(key), author=request.cookies.get("author", ""))
 

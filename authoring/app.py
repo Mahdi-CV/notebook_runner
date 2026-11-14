@@ -24,6 +24,7 @@ import json
 import os
 import re
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -327,6 +328,38 @@ def start_nightly_fix(request: Request, result_id: int, author: str = Form(...))
     (dest / pipeline.VERIFICATION).write_text(json.dumps(state["payload"], indent=1, ensure_ascii=False))
     store.log(new_id, f"Fixes the issues the nightly check found (result {result_id})")
     resp = RedirectResponse(f"{PREFIX}/jobs/{new_id}", status_code=303)
+    resp.set_cookie("author", author, max_age=365 * 24 * 3600, samesite="lax")
+    return resp
+
+
+@app.post("/nightly/rerun")
+def rerun_nightly(notebook: str = Form(...), author: str = Form(...)):
+    """Run a published notebook's nightly check again now (the dashboard's
+    notebook page), as the nightly pass would: a regression job in verify mode,
+    whose result joins the notebook's history. Only one whose latest result is
+    blocked or failed, not while it is held, and not twice at once."""
+    author = author.strip()
+    if not NAME_RE.match(author):
+        raise HTTPException(400, "Enter your name or email (letters, digits, spaces, . _ @ ' -).")
+    path = store.NOTEBOOKS_DIR / notebook
+    if not path.is_file() or ".." in Path(notebook).parts:
+        raise HTTPException(404, f"There is no published notebook {notebook}.")
+    if notebook in routing.load_config()["holds"]:
+        raise HTTPException(409, f"{notebook} is held; lift the hold to run it again.")
+    latest = latest_result(notebook)
+    if latest is None or verdict_status(latest["status"]) not in ("blocked", "fail"):
+        raise HTTPException(409, "Only a notebook whose latest result is blocked or failed can be "
+                                 "run again; the next nightly pass runs the others.")
+    conn = db()
+    running = next((j for j in store.active(conn)
+                    if j["kind"] == "regression" and j["notebook"] == notebook), None)
+    if running:
+        return RedirectResponse(f"{PREFIX}/jobs/{running['id']}", status_code=303)
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    job_id = store.create(conn, "regression", notebook, source="checkout", mode="verify",
+                          run_id=run_id)
+    store.log(job_id, f"Run again from the dashboard by {author}")
+    resp = RedirectResponse(f"{PREFIX}/jobs/{job_id}", status_code=303)
     resp.set_cookie("author", author, max_age=365 * 24 * 3600, samesite="lax")
     return resp
 

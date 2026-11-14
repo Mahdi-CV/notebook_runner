@@ -28,6 +28,18 @@
   </div>
 </div>
 
+{% if can_rerun %}
+<div class="card hold" id="rerun">
+  <h2 style="margin-top: 0">Run it again</h2>
+  <p>Run the nightly check on this notebook now, instead of waiting for the next pass: the published version, on the first runner that fits. Its result joins the history above.</p>
+  <form method="post" action="{{ authoring_url }}nightly/rerun" class="inline-form">
+    <input type="hidden" name="notebook" value="{{ key }}">
+    <label>Your name or email <input type="text" name="author" value="{{ author }}" required maxlength="60"></label>
+    <button type="submit">Run again now</button>
+  </form>
+</div>
+{% endif %}
+
 {% if (nb and nb.held) or can_hold or hold_log %}
 <div class="card hold" id="hold">
   {% if nb and nb.held %}
